@@ -4,7 +4,7 @@
 ![arch](https://img.shields.io/badge/arch-x86%20(32--bit)-lightgrey)
 ![lang](https://img.shields.io/badge/kernel%20written%20in-Mort-8b5cf6)
 
-**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and drops you into an interactive shell **with a real filesystem** — write a file, reboot the machine, and it's still there. It even **runs real compiled programs**: a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls. Everything above the boot stub — VGA driver, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the shell — is written in Mort.
+**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and drops you into an interactive shell **with a real filesystem** — write a file, reboot the machine, and it's still there. It even **runs real, interactive compiled programs**: a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls — one sample asks your name and greets you. Everything above the boot stub — VGA driver, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the shell — is written in Mort.
 
 <div align="center">
 <img src="docs/mortos.png" alt="MORT OS booted in QEMU" width="640" />
@@ -14,7 +14,7 @@
 ## What it does
 
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.
-- **Runs real compiled programs** — `exec <file>` loads a Mort program (compiled to a flat binary) off the disk to `0x00A00000` and runs it. Programs share no symbols with the kernel; they call it through **`int 0x80` syscalls** (args passed via a fixed mailbox, since Mort's `asm()` takes no operands). Sample programs are in [`programs/`](programs/).
+- **Runs real, interactive compiled programs** — `exec <file>` loads a Mort program (compiled to a flat binary) off the disk to `0x00A00000` and runs it. Programs share no symbols with the kernel; they call it through **`int 0x80` syscalls** (args passed via a fixed mailbox, since Mort's `asm()` takes no operands). A read-line syscall polls the keyboard directly, so programs can take input too — `exec ask.bin` asks your name and greets you. Sample programs are in [`programs/`](programs/).
 - **Boots for real** — a BIOS+UEFI hybrid ISO (Limine bootloader) you can write to a USB stick and boot on actual hardware, not just QEMU's `-kernel` shortcut
 - **Interrupt-driven keyboard** — a flat GDT, an IDT, remapped PICs; IRQ1 fires into a Mort handler (no polling)
 - **A shell** — command parsing, Backspace line editing, Shift-aware scancode→ASCII, and **command history** (Up/Down arrows, decoded from 0xE0 extended scancodes)
@@ -72,6 +72,7 @@ python build.py prog      # compile programs/*.mx -> build/*.bin
 ```
 ```
 > exec hello.bin          # a real Mort program prints via syscall, then returns
+> exec ask.bin            # an interactive program: it asks your name and greets you
 ```
 
 Automated tests (all drive the real kernel headless in QEMU):
@@ -95,7 +96,7 @@ Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) an
 
 - [x] Everything above (ATA driver, MortFS, and `exec`-ing real programs)
 - [ ] Space reclamation for `rm` (v1 leaks the extent; re-mkfs to compact)
-- [ ] More syscalls (keyboard input, file I/O from programs) and a richer ABI
+- [ ] More syscalls (file I/O from programs, spawn) and a richer program ABI
 
 ## Related
 
