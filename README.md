@@ -4,7 +4,7 @@
 ![arch](https://img.shields.io/badge/arch-x86%20(32--bit)-lightgrey)
 ![lang](https://img.shields.io/badge/kernel%20written%20in-Mort-8b5cf6)
 
-**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and paints a **graphical desktop**: a linear-framebuffer window with the interactive shell rendered in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — and it **runs real, interactive compiled programs**: a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls (one sample asks your name and greets you). Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the shell — is written in Mort.
+**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and paints a **graphical desktop with multiple apps** — a Terminal, a Files manager, and a Vex-styled browser, switched with `F1`/`F2`/`F3`, all drawn to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — and it **runs real, interactive compiled programs**: a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls (one sample asks your name and greets you). Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the shell — is written in Mort.
 
 ![MORT OS graphical desktop](docs/desktop.png)
 
@@ -15,7 +15,9 @@
 
 ## What it does
 
-- **A graphical desktop** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a windowed console, all in Mort. The whole shell renders to the framebuffer because only the cell-drawing primitive changed; everything else is untouched. Falls back to VGA text mode when no framebuffer is present (the bare `-kernel` path).
+- **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager**: a top bar with tabs and `F1`/`F2`/`F3` app switching between a **Terminal**, a **Files** manager (browse MortFS, open files), and a **Vex-styled browser** app (local pages, a tribute to [Vex](https://github.com/0xmortuex/Vex) — *not* a real web browser; there's no network stack). The whole shell renders to the framebuffer because only the cell-drawing primitive changed; everything else is untouched. Falls back to VGA text mode when no framebuffer is present (the bare `-kernel` path).
+
+![MORT OS Files app](docs/app-files.png)
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.
 - **Runs real, interactive compiled programs** — `exec <file>` loads a Mort program (compiled to a flat binary) off the disk to `0x00A00000` and runs it. Programs share no symbols with the kernel; they call it through **`int 0x80` syscalls** (args passed via a fixed mailbox, since Mort's `asm()` takes no operands). A read-line syscall polls the keyboard directly, so programs can take input too — `exec ask.bin` asks your name and greets you. Sample programs are in [`programs/`](programs/).
 - **Boots for real** — a BIOS+UEFI hybrid ISO (Limine bootloader) you can write to a USB stick and boot on actual hardware, not just QEMU's `-kernel` shortcut
@@ -103,7 +105,7 @@ Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) an
 
 ## Roadmap
 
-- [x] Everything above (graphical desktop, ATA driver, MortFS, `exec`-ing real programs)
+- [x] Everything above (multi-app desktop, ATA driver, MortFS, `exec`-ing real programs)
 - [ ] Space reclamation for `rm` (v1 leaks the extent; re-mkfs to compact)
 - [ ] More syscalls (file I/O from programs, spawn) and a richer program ABI
 - [ ] A mouse (PS/2 IRQ12) and clickable window chrome — a real GUI
