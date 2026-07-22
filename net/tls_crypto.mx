@@ -423,4 +423,5 @@ fn tls_crypto_self_test() {
         && tls_bytes_equal(&aead_tag as u64, &TLS_AEAD_TAG1 as u64, 16);
     tls_x25519_self_test();
     tls13_self_test();
+    tls_entropy_self_test();
 }

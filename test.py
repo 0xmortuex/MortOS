@@ -415,6 +415,8 @@ def smoke(disk_img=None):
     hello_ok_addr = _elf32_symbol(ELF, "m_g_tls13_client_hello_ok")
     hello_addr = _elf32_symbol(ELF, "m_g_tls13_client_hello_test")
     hello_len_addr = _elf32_symbol(ELF, "m_g_tls13_client_hello_test_len")
+    entropy_ready_addr = _elf32_symbol(ELF, "m_g_tls_entropy_ready")
+    entropy_sample_addr = _elf32_symbol(ELF, "m_g_tls_entropy_sample")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -427,7 +429,7 @@ def smoke(disk_img=None):
             print(screen_text(handle))
             print("-------------------------")
 
-    handle = boot(disk_img=disk_img)
+    handle = boot(disk_img=disk_img, extra_args=["-cpu", "max"])
     try:
         check("boot banner shows 'MORT OS'",
               wait_for(handle, "MORT OS", timeout_s=15), handle)
@@ -462,6 +464,10 @@ def smoke(disk_img=None):
             and b"\x00\x33\x00\x26\x00\x24\x00\x1d\x00\x20" in hello)
         check("Mort builds a structurally valid TLS 1.3 ClientHello",
               hello_structural, handle)
+        entropy_sample = _guest_bytes(handle, entropy_sample_addr, 32)
+        check("TLS entropy gate accepts a nonzero x86 RDRAND sample",
+              (_guest_u32(handle, entropy_ready_addr) & 0xff) != 0
+              and any(entropy_sample), handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",

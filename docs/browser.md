@@ -92,6 +92,12 @@ its record and handshake lengths plus each required extension. This does
 X.509 parsing, trust anchors, hostname checks, and time validation must also be
 complete.
 
+Ephemeral TLS material is also fail-closed behind an x86 hardware-entropy gate.
+Mort checks CPUID for RDRAND, retries failed samples, and enables the gate only
+after two nonzero, distinct 256-bit samples. CPUs without an accepted source do
+not get predictable fallback keys; HTTPS remains unavailable on them until a
+second audited entropy provider exists.
+
 Those are browser-engine projects in their own right, not hidden switches.
 The UI reports these limits directly so supported local pages and small HTTP
 documents remain useful without giving a false security promise.

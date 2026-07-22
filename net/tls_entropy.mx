@@ -1,0 +1,45 @@
+// Hardware entropy gate for TLS ephemeral keys. We currently require x86
+// RDRAND and fail closed when CPUID does not advertise it or a sample fails.
+
+let g_tls_entropy_cpuid_ecx: u32 = 0;
+let g_tls_entropy_word: u32 = 0;
+let g_tls_entropy_success: u8 = 0;
+let g_tls_entropy_ready: bool = false;
+let g_tls_entropy_sample: [u8; 32] = [0; 32];
+
+fn tls_entropy_probe_cpu() {
+    asm("pushfl; pushl %eax; pushl %ebx; pushl %ecx; pushl %edx; movl $1, %eax; cpuid; movl %ecx, 0x009e1000; popl %edx; popl %ecx; popl %ebx; popl %eax; popfl");
+    g_tls_entropy_cpuid_ecx = *(0x009e1000 as *u32);
+}
+
+fn tls_entropy_rdrand_word() -> bool {
+    asm("pushfl; pushl %eax; movb $0, 0x009e1008; rdrand %eax; jnc 1f; movl %eax, 0x009e1004; movb $1, 0x009e1008; 1: popl %eax; popfl");
+    g_tls_entropy_word = *(0x009e1004 as *u32);
+    g_tls_entropy_success = *(0x009e1008 as *u8);
+    return g_tls_entropy_success != 0;
+}
+
+fn tls_entropy_fill(output: u64, length: u32) -> bool {
+    if !g_tls_entropy_ready && (g_tls_entropy_cpuid_ecx & (1 << 30)) == 0 { return false; }
+    let written: u32 = 0;
+    while written < length {
+        let ok: bool = false;
+        for retry: u32 in 0..10 { if !ok && tls_entropy_rdrand_word() { ok = true; } }
+        if !ok { return false; }
+        let take: u32 = length - written; if take > 4 { take = 4; }
+        for i: u32 in 0..take { *((output + ((written + i) as u64)) as *u8) = (g_tls_entropy_word >> (i * 8)) as u8; }
+        written = written + take;
+    }
+    return true;
+}
+
+fn tls_entropy_self_test() {
+    tls_entropy_probe_cpu(); g_tls_entropy_ready = false;
+    if (g_tls_entropy_cpuid_ecx & (1 << 30)) == 0 { return; }
+    let second: [u8; 32] = [0; 32];
+    let first_ok: bool = tls_entropy_fill(&g_tls_entropy_sample as u64, 32);
+    let second_ok: bool = tls_entropy_fill(&second as u64, 32);
+    let any: u8 = 0; for i: u32 in 0..32 { any = any | g_tls_entropy_sample[i]; }
+    g_tls_entropy_ready = first_ok && second_ok && any != 0
+        && !tls_bytes_equal(&g_tls_entropy_sample as u64, &second as u64, 32);
+}
