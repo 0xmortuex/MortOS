@@ -98,7 +98,10 @@ Mort also constructs per-record nonces from the write IV and sequence number,
 authenticates TLS 1.3 record headers and ciphertext, rejects forged Poly1305
 tags before releasing plaintext, and decodes the authenticated inner content
 type and padding. The AEAD path accepts the full TLS ciphertext limit rather
-than only small test messages. This does **not** enable HTTPS by itself:
+than only small test messages. Mort derives the Finished key and verifies the
+server's constant-time HMAC over the authenticated transcript; the RFC 8448
+transcript-through-CertificateVerify and Finished values are checked at boot.
+This does **not** enable HTTPS by itself:
 handshake-message reassembly, authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
 

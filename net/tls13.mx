@@ -53,6 +53,14 @@ let TLS13_SERVER_WRITE_KEY1: [u8; 16] = [
 let TLS13_SERVER_WRITE_IV1: [u8; 12] = [
     0x5d, 0x31, 0x3e, 0xb2, 0x67, 0x12, 0x76, 0xee, 0x13, 0x00, 0x0b, 0x30
 ];
+let TLS13_SERVER_FINISHED_HASH1: [u8; 32] = [
+    0xed, 0xb7, 0x72, 0x5f, 0xa7, 0xa3, 0x47, 0x3b, 0x03, 0x1e, 0xc8, 0xef, 0x65, 0xa2, 0x48, 0x54,
+    0x93, 0x90, 0x01, 0x38, 0xa2, 0xb9, 0x12, 0x91, 0x40, 0x7d, 0x79, 0x51, 0xa0, 0x61, 0x10, 0xed
+];
+let TLS13_SERVER_FINISHED1: [u8; 32] = [
+    0x9b, 0x9b, 0x14, 0x1d, 0x90, 0x63, 0x37, 0xfb, 0xd2, 0xcb, 0xdc, 0xe7, 0x1d, 0xf4, 0xde, 0xda,
+    0x4a, 0xb4, 0x2c, 0x30, 0x95, 0x72, 0xcb, 0x7f, 0xff, 0xee, 0x54, 0x54, 0xb7, 0x8f, 0x07, 0x18
+];
 
 let g_tls13_key_schedule_ok: bool = false;
 let g_tls13_client_hello_ok: bool = false;
@@ -69,6 +77,8 @@ let g_tls13_record_ok: bool = false;
 let g_tls13_record_plaintext_test: [u8; 16] = [0; 16];
 let g_tls13_record_plaintext_len: u32 = 0;
 let g_tls13_record_content_type: u8 = 0;
+let g_tls13_finished_ok: bool = false;
+let g_tls13_finished_test: [u8; 32] = [0; 32];
 
 fn tls13_write_u16(output: u64, position: u32, value: u32) {
     *((output + (position as u64)) as *u8) = (value >> 8) as u8;
@@ -240,6 +250,21 @@ fn tls13_decrypt_record(key: u64, write_iv: u64, sequence: u64,
     return end - 1;
 }
 
+fn tls13_finished_calculate(handshake_traffic_secret: u64, transcript_hash: u64,
+                            output: u64) -> bool {
+    let finished_key: [u8; 32] = [0; 32];
+    return tls13_expand_label(handshake_traffic_secret, "finished" as u64, 8,
+                              "" as u64, 0, &finished_key as u64, 32)
+        && tls_hmac_sha256(&finished_key as u64, 32, transcript_hash, 32, output);
+}
+
+fn tls13_finished_verify(handshake_traffic_secret: u64, transcript_hash: u64,
+                         received: u64) -> bool {
+    let expected: [u8; 32] = [0; 32];
+    return tls13_finished_calculate(handshake_traffic_secret, transcript_hash, &expected as u64)
+        && tls_bytes_equal(&expected as u64, received, 32);
+}
+
 fn tls13_self_test() {
     let derived: [u8; 32] = [0; 32];
     let ok: bool = tls13_derive_secret(&TLS13_DERIVED_PRK1 as u64, "derived" as u64, 7, "" as u64, 0, &derived as u64);
@@ -284,4 +309,11 @@ fn tls13_self_test() {
     g_tls13_record_ok = record_encrypted && g_tls13_record_plaintext_len == 5
         && g_tls13_record_content_type == 22
         && tls_bytes_equal(&g_tls13_record_plaintext_test as u64, "hello" as u64, 5);
+    let finished_calculated: bool = tls13_finished_calculate(
+        &TLS13_SERVER_HS_TRAFFIC1 as u64, &TLS13_SERVER_FINISHED_HASH1 as u64,
+        &g_tls13_finished_test as u64);
+    g_tls13_finished_ok = finished_calculated
+        && tls_bytes_equal(&g_tls13_finished_test as u64, &TLS13_SERVER_FINISHED1 as u64, 32)
+        && tls13_finished_verify(&TLS13_SERVER_HS_TRAFFIC1 as u64,
+                                 &TLS13_SERVER_FINISHED_HASH1 as u64, &TLS13_SERVER_FINISHED1 as u64);
 }

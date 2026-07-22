@@ -428,6 +428,8 @@ def smoke(disk_img=None):
     record_ok_addr = _elf32_symbol(ELF, "m_g_tls13_record_ok")
     record_plaintext_addr = _elf32_symbol(ELF, "m_g_tls13_record_plaintext_test")
     record_content_type_addr = _elf32_symbol(ELF, "m_g_tls13_record_content_type")
+    finished_ok_addr = _elf32_symbol(ELF, "m_g_tls13_finished_ok")
+    finished_test_addr = _elf32_symbol(ELF, "m_g_tls13_finished_test")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -501,6 +503,10 @@ def smoke(disk_img=None):
               (_guest_u32(handle, record_ok_addr) & 0xff) != 0
               and (_guest_u32(handle, record_content_type_addr) & 0xff) == 22
               and _guest_bytes(handle, record_plaintext_addr, 5) == b"hello", handle)
+        check("Mort verifies the RFC 8448 TLS 1.3 server Finished value",
+              (_guest_u32(handle, finished_ok_addr) & 0xff) != 0
+              and _guest_bytes(handle, finished_test_addr, 32) == bytes.fromhex(
+                  "9b9b141d906337fbd2cbdce71df4deda4ab42c309572cb7fffee5454b78f0718"), handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",
