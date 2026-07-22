@@ -234,3 +234,13 @@ Wire the power menu's "Shut Down" to this for a proper power-off. It also expose
 
 **Note:** `net/acpi.mx` reads firmware tables from physical memory directly (no
 PCI, no other dependencies).
+
+## Wi-Fi — research only (`WIFI-RESEARCH.md`)
+
+Priority D is deliberately **not** a driver: QEMU emulates no Wi-Fi NIC, so a
+driver is only testable on real hardware, and it is a much larger undertaking
+(an 802.11 MAC software stack + supplicant) than a wired NIC. The research
+deliverable — chosen chipset (Atheros AR9002 / `ath9k`, firmware-free), PCI IDs,
+firmware findings, register interface, and the detected → driver-ready →
+connected state machine — is in **[WIFI-RESEARCH.md](WIFI-RESEARCH.md)**. No
+fake generic driver was written, per the brief.
