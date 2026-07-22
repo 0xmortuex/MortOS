@@ -16,16 +16,18 @@ fn hw_scan_pci() {
     g_hw_audio = false;
     g_hw_usb = false;
     for slot: u32 in 0..32 {
-        let id: u32 = pci_read32(0, slot as u8, 0, 0x00);
-        if id != 0xffffffff {
-            g_hw_pci_count = g_hw_pci_count + 1;
-            let classreg: u32 = pci_read32(0, slot as u8, 0, 0x08);
-            let base: u8 = ((classreg >> 24) & 0xff) as u8;
-            let sub: u8 = ((classreg >> 16) & 0xff) as u8;
-            if base == 0x02 && sub == 0x00 { g_hw_ethernet = true; }
-            if base == 0x0d || (base == 0x02 && sub == 0x80) { g_hw_wifi = true; }
-            if base == 0x04 && (sub == 0x01 || sub == 0x03) { g_hw_audio = true; }
-            if base == 0x0c && sub == 0x03 { g_hw_usb = true; }
+        for func: u32 in 0..8 {
+            let id: u32 = pci_read32(0, slot as u8, func as u8, 0x00);
+            if id != 0xffffffff {
+                g_hw_pci_count = g_hw_pci_count + 1;
+                let classreg: u32 = pci_read32(0, slot as u8, func as u8, 0x08);
+                let base: u8 = ((classreg >> 24) & 0xff) as u8;
+                let sub: u8 = ((classreg >> 16) & 0xff) as u8;
+                if base == 0x02 && sub == 0x00 { g_hw_ethernet = true; }
+                if base == 0x0d || (base == 0x02 && sub == 0x80) { g_hw_wifi = true; }
+                if base == 0x04 && (sub == 0x01 || sub == 0x03) { g_hw_audio = true; }
+                if base == 0x0c && sub == 0x03 { g_hw_usb = true; }
+            }
         }
     }
     g_hw_scanned = true;
