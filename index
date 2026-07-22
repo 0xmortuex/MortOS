@@ -1,4 +1,4 @@
-# mort-repo — the mpkg package index
+# mort-repo - the mpkg package index
 # One package per line, pipe-delimited:  name|version|file|size|description
 # Lines starting with # are comments. mpkg downloads packages/<file> and
 # installs it to /bin, executable, so it runs by name.
