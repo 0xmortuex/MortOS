@@ -412,6 +412,9 @@ def smoke(disk_img=None):
     aead_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_aead_ok")
     x25519_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_x25519_ok")
     key_schedule_ok_addr = _elf32_symbol(ELF, "m_g_tls13_key_schedule_ok")
+    hello_ok_addr = _elf32_symbol(ELF, "m_g_tls13_client_hello_ok")
+    hello_addr = _elf32_symbol(ELF, "m_g_tls13_client_hello_test")
+    hello_len_addr = _elf32_symbol(ELF, "m_g_tls13_client_hello_test_len")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -446,6 +449,19 @@ def smoke(disk_img=None):
               (_guest_u32(handle, x25519_ok_addr) & 0xff) != 0, handle)
         check("Mort TLS 1.3 key labels pass the RFC 8448 trace",
               (_guest_u32(handle, key_schedule_ok_addr) & 0xff) != 0, handle)
+        hello_len = _guest_u32(handle, hello_len_addr)
+        hello = _guest_bytes(handle, hello_addr, hello_len)
+        hello_structural = (
+            (_guest_u32(handle, hello_ok_addr) & 0xff) != 0
+            and int.from_bytes(hello[3:5], "big") == hello_len - 5
+            and int.from_bytes(hello[6:9], "big") == hello_len - 9
+            and hello[11:43] == bytes(range(32))
+            and hello[44:48] == b"\x00\x02\x13\x03"
+            and b"\x00\x00\x00\x10\x00\x0e\x00\x00\x0bexample.com" in hello
+            and b"\x00\x2b\x00\x03\x02\x03\x04" in hello
+            and b"\x00\x33\x00\x26\x00\x24\x00\x1d\x00\x20" in hello)
+        check("Mort builds a structurally valid TLS 1.3 ClientHello",
+              hello_structural, handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",

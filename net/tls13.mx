@@ -15,6 +15,57 @@ let TLS13_DERIVED_OUTPUT1: [u8; 32] = [
 ];
 
 let g_tls13_key_schedule_ok: bool = false;
+let g_tls13_client_hello_ok: bool = false;
+let g_tls13_client_hello_test: [u8; 512] = [0; 512];
+let g_tls13_client_hello_test_len: u32 = 0;
+
+fn tls13_write_u16(output: u64, position: u32, value: u32) {
+    *((output + (position as u64)) as *u8) = (value >> 8) as u8;
+    *((output + ((position + 1) as u64)) as *u8) = value as u8;
+}
+
+fn tls13_write_u24(output: u64, position: u32, value: u32) {
+    *((output + (position as u64)) as *u8) = (value >> 16) as u8;
+    *((output + ((position + 1) as u64)) as *u8) = (value >> 8) as u8;
+    *((output + ((position + 2) as u64)) as *u8) = value as u8;
+}
+
+fn tls13_build_client_hello(host: u64, host_length: u32, random: u64,
+                            public_key: u64, output: u64, capacity: u32) -> u32 {
+    if host_length == 0 || host_length > 200 || capacity < host_length + 128 { return 0; }
+    for i: u32 in 0..capacity { *((output + (i as u64)) as *u8) = 0; }
+    let pos: u32 = 0;
+    *((output + (pos as u64)) as *u8) = 22; pos = pos + 1; // handshake record
+    *((output + (pos as u64)) as *u8) = 3; *((output + ((pos + 1) as u64)) as *u8) = 1; pos = pos + 4;
+    *((output + (pos as u64)) as *u8) = 1; pos = pos + 4; // ClientHello + u24 length
+    *((output + (pos as u64)) as *u8) = 3; *((output + ((pos + 1) as u64)) as *u8) = 3; pos = pos + 2;
+    for i: u32 in 0..32 { *((output + ((pos + i) as u64)) as *u8) = *((random + (i as u64)) as *u8); }
+    pos = pos + 32; *((output + (pos as u64)) as *u8) = 0; pos = pos + 1; // no legacy session ID
+    tls13_write_u16(output, pos, 2); pos = pos + 2; tls13_write_u16(output, pos, 0x1303); pos = pos + 2;
+    *((output + (pos as u64)) as *u8) = 1; *((output + ((pos + 1) as u64)) as *u8) = 0; pos = pos + 2;
+    let extensions_length_pos: u32 = pos; pos = pos + 2; let extensions_start: u32 = pos;
+
+    tls13_write_u16(output, pos, 0x0000); tls13_write_u16(output, pos + 2, 5 + host_length); pos = pos + 4;
+    tls13_write_u16(output, pos, 3 + host_length); pos = pos + 2; *((output + (pos as u64)) as *u8) = 0; pos = pos + 1;
+    tls13_write_u16(output, pos, host_length); pos = pos + 2;
+    for i: u32 in 0..host_length { *((output + ((pos + i) as u64)) as *u8) = *((host + (i as u64)) as *u8); }
+    pos = pos + host_length;
+
+    tls13_write_u16(output, pos, 0x002b); tls13_write_u16(output, pos + 2, 3); pos = pos + 4;
+    *((output + (pos as u64)) as *u8) = 2; tls13_write_u16(output, pos + 1, 0x0304); pos = pos + 3;
+    tls13_write_u16(output, pos, 0x000a); tls13_write_u16(output, pos + 2, 4); pos = pos + 4;
+    tls13_write_u16(output, pos, 2); tls13_write_u16(output, pos + 2, 0x001d); pos = pos + 4;
+    tls13_write_u16(output, pos, 0x000d); tls13_write_u16(output, pos + 2, 8); pos = pos + 4;
+    tls13_write_u16(output, pos, 6); tls13_write_u16(output, pos + 2, 0x0403);
+    tls13_write_u16(output, pos + 4, 0x0804); tls13_write_u16(output, pos + 6, 0x0807); pos = pos + 8;
+    tls13_write_u16(output, pos, 0x0033); tls13_write_u16(output, pos + 2, 38); pos = pos + 4;
+    tls13_write_u16(output, pos, 36); tls13_write_u16(output, pos + 2, 0x001d); tls13_write_u16(output, pos + 4, 32); pos = pos + 6;
+    for i: u32 in 0..32 { *((output + ((pos + i) as u64)) as *u8) = *((public_key + (i as u64)) as *u8); }
+    pos = pos + 32;
+
+    tls13_write_u16(output, extensions_length_pos, pos - extensions_start);
+    tls13_write_u24(output, 6, pos - 9); tls13_write_u16(output, 3, pos - 5); return pos;
+}
 
 fn tls13_expand_label(secret: u64, label: u64, label_length: u32,
                       context: u64, context_length: u32,
@@ -41,4 +92,11 @@ fn tls13_self_test() {
     let derived: [u8; 32] = [0; 32];
     let ok: bool = tls13_derive_secret(&TLS13_DERIVED_PRK1 as u64, "derived" as u64, 7, "" as u64, 0, &derived as u64);
     g_tls13_key_schedule_ok = ok && tls_bytes_equal(&derived as u64, &TLS13_DERIVED_OUTPUT1 as u64, 32);
+    let random: [u8; 32] = [0; 32]; for i: u32 in 0..32 { random[i] = i as u8; }
+    g_tls13_client_hello_test_len = tls13_build_client_hello(
+        "example.com" as u64, 11, &random as u64, &TLS_X25519_ALICE_PUBLIC as u64,
+        &g_tls13_client_hello_test as u64, 512);
+    g_tls13_client_hello_ok = g_tls13_client_hello_test_len > 128
+        && g_tls13_client_hello_test[0] == 22 && g_tls13_client_hello_test[5] == 1
+        && g_tls13_client_hello_test[46] == 0x13 && g_tls13_client_hello_test[47] == 0x03;
 }

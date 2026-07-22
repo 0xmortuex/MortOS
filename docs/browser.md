@@ -84,7 +84,11 @@ combined AEAD construction are present and must pass published standard vectors
 during every boot. X25519 is checked both against the one-iteration function
 vector and Alice/Bob public/shared-secret vectors. TLS 1.3's encoded HKDF labels
 and `Derive-Secret` operation are checked against an RFC 8448 handshake trace.
-This does **not** enable HTTPS by itself: the handshake/record state machine,
+A native ClientHello builder now emits SNI, TLS 1.3 supported versions,
+Curve25519 groups/key share, signature algorithms, and the
+TLS_CHACHA20_POLY1305_SHA256 cipher suite; the guest-memory regression parses
+its record and handshake lengths plus each required extension. This does
+**not** enable HTTPS by itself: ServerHello/record processing, authentication,
 X.509 parsing, trust anchors, hostname checks, and time validation must also be
 complete.
 

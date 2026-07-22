@@ -461,8 +461,11 @@ fn browser_draw_about() {
     draw_text_abs(settings_yes_no(g_tls_crypto_chacha_ok), 512, 502, 0x4fd1c5, 0x0b0f14);
     draw_text_abs("AEAD / X25519 / TLS key schedule", 208, 530, 0x8fa1aa, 0x0b0f14);
     let aead_ok: bool = g_tls_crypto_poly1305_ok && g_tls_crypto_aead_ok
-        && g_tls_crypto_x25519_ok && g_tls13_key_schedule_ok;
+        && g_tls_crypto_x25519_ok && g_tls13_key_schedule_ok && g_tls13_client_hello_ok
+        && g_tls13_client_hello_test[0] == 22;
     draw_text_abs(settings_yes_no(aead_ok), 512, 530, 0x4fd1c5, 0x0b0f14);
+    num_to_str(g_tls13_client_hello_test_len, g_numbuf); draw_text_abs(g_numbuf, 568, 530, 0x8fa1aa, 0x0b0f14);
+    draw_text_abs("CH bytes", 600, 530, 0x8fa1aa, 0x0b0f14);
 }
 
 fn browser_draw_list(base: u32, count: u32, empty: *u8) {
