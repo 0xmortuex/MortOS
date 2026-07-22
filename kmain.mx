@@ -10,6 +10,7 @@
 let g_row: u32 = 2;
 let g_col: u32 = 2;
 let g_len: u32 = 0;
+let g_prompt_len: u32 = 2;                                     // width of the drawn prompt (input starts here)
 let g_shift: bool = false;
 let g_buf: *u8 = "                                                                                ";   // 80-byte scratch (76 chars + NUL + slack), MAXLINE = 76
 let g_ticks: u32 = 0;                                          // PIT ticks (100/s)
@@ -693,9 +694,26 @@ fn starts_with(s: *u8, prefix: *u8) -> bool {
     return false;
 }
 
+// Draw the shell prompt: the current directory (home shown as "~") then "$ ".
+// Records its width in g_prompt_len so the input line starts in the right place.
 fn draw_prompt(row: u32) {
-    put_cell_at(row, 0, 62, 10);   // '>'
-    put_cell_at(row, 1, 32, 7);
+    let disp: [u8; 64] = [0; 64];
+    let home: [u8; 40] = [0; 40];
+    str_copy((&home as u64) as *u8, "/home/");
+    str_copy(((&home as u64) + 6) as *u8, (&g_username as u64) as *u8);
+    if starts_with((&g_cwdpath as u64) as *u8, (&home as u64) as *u8) {
+        let hl: u32 = str_len((&home as u64) as *u8);
+        *((&disp as u64) as *u8) = 126;                        // '~'
+        str_copy(((&disp as u64) + 1) as *u8, ((&g_cwdpath as u64) + (hl as u64)) as *u8);
+    } else {
+        str_copy((&disp as u64) as *u8, (&g_cwdpath as u64) as *u8);
+    }
+    let pl: u32 = str_len((&disp as u64) as *u8);
+    print_at((&disp as u64) as *u8, row, 0, 11);              // path in cyan
+    put_cell_at(row, pl, 32, 7);
+    put_cell_at(row, pl + 1, 36, 10);                         // '$' in green
+    put_cell_at(row, pl + 2, 32, 7);
+    g_prompt_len = pl + 3;
 }
 
 // ----- command history (ring of 8 x 40-byte slots) -----
@@ -736,21 +754,21 @@ fn hist_store(cmd: *u8) {
 fn set_input(s: *u8) {
     let i: u32 = 0;
     while i < g_len {                          // erase what's typed now
-        put_cell_at(g_row, 2 + i, 32, 7);
+        put_cell_at(g_row, g_prompt_len + i, 32, 7);
         i = i + 1;
     }
     str_copy(g_buf, s);
     g_len = str_len(g_buf);
-    if g_len > 76 {                            // MAXLINE = 76 (one VGA row of input)
+    if g_len > 76 {                            // MAXLINE = 76
         g_len = 76;
         *((g_buf as u32 + 76) as *u8) = 0;
     }
     let j: u32 = 0;
     while j < g_len {
-        put_cell_at(g_row, 2 + j, *((g_buf as u32 + j) as *u8), 15);
+        put_cell_at(g_row, g_prompt_len + j, *((g_buf as u32 + j) as *u8), 15);
         j = j + 1;
     }
-    g_col = 2 + g_len;
+    g_col = g_prompt_len + g_len;
     move_cursor(g_row, g_col);
 }
 
@@ -836,7 +854,7 @@ fn run_range_lines(start: u32, end: u32) {
                 *((g_buf as u32 + len) as *u8) = 0;
                 feed();
                 draw_prompt(g_row);
-                print_at(g_buf, g_row, 2, 15);   // echo the command
+                print_at(g_buf, g_row, g_prompt_len, 15);   // echo the command
                 run_command(g_buf);
             }
             len = 0;
@@ -2538,10 +2556,10 @@ fn terminal_activate() {
     g_row = 0;
     print_string("MORT OS terminal -- type 'help', Enter", 0, 10);
     g_row = 2;
-    g_col = 2;
     g_len = 0;
     g_pcol = 0;
     draw_prompt(g_row);
+    g_col = g_prompt_len;
     move_cursor(g_row, g_col);
 }
 
@@ -3267,9 +3285,9 @@ fn on_key() {
         if !cleared {                // move to a fresh prompt line (scrolls)
             feed();
         }
-        g_col = 2;
         g_len = 0;
         draw_prompt(g_row);
+        g_col = g_prompt_len;
         move_cursor(g_row, g_col);
         return;
     }
@@ -3317,11 +3335,12 @@ fn kmain(mbinfo: u32) {
     run_script(1);                   // run the startup script loaded from disk
 
     feed();
-    g_col = 2;
     g_len = 0;
     draw_prompt(g_row);
+    g_col = g_prompt_len;
     move_cursor(g_row, g_col);
 
+    usb_boot_init();                 // own UHCI and enumerate connected root ports before IRQs
     init_pit();                      // start the ~100 Hz timer (IRQ0)
     if g_gfx {
         open_launcher();             // greet with the home screen (graphics desktop)
