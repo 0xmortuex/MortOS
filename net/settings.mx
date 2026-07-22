@@ -284,13 +284,14 @@ fn settings_hardware() {
     settings_text("USB host / devices", 438, 430, false); settings_text(settings_yes_no(g_usb_ok), 610, 430, true);
     num_to_str(g_usb_devices, g_numbuf); draw_text_abs(g_numbuf, 770, 430, 0xffffff, 0x0b0f14);
     settings_text("USB descriptor", 438, 454, false); settings_text(settings_yes_no(g_usb_addressed), 650, 454, true);
-    settings_text("USB VID / PID", 438, 478, false); num_to_str(g_usb_vid as u32, g_numbuf);
-    draw_text_abs(g_numbuf, 650, 478, 0xffffff, 0x0b0f14); draw_text_abs(" / ", 690, 478, 0x8fa1aa, 0x0b0f14);
-    num_to_str(g_usb_pid as u32, g_numbuf); draw_text_abs(g_numbuf, 714, 478, 0xffffff, 0x0b0f14);
-    settings_text("USB interface class", 438, 502, false); num_to_str(g_usb_interface_class as u32, g_numbuf);
-    draw_text_abs(g_numbuf, 650, 502, 0xffffff, 0x0b0f14);
-    settings_text("Audio controller", 438, 526, false); settings_text(settings_yes_no(g_hw_audio), 650, 526, true);
-    settings_text("Enter for device controls and a live rescan.", 438, 550, false);
+    settings_text("USB configured", 438, 478, false); settings_text(settings_yes_no(g_usb_configured), 650, 478, true);
+    settings_text("USB VID / PID", 438, 502, false); num_to_str(g_usb_vid as u32, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 502, 0xffffff, 0x0b0f14); draw_text_abs(" / ", 690, 502, 0x8fa1aa, 0x0b0f14);
+    num_to_str(g_usb_pid as u32, g_numbuf); draw_text_abs(g_numbuf, 714, 502, 0xffffff, 0x0b0f14);
+    settings_text("USB class / protocol", 438, 526, false); num_to_str(g_usb_interface_class as u32, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 526, 0xffffff, 0x0b0f14); draw_text_abs(" / ", 690, 526, 0x8fa1aa, 0x0b0f14);
+    num_to_str(g_usb_interface_protocol as u32, g_numbuf); draw_text_abs(g_numbuf, 714, 526, 0xffffff, 0x0b0f14);
+    settings_text("Audio controller", 438, 550, false); settings_text(settings_yes_no(g_hw_audio), 650, 550, true);
 }
 
 fn settings_update() {

@@ -2612,6 +2612,13 @@ fn init_pit() {
 // Timer interrupt handler (IRQ0) — called ~100x/second from timer_isr.
 fn on_tick() {
     g_ticks = g_ticks + 1;
+    let usb_sc: u8 = usb_hid_poll_scancode();
+    if usb_sc != 0 {
+        if g_usb_hid_extended { on_scancode(224); }
+        g_shift = g_usb_hid_shift;
+        on_scancode(usb_sc);
+        g_shift = false;
+    }
     if g_gfx {
         if (g_ticks % 100) == 0 {        // once a second: refresh the top-bar clock
             draw_clock();
@@ -3488,9 +3495,7 @@ fn overlay_on_key(sc: u8) {
     }
 }
 
-fn on_key() {
-    let sc: u8 = inb(0x60);
-
+fn on_scancode(sc: u8) {
     if g_overlay != 0 {              // an overlay owns the keyboard while it's up
         overlay_on_key(sc);
         return;
@@ -3584,6 +3589,10 @@ fn on_key() {
             move_cursor(g_row, g_col);
         }
     }
+}
+
+fn on_key() {
+    on_scancode(inb(0x60));
 }
 
 fn kmain(mbinfo: u32) {
