@@ -46,6 +46,11 @@ let g_lockbuf: [u8; 24] = [0; 24];                             // lock-screen pa
 let g_boxsave: [u8; 208000] = [0; 208000];                    // 260x200 RGBA backing store for the power flyout
 let g_box_x: u32 = 0;                                          // power flyout top-left
 let g_box_y: u32 = 0;
+// ----- kernel heap (dynamic memory) -----
+let g_heap_ok: bool = false;                                  // heap_init found usable RAM
+let g_heap_base: u32 = 0;                                     // first heap byte
+let g_heap_end: u32 = 0;                                      // one past the last heap byte
+let g_heap_brk: u32 = 0;                                      // high-water mark (bump pointer)
 let g_history: *u8 = "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ";                              // 8 slots x 80 bytes (command history ring)
 
 // ----- 8x16 bitmap font (Consolas-rasterized; MSB-left, row-major, 16 rows) -----
@@ -921,12 +926,170 @@ fn mods() {
     }
 }
 
+// Exercise the heap: allocate, verify writes survive, free, confirm reuse and
+// coalescing. Prints a line per check plus a final PASS/FAIL — the smoke test
+// for kmalloc/kfree.
+fn memtest() {
+    feed();
+    if !g_heap_ok {
+        print_string("heap: unavailable", g_row, 12);
+        return;
+    }
+    let pass: bool = true;
+
+    // 1. Two allocations are distinct and writable.
+    let a: u32 = kmalloc(100);
+    let b: u32 = kmalloc(200);
+    if a == 0 || b == 0 || a == b {
+        pass = false;
+    }
+    *(a as *u32) = 0xCAFE1234;
+    *(b as *u32) = 0x00C0FFEE;
+    if *(a as *u32) != 0xCAFE1234 || *(b as *u32) != 0x00C0FFEE {
+        pass = false;
+    }
+
+    // 2. Freeing `a` and allocating a smaller block reuses that space.
+    kfree(a);
+    let c: u32 = kmalloc(50);
+    if c != a {                                  // first-fit should hand back a's slot
+        pass = false;
+    }
+
+    // 3. b's data is untouched by all of that.
+    if *(b as *u32) != 0x00C0FFEE {
+        pass = false;
+    }
+
+    kfree(b);
+    kfree(c);
+
+    feed();
+    print_string("heap base ", g_row, 7);
+    num_to_str(g_heap_base / 1048576, g_numbuf);
+    print_at(g_numbuf, g_row, 10, 15);
+    print_at("MB, size ", g_row, 10 + g_numlen, 7);
+    num_to_str((g_heap_end - g_heap_base) / 1048576, g_numbuf);
+    print_at(g_numbuf, g_row, 19 + g_numlen, 15);
+    print_at("MB", g_row, 19 + g_numlen + g_numlen, 7);
+
+    feed();
+    if pass {
+        print_string("memtest: PASS (alloc, write, free, reuse, coalesce)", g_row, 10);
+    } else {
+        print_string("memtest: FAIL", g_row, 12);
+    }
+}
+
 // Reboot by pulsing the CPU reset line through the 8042 keyboard controller.
 fn reboot() {
     outb(0x64, 0xFE);
     while true {
         asm("hlt");
     }
+}
+
+// ----- kernel heap: a first-fit allocator with block headers -----
+//
+// MORT OS has no dynamic memory yet — everything is fixed buffers. This is the
+// foundation the shell, the package manager, and the rest need. We carve a heap
+// out of the RAM above the kernel/program area: base at 16 MB, top from the
+// multiboot memory map (mem_upper). Each block is prefixed with an 8-byte header
+// [size(u32) | used(u32)]; kmalloc first-fits over the blocks (splitting a large
+// free one) and bumps the break when nothing fits; kfree marks a block free and
+// coalesces it forward into any following free blocks.
+
+fn heap_init() {
+    let flags: u32 = *(g_mbinfo as *u32);
+    let base: u32 = 0x01000000;                     // 16 MB — above the program load area
+    let top: u32 = 0x04000000;                      // fallback: assume 64 MB
+    if (flags & 1) != 0 {                           // bit 0: mem_lower/upper present
+        let mem_upper: u32 = *((g_mbinfo + 8) as *u32);   // KiB above 1 MB
+        if mem_upper < 0x00300000 {                 // guard against overflow (~3 GB cap)
+            top = 0x00100000 + mem_upper * 1024;
+        } else {
+            top = 0x20000000;                       // clamp to 512 MB
+        }
+    }
+    if top > base + 0x00100000 {                    // need at least 1 MB of heap
+        g_heap_base = base;
+        g_heap_end = top;
+        g_heap_brk = base;
+        g_heap_ok = true;
+    }
+}
+
+// Allocate `size` bytes, 8-byte aligned. Returns the address, or 0 on failure.
+fn kmalloc(size: u32) -> u32 {
+    if !g_heap_ok {
+        return 0;
+    }
+    let need: u32 = (size + 8 + 7) & 0xFFFFFFF8;     // header + payload, rounded to 8
+
+    // First fit over already-allocated blocks (reuse freed space).
+    let p: u32 = g_heap_base;
+    while p < g_heap_brk {
+        let bsize: u32 = *(p as *u32);
+        let used: u32 = *((p + 4) as *u32);
+        if used == 0 && bsize >= need {
+            if bsize >= need + 16 {                  // split off the remainder
+                let rem: u32 = p + need;
+                *(rem as *u32) = bsize - need;
+                *((rem + 4) as *u32) = 0;
+                *(p as *u32) = need;
+            }
+            *((p + 4) as *u32) = 1;
+            return p + 8;
+        }
+        p = p + bsize;
+    }
+
+    // Nothing fit — grow the heap.
+    if g_heap_brk + need > g_heap_end {
+        return 0;                                    // out of memory
+    }
+    let blk: u32 = g_heap_brk;
+    *(blk as *u32) = need;
+    *((blk + 4) as *u32) = 1;
+    g_heap_brk = g_heap_brk + need;
+    return blk + 8;
+}
+
+// Free a block from kmalloc, coalescing forward into adjacent free blocks.
+fn kfree(ptr: u32) {
+    if ptr == 0 {
+        return;
+    }
+    let blk: u32 = ptr - 8;
+    *((blk + 4) as *u32) = 0;
+    let done: bool = false;
+    while !done {
+        let bsize: u32 = *(blk as *u32);
+        let next: u32 = blk + bsize;
+        if next < g_heap_brk {
+            if *((next + 4) as *u32) == 0 {          // next block is free — absorb it
+                *(blk as *u32) = bsize + *(next as *u32);
+            } else {
+                done = true;
+            }
+        } else {
+            done = true;
+        }
+    }
+}
+
+// Bytes currently handed out (sum of used block payloads), for `mem`.
+fn heap_used() -> u32 {
+    let total: u32 = 0;
+    let p: u32 = g_heap_base;
+    while p < g_heap_brk {
+        let bsize: u32 = *(p as *u32);
+        if *((p + 4) as *u32) == 1 {
+            total = total + bsize;
+        }
+        p = p + bsize;
+    }
+    return total;
 }
 
 // ----- ATA PIO disk driver (primary bus, master drive, LBA28, polling) -----
@@ -1554,6 +1717,10 @@ fn run_command(cmd: *u8) -> bool {
     }
     if streq(cmd, "power") {
         open_power_menu();
+        return false;
+    }
+    if streq(cmd, "memtest") {
+        memtest();
         return false;
     }
     if streq(cmd, "lock") {
@@ -2256,6 +2423,7 @@ fn on_key() {
 
 fn kmain(mbinfo: u32) {
     g_mbinfo = mbinfo;               // saved by boot.s; lets us find the modules
+    heap_init();                     // carve a dynamic-memory heap out of high RAM
     fb_init();                       // detect a linear framebuffer (ISO/Limine path)
     if g_gfx {
         draw_desktop();              // wallpaper + top bar + terminal window frame
