@@ -1306,19 +1306,139 @@ fn fs_sync() -> bool {
     return true;
 }
 
-// Index of the used entry named `name`, else 64 (the "no entry" sentinel).
-fn fs_find(name: *u8) -> u32 {
+// Index of the used entry named `name` directly inside directory `parent`
+// (255 = root), else 64.
+fn fs_find_in(name: *u8, parent: u32) -> u32 {
     let i: u32 = 0;
     while i < 64 {
         let base: u32 = fs_entry_addr(i);
         if *((base + 24) as *u32) == 1 {           // used
-            if streq(name, base as *u8) {
-                return i;
+            if (fs_parent(i) as u32) == parent {
+                if streq(name, base as *u8) {
+                    return i;
+                }
             }
         }
         i = i + 1;
     }
     return 64;
+}
+
+// Resolve an absolute ("/a/b") or root-relative ("a") path to an entry index.
+// Returns 0..63 for an entry, 255 for the root directory itself, or 64 if any
+// component is missing. Walks the parent tree component by component.
+fn fs_resolve(path: u64) -> u32 {
+    let p: u32 = path as u32;
+    if *(p as *u8) == 47 {                          // leading '/'
+        p = p + 1;
+    }
+    if *(p as *u8) == 0 {                           // "" or "/" -> the root directory
+        return 255;
+    }
+    let cur: u32 = 255;                             // walk from root
+    let result: u32 = 64;
+    let done: bool = false;
+    while !done {
+        let comp: [u8; 24] = [0; 24];               // this path component
+        let clen: u32 = 0;
+        while *(p as *u8) != 0 && *(p as *u8) != 47 {
+            if clen < 23 {
+                *(((&comp as u64) + (clen as u64)) as *u8) = *(p as *u8);
+                clen = clen + 1;
+            }
+            p = p + 1;
+        }
+        *(((&comp as u64) + (clen as u64)) as *u8) = 0;
+        let idx: u32 = fs_find_in((&comp as u64) as *u8, cur);
+        if idx == 64 {
+            done = true;                            // component not found
+        } else {
+            if *(p as *u8) == 47 {
+                p = p + 1;                          // consume the separator
+            }
+            if *(p as *u8) == 0 {
+                result = idx;                       // that was the last component
+                done = true;
+            } else {
+                if fs_type(idx) != 1 {              // more path, but this isn't a dir
+                    done = true;
+                } else {
+                    cur = idx;
+                }
+            }
+        }
+    }
+    return result;
+}
+
+// Split `path` into its parent directory (returned: 255 root, 0..63 a dir, or 64
+// if that directory doesn't exist) and its final component (written to `leaf`).
+fn fs_parent_of(path: u64, leaf: u64) -> u32 {
+    let p: u32 = path as u32;
+    let last_slash: u32 = 0xFFFFFFFF;               // none seen yet
+    let i: u32 = 0;
+    while *((p + i) as *u8) != 0 {
+        if *((p + i) as *u8) == 47 {
+            last_slash = i;
+        }
+        i = i + 1;
+    }
+    let total: u32 = i;
+    if last_slash == 0xFFFFFFFF {                   // bare name: parent is root
+        str_copy(leaf as *u8, path as *u8);
+        return 255;
+    }
+    let ls: u32 = last_slash + 1;                   // copy the leaf out
+    let j: u32 = 0;
+    while ls + j < total {
+        *((leaf + (j as u64)) as *u8) = *((p + ls + j) as *u8);
+        j = j + 1;
+    }
+    *((leaf + (j as u64)) as *u8) = 0;
+    if last_slash == 0 {                            // "/leaf" -> root parent
+        return 255;
+    }
+    let ppath: [u8; 64] = [0; 64];                  // resolve the parent path
+    let k: u32 = 0;
+    while k < last_slash {
+        *(((&ppath as u64) + (k as u64)) as *u8) = *((p + k) as *u8);
+        k = k + 1;
+    }
+    *(((&ppath as u64) + (last_slash as u64)) as *u8) = 0;
+    let pidx: u32 = fs_resolve(&ppath as u64);
+    if pidx == 64 {
+        return 64;
+    }
+    if pidx != 255 {
+        if fs_type(pidx) != 1 {                     // parent isn't a directory
+            return 64;
+        }
+    }
+    return pidx;
+}
+
+// Backward-compatible name lookup: resolve a bare name or a path to a file/dir
+// index, or 64. (The root directory itself is not a findable "file".)
+fn fs_find(name: *u8) -> u32 {
+    let r: u32 = fs_resolve(name as u64);
+    if r == 255 {
+        return 64;
+    }
+    return r;
+}
+
+// True if directory `dir` (index, or 255 for root) contains no entries.
+fn fs_dir_empty(dir: u32) -> bool {
+    let k: u32 = 0;
+    while k < 64 {
+        if *((fs_entry_addr(k) + 24) as *u32) == 1 {
+            if (fs_parent(k) as u32) == dir {
+                return false;
+            }
+        }
+        k = k + 1;
+    }
+    return true;
 }
 
 // Index of the first free table slot, else 64.
@@ -1335,7 +1455,10 @@ fn fs_free_slot() -> u32 {
 
 // Claim a slot and a fresh 128-sector extent for `name`. Prints its own
 // error (color 12) and returns 64 on failure.
-fn fs_create(name: *u8) -> u32 {
+// Create an entry `name` inside directory `parent` (255 = root). typ 0 = file
+// (gets a 128-sector data extent), typ 1 = directory (no extent). Prints its own
+// error (color 12) and returns 64 on failure.
+fn fs_create_full(name: *u8, parent: u32, typ: u8) -> u32 {
     let n: u32 = str_len(name);
     if n == 0 || n > 23 {
         feed();
@@ -1345,14 +1468,7 @@ fn fs_create(name: *u8) -> u32 {
     let slot: u32 = fs_free_slot();
     if slot == 64 {
         feed();
-        print_string("file table full (max 64 files)", g_row, 12);
-        return 64;
-    }
-    let next: u32 = *((0x00801000 + 12) as *u32);      // next_free_sector
-    let total: u32 = *((0x00801000 + 16) as *u32);     // total_sectors
-    if next + 128 > total {
-        feed();
-        print_string("disk full (rm does not reclaim; re-run mkfs)", g_row, 12);
+        print_string("file table full (max 64 entries)", g_row, 12);
         return 64;
     }
     let base: u32 = fs_entry_addr(slot);
@@ -1364,15 +1480,67 @@ fn fs_create(name: *u8) -> u32 {
     str_copy(base as *u8, name);
     *((base + 24) as *u32) = 1;                        // used
     *((base + 28) as *u32) = 0;                        // size_bytes
-    *((base + 32) as *u32) = next;                     // start_sector
-    *((base + 36) as *u32) = 128;                      // capacity_sectors
-    fs_set_meta(base, 0, 255, g_uid, 0x1A4);           // file, root, owner, 0644
-    *((0x00801000 + 12) as *u32) = next + 128;         // bump the allocator
-    *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) + 1;   // file_count++
+    let mode: u32 = 0x1A4;                             // 0644 for files
+    if typ == 1 {
+        *((base + 32) as *u32) = 0;                    // directories hold no data
+        *((base + 36) as *u32) = 0;
+        mode = 0x1ED;                                  // 0755 for directories
+    } else {
+        let next: u32 = *((0x00801000 + 12) as *u32);  // next_free_sector
+        let total: u32 = *((0x00801000 + 16) as *u32); // total_sectors
+        if next + 128 > total {
+            *((base + 24) as *u32) = 0;                // release the slot we took
+            feed();
+            print_string("disk full (rm does not reclaim; re-run mkfs)", g_row, 12);
+            return 64;
+        }
+        *((base + 32) as *u32) = next;                 // start_sector
+        *((base + 36) as *u32) = 128;                  // capacity_sectors
+        *((0x00801000 + 12) as *u32) = next + 128;     // bump the extent allocator
+    }
+    fs_set_meta(base, typ, parent as u8, g_uid, mode);
+    *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) + 1;   // count++
     if !fs_sync() {
         return 64;
     }
     return slot;
+}
+
+// A file at the root (the pre-directories default; used by `write`'s fast path).
+fn fs_create(name: *u8) -> u32 {
+    return fs_create_full(name, 255, 0);
+}
+
+// mkdir: create the directory named by `path`. Returns the new index, or a
+// sentinel: 64 = a parent directory is missing, 65 = it already exists.
+fn fs_mkdir(path: u64) -> u32 {
+    let leaf: [u8; 24] = [0; 24];
+    let parent: u32 = fs_parent_of(path, &leaf as u64);
+    if parent == 64 {
+        return 64;
+    }
+    if fs_find_in((&leaf as u64) as *u8, parent) != 64 {
+        return 65;
+    }
+    return fs_create_full((&leaf as u64) as *u8, parent, 1);
+}
+
+// Ensure a top-level directory exists (used to seed the standard layout).
+fn fs_ensure_dir(name: *u8) {
+    if fs_find_in(name, 255) == 64 {
+        fs_create_full(name, 255, 1);
+    }
+}
+
+// Create the standard filesystem layout on first boot: /bin /etc /home /var.
+fn fs_ensure_layout() {
+    if !g_fs_ok {
+        return;
+    }
+    fs_ensure_dir("bin");
+    fs_ensure_dir("etc");
+    fs_ensure_dir("home");
+    fs_ensure_dir("var");
 }
 
 // Read entry i's live sectors into FILEBUF; returns size_bytes (0 on error
@@ -1647,7 +1815,7 @@ fn run_command(cmd: *u8) -> bool {
         feed();
         print_string("help clear about echo uptime crash readme mem", g_row, 7);
         feed();
-        print_string("files: ls cat write rm run exec mods", g_row, 7);
+        print_string("files: ls [dir] cat write rm mkdir rmdir run exec mods", g_row, 7);
         feed();
         print_string("net: net (DHCP)  httpd (serve a page on :80)", g_row, 7);
         feed();
@@ -1674,36 +1842,92 @@ fn run_command(cmd: *u8) -> bool {
         net_httpd();
         return false;
     }
-    if streq(cmd, "ls") {
+    if streq(cmd, "ls") || starts_with(cmd, "ls ") {
         if !fs_guard() { return false; }
+        let dir: u32 = 255;                             // default: the root directory
+        if starts_with(cmd, "ls ") {
+            let r: u32 = fs_resolve((cmd as u32 + 3) as u64);
+            if r == 64 {
+                feed();
+                print_at("not found: ", g_row, 0, 12);
+                print_at((cmd as u32 + 3) as *u8, g_row, 11, 12);
+                return false;
+            }
+            if r != 255 {
+                if fs_type(r) != 1 {
+                    feed();
+                    print_string("not a directory", g_row, 12);
+                    return false;
+                }
+            }
+            dir = r;
+        }
         let shown: u32 = 0;
         let i: u32 = 0;
         while i < 64 {
             let base: u32 = fs_entry_addr(i);
-            if *((base + 24) as *u32) == 1 {           // used
-                feed();
-                // type marker + octal permission bits, e.g. "d 755" / "- 644"
-                let mode: u32 = fs_mode(i);
-                let tc: u8 = 45;                        // '-'
-                if fs_type(i) == 1 { tc = 100; }        // 'd'
-                put_cell_at(g_row, 0, tc, 10);
-                put_cell_at(g_row, 2, (48 + ((mode >> 6) & 7)) as u8, 7);
-                put_cell_at(g_row, 3, (48 + ((mode >> 3) & 7)) as u8, 7);
-                put_cell_at(g_row, 4, (48 + (mode & 7)) as u8, 7);
-                print_at(base as *u8, g_row, 7, 15);    // name
-                num_to_str(*((base + 28) as *u32), g_numbuf);
-                print_at(g_numbuf, g_row, 34, 7);
-                print_at(" bytes  uid ", g_row, 34 + g_numlen, 7);
-                num_to_str(fs_uid(i) as u32, g_numbuf);
-                print_at(g_numbuf, g_row, 46 + g_numlen, 7);
-                shown = shown + 1;
+            if *((base + 24) as *u32) == 1 {            // used
+                if (fs_parent(i) as u32) == dir {       // ...and lives in this dir
+                    feed();
+                    // type marker + octal permission bits, e.g. "d 755" / "- 644"
+                    let mode: u32 = fs_mode(i);
+                    let tc: u8 = 45;                     // '-'
+                    if fs_type(i) == 1 { tc = 100; }    // 'd'
+                    put_cell_at(g_row, 0, tc, 10);
+                    put_cell_at(g_row, 2, (48 + ((mode >> 6) & 7)) as u8, 7);
+                    put_cell_at(g_row, 3, (48 + ((mode >> 3) & 7)) as u8, 7);
+                    put_cell_at(g_row, 4, (48 + (mode & 7)) as u8, 7);
+                    print_at(base as *u8, g_row, 7, 15);   // name
+                    num_to_str(*((base + 28) as *u32), g_numbuf);
+                    print_at(g_numbuf, g_row, 34, 7);
+                    print_at(" bytes  uid ", g_row, 34 + g_numlen, 7);
+                    num_to_str(fs_uid(i) as u32, g_numbuf);
+                    print_at(g_numbuf, g_row, 47 + g_numlen, 7);
+                    shown = shown + 1;
+                }
             }
             i = i + 1;
         }
         if shown == 0 {
             feed();
-            print_string("(no files)", g_row, 7);
+            print_string("(empty)", g_row, 7);
         }
+        return false;
+    }
+    if starts_with(cmd, "mkdir ") {
+        if !fs_guard() { return false; }
+        let r: u32 = fs_mkdir((cmd as u32 + 6) as u64);
+        if r == 64 {
+            feed();
+            print_string("mkdir: parent directory does not exist", g_row, 12);
+        }
+        if r == 65 {
+            feed();
+            print_string("mkdir: already exists", g_row, 12);
+        }
+        return false;
+    }
+    if starts_with(cmd, "rmdir ") {
+        if !fs_guard() { return false; }
+        let r: u32 = fs_resolve((cmd as u32 + 6) as u64);
+        if r == 64 || r == 255 {
+            feed();
+            print_string("rmdir: no such directory", g_row, 12);
+            return false;
+        }
+        if fs_type(r) != 1 {
+            feed();
+            print_string("rmdir: not a directory", g_row, 12);
+            return false;
+        }
+        if !fs_dir_empty(r) {
+            feed();
+            print_string("rmdir: directory not empty", g_row, 12);
+            return false;
+        }
+        *((fs_entry_addr(r) + 24) as *u32) = 0;         // free the slot
+        *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) - 1;
+        fs_sync();
         return false;
     }
     if starts_with(cmd, "cat ") {
@@ -1714,6 +1938,11 @@ fn run_command(cmd: *u8) -> bool {
             feed();
             print_at("not found: ", g_row, 0, 12);
             print_at(name, g_row, 11, 12);
+            return false;
+        }
+        if fs_type(i) == 1 {
+            feed();
+            print_string("cat: is a directory", g_row, 12);
             return false;
         }
         let size: u32 = fs_read_file(i);
@@ -1733,8 +1962,22 @@ fn run_command(cmd: *u8) -> bool {
         *((name as u32 + sp) as *u8) = 0;                // terminate the name in place
         let text: *u8 = (name as u32 + sp + 1) as *u8;
         let i: u32 = fs_find(name);
-        if i == 64 {
-            i = fs_create(name);                         // prints its own error
+        if i != 64 {
+            if fs_type(i) == 1 {
+                feed();
+                print_string("write: is a directory", g_row, 12);
+                return false;
+            }
+        }
+        if i == 64 {                                     // create it in the right directory
+            let leaf: [u8; 24] = [0; 24];
+            let parent: u32 = fs_parent_of(name as u64, &leaf as u64);
+            if parent == 64 {
+                feed();
+                print_string("write: parent directory does not exist", g_row, 12);
+                return false;
+            }
+            i = fs_create_full((&leaf as u64) as *u8, parent, 0);   // prints its own error
             if i == 64 { return false; }
         }
         if !fs_append_line(i, text) {
@@ -1746,11 +1989,19 @@ fn run_command(cmd: *u8) -> bool {
     if starts_with(cmd, "rm ") {
         if !fs_guard() { return false; }
         let name: *u8 = (cmd as u32 + 3) as *u8;
-        if !fs_remove(name) {
+        let i: u32 = fs_find(name);
+        if i == 64 {
             feed();
             print_at("not found: ", g_row, 0, 12);
             print_at(name, g_row, 11, 12);
+            return false;
         }
+        if fs_type(i) == 1 {
+            feed();
+            print_string("rm: is a directory (use rmdir)", g_row, 12);
+            return false;
+        }
+        fs_remove(name);
         return false;
     }
     if starts_with(cmd, "run ") {
@@ -2516,6 +2767,7 @@ fn kmain(mbinfo: u32) {
     enable_cursor();
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);
     fs_init();                       // detect the disk + mount MortFS (safe without either)
+    fs_ensure_layout();              // seed /bin /etc /home /var if this is a fresh disk
 
     run_script(1);                   // run the startup script loaded from disk
 
