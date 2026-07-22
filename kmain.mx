@@ -20,6 +20,10 @@ let g_mbinfo: u32 = 0;                                        // multiboot info 
 let g_ext: bool = false;                                      // saw the 0xE0 extended-scancode prefix
 let g_hist_n: u32 = 0;                                         // total commands entered
 let g_hist_nav: u32 = 0;                                       // 0 = live line, k = k-th most recent recalled
+let g_complbuf: [u8; 64] = [0; 64];                           // tab completion: longest common prefix
+let g_compl_len: u32 = 0;                                     // its length
+let g_compl_count: u32 = 0;                                   // matches seen this completion
+let g_complline: [u8; 80] = [0; 80];                          // tab completion: rebuilt input line
 let g_disk_ok: bool = false;                                   // ata_init() found a drive
 let g_fs_ok: bool = false;                                     // fs_init() verified the MortFS magic
 let g_uid: u8 = 0;                                             // current user id (0 = root; set at login)
@@ -2182,6 +2186,8 @@ fn run_command_impl(cmd: *u8) -> bool {
         print_string("users: whoami su sudo passwd chmod chown", g_row, 7);
         feed();
         print_string("env: env export unset  ($VAR expands in commands)", g_row, 7);
+        feed();
+        print_string("edit: Tab completes, Up/Down history, history lists", g_row, 7);
         return false;
     }
     if streq(cmd, "readme") {
@@ -2194,6 +2200,17 @@ fn run_command_impl(cmd: *u8) -> bool {
     }
     if streq(cmd, "mods") {
         mods();
+        return false;
+    }
+    if streq(cmd, "history") {
+        let total: u32 = g_hist_n;
+        if total > 8 { total = 8; }
+        let k: u32 = total;
+        while k > 0 {
+            feed();
+            print_string(hist_slot(k) as *u8, g_row, 7);
+            k = k - 1;
+        }
         return false;
     }
     if streq(cmd, "net") {
@@ -3519,6 +3536,161 @@ fn overlay_on_key(sc: u8) {
     }
 }
 
+// ----- tab completion -----
+// Completable built-in command names (matched for the first word on the line).
+fn builtin_name(i: u32) -> u64 {
+    if i == 0 { return "help" as u64; }
+    if i == 1 { return "clear" as u64; }
+    if i == 2 { return "about" as u64; }
+    if i == 3 { return "echo" as u64; }
+    if i == 4 { return "uptime" as u64; }
+    if i == 5 { return "readme" as u64; }
+    if i == 6 { return "mem" as u64; }
+    if i == 7 { return "mods" as u64; }
+    if i == 8 { return "net" as u64; }
+    if i == 9 { return "httpd" as u64; }
+    if i == 10 { return "pwd" as u64; }
+    if i == 11 { return "cd" as u64; }
+    if i == 12 { return "ls" as u64; }
+    if i == 13 { return "cat" as u64; }
+    if i == 14 { return "write" as u64; }
+    if i == 15 { return "rm" as u64; }
+    if i == 16 { return "mkdir" as u64; }
+    if i == 17 { return "rmdir" as u64; }
+    if i == 18 { return "run" as u64; }
+    if i == 19 { return "exec" as u64; }
+    if i == 20 { return "whoami" as u64; }
+    if i == 21 { return "su" as u64; }
+    if i == 22 { return "sudo" as u64; }
+    if i == 23 { return "passwd" as u64; }
+    if i == 24 { return "chmod" as u64; }
+    if i == 25 { return "chown" as u64; }
+    if i == 26 { return "env" as u64; }
+    if i == 27 { return "export" as u64; }
+    if i == 28 { return "unset" as u64; }
+    if i == 29 { return "lock" as u64; }
+    if i == 30 { return "sleep" as u64; }
+    if i == 31 { return "restart" as u64; }
+    if i == 32 { return "shutdown" as u64; }
+    if i == 33 { return "history" as u64; }
+    if i == 34 { return "crash" as u64; }
+    return 0;
+}
+
+// Does the null-terminated name at `name` start with the `n`-byte token at `tok`?
+fn compl_prefix(name: u64, tok: u64, n: u32) -> bool {
+    let i: u32 = 0;
+    while i < n {
+        let c: u8 = *((name + (i as u64)) as *u8);
+        if c == 0 { return false; }
+        if c != *((tok + (i as u64)) as *u8) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Fold one matching candidate into the running longest-common-prefix in g_complbuf.
+fn compl_add(name: u64) {
+    if g_compl_count == 0 {
+        str_copy((&g_complbuf as u64) as *u8, name as *u8);
+        g_compl_len = str_len(name as *u8);
+        if g_compl_len > 63 { g_compl_len = 63; }
+    } else {
+        let m: u32 = str_len(name as *u8);
+        let lim: u32 = g_compl_len;
+        if m < lim { lim = m; }
+        let j: u32 = 0;
+        let stop: bool = false;
+        while j < lim {
+            if *(((&g_complbuf as u64) + (j as u64)) as *u8) != *((name + (j as u64)) as *u8) {
+                lim = j;
+                stop = true;
+            }
+            if !stop { j = j + 1; } else { j = lim; }
+        }
+        g_compl_len = lim;
+    }
+    g_compl_count = g_compl_count + 1;
+}
+
+// Add every entry of directory `parent` whose name matches the token prefix.
+fn compl_scan_dir(parent: u32, tok: u64, toklen: u32) {
+    let i: u32 = 0;
+    while i < 64 {
+        let base: u32 = fs_entry_addr(i);
+        if *((base + 24) as *u32) == 1 {
+            if (fs_parent(i) as u32) == parent {
+                if compl_prefix(base as u64, tok, toklen) {
+                    compl_add(base as u64);
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// Tab: complete the last token to the longest common prefix of the matching
+// commands (first word) or current-directory names (later words). Rebuilds the
+// line and hands it to set_input.
+fn tab_complete() {
+    *((g_buf as u32 + g_len) as *u8) = 0;
+    let buf: u64 = g_buf as u64;
+    let len: u32 = g_len;
+    let tok_start: u32 = 0;
+    let i: u32 = 0;
+    while i < len {
+        if *((buf + (i as u64)) as *u8) == 32 { tok_start = i + 1; }
+        i = i + 1;
+    }
+    let tok: u64 = buf + (tok_start as u64);
+    let toklen: u32 = len - tok_start;
+
+    g_compl_count = 0;
+    g_compl_len = 0;
+    if tok_start == 0 {
+        let done: bool = false;
+        let b: u32 = 0;
+        while !done {
+            let name: u64 = builtin_name(b);
+            if name == 0 {
+                done = true;
+            } else {
+                if compl_prefix(name, tok, toklen) { compl_add(name); }
+                b = b + 1;
+            }
+        }
+        let bin: u32 = fs_resolve("/bin" as u64);
+        if bin != 64 { compl_scan_dir(bin, tok, toklen); }
+    } else {
+        compl_scan_dir(g_cwd, tok, toklen);
+    }
+
+    if g_compl_count == 0 { return; }
+    if g_compl_len <= toklen { return; }        // nothing more in common
+
+    let out: u64 = &g_complline as u64;
+    let k: u32 = 0;
+    while k < tok_start {
+        *((out + (k as u64)) as *u8) = *((buf + (k as u64)) as *u8);
+        k = k + 1;
+    }
+    let total: u32 = tok_start + g_compl_len;
+    if total > 76 {
+        g_compl_len = 76 - tok_start;
+        total = 76;
+    }
+    let m: u32 = 0;
+    while m < g_compl_len {
+        *((out + ((tok_start + m) as u64)) as *u8) = *(((&g_complbuf as u64) + (m as u64)) as *u8);
+        m = m + 1;
+    }
+    // No trailing space: this shell dispatches no-arg commands by exact match,
+    // so "history " would not run. The user adds the space before typing args.
+    *((out + (total as u64)) as *u8) = 0;
+    set_input(out as *u8);
+    g_hist_nav = 0;
+}
+
 fn on_scancode(sc: u8) {
     mouse_hide();
     if g_overlay != 0 {              // an overlay owns the keyboard while it's up
@@ -3600,6 +3772,10 @@ fn on_scancode(sc: u8) {
             put_cell_at(g_row, g_col, 32, 7);
             move_cursor(g_row, g_col);
         }
+        return;
+    }
+    if sc == 15 {                    // Tab: complete the current token
+        tab_complete();
         return;
     }
 
