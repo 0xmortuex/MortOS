@@ -459,6 +459,9 @@ fn browser_draw_about() {
     draw_text_abs(settings_yes_no(kdf_ok), 512, 474, 0x4fd1c5, 0x0b0f14);
     draw_text_abs("ChaCha20 block vector", 208, 502, 0x8fa1aa, 0x0b0f14);
     draw_text_abs(settings_yes_no(g_tls_crypto_chacha_ok), 512, 502, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("Poly1305 / ChaCha20-AEAD vectors", 208, 530, 0x8fa1aa, 0x0b0f14);
+    let aead_ok: bool = g_tls_crypto_poly1305_ok && g_tls_crypto_aead_ok;
+    draw_text_abs(settings_yes_no(aead_ok), 512, 530, 0x4fd1c5, 0x0b0f14);
 }
 
 fn browser_draw_list(base: u32, count: u32, empty: *u8) {

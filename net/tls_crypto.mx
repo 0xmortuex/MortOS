@@ -72,11 +72,46 @@ let TLS_CHACHA_BLOCK1: [u8; 64] = [
     0xb5, 0x12, 0x9c, 0xd1, 0xde, 0x16, 0x4e, 0xb9,
     0xcb, 0xd0, 0x83, 0xe8, 0xa2, 0x50, 0x3c, 0x4e
 ];
+let TLS_POLY1305_KEY1: [u8; 32] = [
+    0x85, 0xd6, 0xbe, 0x78, 0x57, 0x55, 0x6d, 0x33,
+    0x7f, 0x44, 0x52, 0xfe, 0x42, 0xd5, 0x06, 0xa8,
+    0x01, 0x03, 0x80, 0x8a, 0xfb, 0x0d, 0xb2, 0xfd,
+    0x4a, 0xbf, 0xf6, 0xaf, 0x41, 0x49, 0xf5, 0x1b
+];
+let TLS_POLY1305_TAG1: [u8; 16] = [
+    0xa8, 0x06, 0x1d, 0xc1, 0x30, 0x51, 0x36, 0xc6,
+    0xc2, 0x2b, 0x8b, 0xaf, 0x0c, 0x01, 0x27, 0xa9
+];
+let TLS_AEAD_KEY1: [u8; 32] = [
+    0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+    0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+    0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f
+];
+let TLS_AEAD_NONCE1: [u8; 12] = [0x07, 0x00, 0x00, 0x00, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47];
+let TLS_AEAD_AAD1: [u8; 12] = [0x50, 0x51, 0x52, 0x53, 0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7];
+let TLS_AEAD_CIPHER1: [u8; 114] = [
+    0xd3, 0x1a, 0x8d, 0x34, 0x64, 0x8e, 0x60, 0xdb, 0x7b, 0x86, 0xaf, 0xbc, 0x53, 0xef, 0x7e, 0xc2,
+    0xa4, 0xad, 0xed, 0x51, 0x29, 0x6e, 0x08, 0xfe, 0xa9, 0xe2, 0xb5, 0xa7, 0x36, 0xee, 0x62, 0xd6,
+    0x3d, 0xbe, 0xa4, 0x5e, 0x8c, 0xa9, 0x67, 0x12, 0x82, 0xfa, 0xfb, 0x69, 0xda, 0x92, 0x72, 0x8b,
+    0x1a, 0x71, 0xde, 0x0a, 0x9e, 0x06, 0x0b, 0x29, 0x05, 0xd6, 0xa5, 0xb6, 0x7e, 0xcd, 0x3b, 0x36,
+    0x92, 0xdd, 0xbd, 0x7f, 0x2d, 0x77, 0x8b, 0x8c, 0x98, 0x03, 0xae, 0xe3, 0x28, 0x09, 0x1b, 0x58,
+    0xfa, 0xb3, 0x24, 0xe4, 0xfa, 0xd6, 0x75, 0x94, 0x55, 0x85, 0x80, 0x8b, 0x48, 0x31, 0xd7, 0xbc,
+    0x3f, 0xf4, 0xde, 0xf0, 0x8e, 0x4b, 0x7a, 0x9d, 0xe5, 0x76, 0xd2, 0x65, 0x86, 0xce, 0xc6, 0x4b,
+    0x61, 0x16
+];
+let TLS_AEAD_TAG1: [u8; 16] = [
+    0x1a, 0xe1, 0x0b, 0x59, 0x4f, 0x09, 0xe2, 0x6a,
+    0x7e, 0x90, 0x2e, 0xcb, 0xd0, 0x60, 0x06, 0x91
+];
 
 let g_tls_crypto_sha256_ok: bool = false;
 let g_tls_crypto_hmac_ok: bool = false;
 let g_tls_crypto_hkdf_ok: bool = false;
 let g_tls_crypto_chacha_ok: bool = false;
+let g_tls_crypto_poly1305_ok: bool = false;
+let g_tls_crypto_aead_ok: bool = false;
+let g_tls_poly1305_test_tag: [u8; 16] = [0; 16];
 
 fn tls_rotr32(value: u32, amount: u32) -> u32 {
     return (value >> amount) | (value << (32 - amount));
@@ -114,6 +149,10 @@ fn tls_store_le32(dst: u64, value: u32) {
     *((dst + 1) as *u8) = (value >> 8) as u8;
     *((dst + 2) as *u8) = (value >> 16) as u8;
     *((dst + 3) as *u8) = (value >> 24) as u8;
+}
+
+fn tls_store_le64(dst: u64, value: u64) {
+    for i: u32 in 0..8 { *((dst + (i as u64)) as *u8) = (value >> (i * 8)) as u8; }
 }
 
 fn tls_bytes_equal(a: u64, b: u64, length: u32) -> bool {
@@ -250,6 +289,101 @@ fn tls_chacha20_block(key: u64, counter: u32, nonce: u64, output: u64) {
     for i: u32 in 0..16 { tls_store_le32(output + ((i * 4) as u64), work[i] + initial[i]); }
 }
 
+fn tls_chacha20_xor(key: u64, counter: u32, nonce: u64, input: u64, length: u32, output: u64) {
+    let stream: [u8; 64] = [0; 64]; let offset: u32 = 0; let block_counter: u32 = counter;
+    while offset < length {
+        tls_chacha20_block(key, block_counter, nonce, &stream as u64);
+        let take: u32 = length - offset; if take > 64 { take = 64; }
+        for i: u32 in 0..take {
+            *((output + ((offset + i) as u64)) as *u8) = *((input + ((offset + i) as u64)) as *u8) ^ stream[i];
+        }
+        offset = offset + take; block_counter = block_counter + 1;
+    }
+}
+
+fn tls_poly1305_auth(key: u64, message: u64, length: u32, output: u64) {
+    let r0: u32 = tls_load_le32(key + 0) & 0x03ffffff;
+    let r1: u32 = (tls_load_le32(key + 3) >> 2) & 0x03ffff03;
+    let r2: u32 = (tls_load_le32(key + 6) >> 4) & 0x03ffc0ff;
+    let r3: u32 = (tls_load_le32(key + 9) >> 6) & 0x03f03fff;
+    let r4: u32 = (tls_load_le32(key + 12) >> 8) & 0x000fffff;
+    let s1: u32 = r1 * 5; let s2: u32 = r2 * 5;
+    let s3: u32 = r3 * 5; let s4: u32 = r4 * 5;
+    let h0: u32 = 0; let h1: u32 = 0; let h2: u32 = 0; let h3: u32 = 0; let h4: u32 = 0;
+    let offset: u32 = 0;
+    while offset < length {
+        let block: [u8; 16] = [0; 16]; let take: u32 = length - offset; if take > 16 { take = 16; }
+        for i: u32 in 0..take { block[i] = *((message + ((offset + i) as u64)) as *u8); }
+        let hibit: u32 = 1 << 24;
+        if take < 16 { block[take] = 1; hibit = 0; }
+        h0 = h0 + (tls_load_le32(&block as u64 + 0) & 0x03ffffff);
+        h1 = h1 + ((tls_load_le32(&block as u64 + 3) >> 2) & 0x03ffffff);
+        h2 = h2 + ((tls_load_le32(&block as u64 + 6) >> 4) & 0x03ffffff);
+        h3 = h3 + ((tls_load_le32(&block as u64 + 9) >> 6) & 0x03ffffff);
+        h4 = h4 + ((tls_load_le32(&block as u64 + 12) >> 8) | hibit);
+
+        let d0: u64 = (h0 as u64) * (r0 as u64) + (h1 as u64) * (s4 as u64)
+            + (h2 as u64) * (s3 as u64) + (h3 as u64) * (s2 as u64) + (h4 as u64) * (s1 as u64);
+        let d1: u64 = (h0 as u64) * (r1 as u64) + (h1 as u64) * (r0 as u64)
+            + (h2 as u64) * (s4 as u64) + (h3 as u64) * (s3 as u64) + (h4 as u64) * (s2 as u64);
+        let d2: u64 = (h0 as u64) * (r2 as u64) + (h1 as u64) * (r1 as u64)
+            + (h2 as u64) * (r0 as u64) + (h3 as u64) * (s4 as u64) + (h4 as u64) * (s3 as u64);
+        let d3: u64 = (h0 as u64) * (r3 as u64) + (h1 as u64) * (r2 as u64)
+            + (h2 as u64) * (r1 as u64) + (h3 as u64) * (r0 as u64) + (h4 as u64) * (s4 as u64);
+        let d4: u64 = (h0 as u64) * (r4 as u64) + (h1 as u64) * (r3 as u64)
+            + (h2 as u64) * (r2 as u64) + (h3 as u64) * (r1 as u64) + (h4 as u64) * (r0 as u64);
+        let carry: u32 = (d0 >> 26) as u32; h0 = d0 as u32 & 0x03ffffff; d1 = d1 + (carry as u64);
+        carry = (d1 >> 26) as u32; h1 = d1 as u32 & 0x03ffffff; d2 = d2 + (carry as u64);
+        carry = (d2 >> 26) as u32; h2 = d2 as u32 & 0x03ffffff; d3 = d3 + (carry as u64);
+        carry = (d3 >> 26) as u32; h3 = d3 as u32 & 0x03ffffff; d4 = d4 + (carry as u64);
+        carry = (d4 >> 26) as u32; h4 = d4 as u32 & 0x03ffffff;
+        h0 = h0 + carry * 5; carry = h0 >> 26; h0 = h0 & 0x03ffffff; h1 = h1 + carry;
+        offset = offset + take;
+    }
+
+    let carry: u32 = h1 >> 26; h1 = h1 & 0x03ffffff; h2 = h2 + carry;
+    carry = h2 >> 26; h2 = h2 & 0x03ffffff; h3 = h3 + carry;
+    carry = h3 >> 26; h3 = h3 & 0x03ffffff; h4 = h4 + carry;
+    carry = h4 >> 26; h4 = h4 & 0x03ffffff; h0 = h0 + carry * 5;
+    carry = h0 >> 26; h0 = h0 & 0x03ffffff; h1 = h1 + carry;
+
+    let g0: u32 = h0 + 5; carry = g0 >> 26; g0 = g0 & 0x03ffffff;
+    let g1: u32 = h1 + carry; carry = g1 >> 26; g1 = g1 & 0x03ffffff;
+    let g2: u32 = h2 + carry; carry = g2 >> 26; g2 = g2 & 0x03ffffff;
+    let g3: u32 = h3 + carry; carry = g3 >> 26; g3 = g3 & 0x03ffffff;
+    let g4: u32 = h4 + carry - (1 << 26);
+    let mask: u32 = (g4 >> 31) - 1; let inverse: u32 = 0xffffffff ^ mask;
+    h0 = (h0 & inverse) | (g0 & mask); h1 = (h1 & inverse) | (g1 & mask);
+    h2 = (h2 & inverse) | (g2 & mask); h3 = (h3 & inverse) | (g3 & mask);
+    h4 = (h4 & inverse) | (g4 & mask);
+
+    let w0: u32 = h0 | (h1 << 26); let w1: u32 = (h1 >> 6) | (h2 << 20);
+    let w2: u32 = (h2 >> 12) | (h3 << 14); let w3: u32 = (h3 >> 18) | (h4 << 8);
+    let f0: u64 = (w0 as u64) + (tls_load_le32(key + 16) as u64);
+    let f1: u64 = (w1 as u64) + (tls_load_le32(key + 20) as u64) + (f0 >> 32);
+    let f2: u64 = (w2 as u64) + (tls_load_le32(key + 24) as u64) + (f1 >> 32);
+    let f3: u64 = (w3 as u64) + (tls_load_le32(key + 28) as u64) + (f2 >> 32);
+    tls_store_le32(output + 0, f0 as u32); tls_store_le32(output + 4, f1 as u32);
+    tls_store_le32(output + 8, f2 as u32); tls_store_le32(output + 12, f3 as u32);
+}
+
+fn tls_chacha20_poly1305_encrypt(key: u64, nonce: u64, aad: u64, aad_length: u32,
+                                 plaintext: u64, plaintext_length: u32,
+                                 ciphertext: u64, tag: u64) -> bool {
+    let aad_padded: u32 = (aad_length + 15) & 0xfffffff0;
+    let text_padded: u32 = (plaintext_length + 15) & 0xfffffff0;
+    let auth_length: u32 = aad_padded + text_padded + 16;
+    if auth_length > 512 { return false; }
+    let first_block: [u8; 64] = [0; 64]; let auth: [u8; 512] = [0; 512];
+    tls_chacha20_block(key, 0, nonce, &first_block as u64);
+    tls_chacha20_xor(key, 1, nonce, plaintext, plaintext_length, ciphertext);
+    for i: u32 in 0..aad_length { auth[i] = *((aad + (i as u64)) as *u8); }
+    for i: u32 in 0..plaintext_length { auth[aad_padded + i] = *((ciphertext + (i as u64)) as *u8); }
+    tls_store_le64(&auth as u64 + ((aad_padded + text_padded) as u64), aad_length as u64);
+    tls_store_le64(&auth as u64 + ((aad_padded + text_padded + 8) as u64), plaintext_length as u64);
+    tls_poly1305_auth(&first_block as u64, &auth as u64, auth_length, tag); return true;
+}
+
 fn tls_crypto_self_test() {
     let digest: [u8; 32] = [0; 32];
     tls_sha256("" as u64, 0, &digest as u64);
@@ -275,4 +409,16 @@ fn tls_crypto_self_test() {
     let chacha_out: [u8; 64] = [0; 64];
     tls_chacha20_block(&chacha_key as u64, 1, &chacha_nonce as u64, &chacha_out as u64);
     g_tls_crypto_chacha_ok = tls_bytes_equal(&chacha_out as u64, &TLS_CHACHA_BLOCK1 as u64, 64);
+
+    tls_poly1305_auth(&TLS_POLY1305_KEY1 as u64, "Cryptographic Forum Research Group" as u64, 34, &g_tls_poly1305_test_tag as u64);
+    g_tls_crypto_poly1305_ok = tls_bytes_equal(&g_tls_poly1305_test_tag as u64, &TLS_POLY1305_TAG1 as u64, 16);
+
+    let aead_cipher: [u8; 114] = [0; 114]; let aead_tag: [u8; 16] = [0; 16];
+    let aead_ok: bool = tls_chacha20_poly1305_encrypt(
+        &TLS_AEAD_KEY1 as u64, &TLS_AEAD_NONCE1 as u64, &TLS_AEAD_AAD1 as u64, 12,
+        "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it." as u64,
+        114, &aead_cipher as u64, &aead_tag as u64);
+    g_tls_crypto_aead_ok = aead_ok
+        && tls_bytes_equal(&aead_cipher as u64, &TLS_AEAD_CIPHER1 as u64, 114)
+        && tls_bytes_equal(&aead_tag as u64, &TLS_AEAD_TAG1 as u64, 16);
 }

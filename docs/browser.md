@@ -79,9 +79,9 @@ submit forms, or provide a general-purpose DOM. HTTP traffic is unencrypted and
 must not be used for passwords or other sensitive data.
 
 The TLS foundation is being built as independently testable Mort primitives.
-SHA-256, HMAC-SHA256, HKDF-SHA256, and the ChaCha20 block function are present
-and must pass their published standard vectors during every boot. This does
-**not** enable HTTPS by itself: X25519, Poly1305/AEAD, the TLS state machine,
+SHA-256, HMAC-SHA256, HKDF-SHA256, ChaCha20, Poly1305, and their combined AEAD
+construction are present and must pass published standard vectors during every
+boot. This does **not** enable HTTPS by itself: X25519, the TLS state machine,
 X.509 parsing, trust anchors, hostname checks, and time validation must also be
 complete.
 

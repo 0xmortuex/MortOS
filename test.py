@@ -408,6 +408,9 @@ def smoke(disk_img=None):
     hmac_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_hmac_ok")
     hkdf_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_hkdf_ok")
     chacha_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_chacha_ok")
+    poly1305_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_poly1305_ok")
+    aead_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_aead_ok")
+    ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
 
@@ -423,6 +426,7 @@ def smoke(disk_img=None):
     try:
         check("boot banner shows 'MORT OS'",
               wait_for(handle, "MORT OS", timeout_s=15), handle)
+        _wait_guest_u32(handle, ticks_addr, lambda value: value >= 1, timeout_s=20)
 
         check("Mort SHA-256 passes empty and abc standard vectors",
               (_guest_u32(handle, sha256_ok_addr) & 0xff) != 0, handle)
@@ -432,6 +436,10 @@ def smoke(disk_img=None):
               (_guest_u32(handle, hkdf_ok_addr) & 0xff) != 0, handle)
         check("Mort ChaCha20 passes the RFC 8439 block vector",
               (_guest_u32(handle, chacha_ok_addr) & 0xff) != 0, handle)
+        check("Mort Poly1305 passes the RFC 8439 authenticator vector",
+              (_guest_u32(handle, poly1305_ok_addr) & 0xff) != 0, handle)
+        check("Mort ChaCha20-Poly1305 passes the RFC 8439 AEAD vector",
+              (_guest_u32(handle, aead_ok_addr) & 0xff) != 0, handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",
