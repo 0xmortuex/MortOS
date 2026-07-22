@@ -36,6 +36,16 @@ let g_files_view: u32 = 0;                                     // Files: 0 = lis
 let g_files_entry: u32 = 0;                                    // Files: entry index being viewed
 let g_files_count: u32 = 0;                                    // Files: number of listed files
 let g_vex_page: u32 = 0;                                       // Vex: current local page
+// ----- session / power state -----
+let g_overlay: u32 = 0;                                        // 0 none, 1 power menu, 2 lock, 3 sleep
+let g_power_sel: u32 = 0;                                      // highlighted power-menu item (0..3)
+let g_ov_ext: bool = false;                                    // overlay's own extended-scancode flag
+let g_lock_len: u32 = 0;                                       // chars typed on the lock screen
+let g_lock_err: bool = false;                                  // last unlock attempt was wrong
+let g_lockbuf: [u8; 24] = [0; 24];                             // lock-screen password entry
+let g_boxsave: [u8; 208000] = [0; 208000];                    // 260x200 RGBA backing store for the power flyout
+let g_box_x: u32 = 0;                                          // power flyout top-left
+let g_box_y: u32 = 0;
 let g_history: *u8 = "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ";                              // 8 slots x 80 bytes (command history ring)
 
 // ----- 8x16 bitmap font (Consolas-rasterized; MSB-left, row-major, 16 rows) -----
@@ -430,13 +440,16 @@ fn draw_tab(label: *u8, x: u32, id: u32) {
     draw_text_abs(label, x, 4, fg, bg);
 }
 
-// The top bar: the OS name and the app switcher tabs (F1/F2/F3).
+// The top bar: the OS name, app switcher tabs (F1/F2/F3), a power hint, and the
+// clock (drawn by draw_clock, called at the end).
 fn draw_topbar() {
     fill_rect(0, 0, g_fb_w, 24, 0x0d141c);
     draw_text_abs("MORT OS", 12, 4, 0x9fd0d8, 0x0d141c);
     draw_tab("F1 terminal", 300, 0);
     draw_tab("F2 files", 470, 1);
     draw_tab("F3 vex", 600, 2);
+    draw_text_abs("F12 power", g_fb_w - 190, 4, 0x6a7b83, 0x0d141c);
+    draw_clock();
 }
 
 // Set the window title bar text (each app names its own window).
@@ -1415,11 +1428,13 @@ fn run_command(cmd: *u8) -> bool {
     }
     if streq(cmd, "help") {
         feed();
-        print_string("help clear about echo uptime crash readme mem reboot", g_row, 7);
+        print_string("help clear about echo uptime crash readme mem", g_row, 7);
         feed();
         print_string("files: ls cat write rm run exec mods", g_row, 7);
         feed();
         print_string("net: net (DHCP)  httpd (serve a page on :80)", g_row, 7);
+        feed();
+        print_string("power: F12 menu, or lock sleep restart shutdown", g_row, 7);
         return false;
     }
     if streq(cmd, "readme") {
@@ -1525,6 +1540,30 @@ fn run_command(cmd: *u8) -> bool {
         reboot();
         return false;         // not reached
     }
+    if streq(cmd, "restart") {
+        reboot();
+        return false;         // not reached
+    }
+    if streq(cmd, "shutdown") {
+        poweroff();
+        return false;         // not reached
+    }
+    if streq(cmd, "poweroff") {
+        poweroff();
+        return false;         // not reached
+    }
+    if streq(cmd, "power") {
+        open_power_menu();
+        return false;
+    }
+    if streq(cmd, "lock") {
+        open_lock();
+        return false;
+    }
+    if streq(cmd, "sleep") {
+        open_sleep();
+        return false;
+    }
     if streq(cmd, "crash") {
         asm("ud2");           // raise #UD (vector 6) to demo exception reporting
         return false;         // not reached
@@ -1568,6 +1607,11 @@ fn init_pit() {
 // Timer interrupt handler (IRQ0) — called ~100x/second from timer_isr.
 fn on_tick() {
     g_ticks = g_ticks + 1;
+    if g_gfx {
+        if (g_ticks % 100) == 0 {        // once a second: refresh the top-bar clock
+            draw_clock();
+        }
+    }
 }
 
 // CPU exception handler — called by isr_common (idt.s) with the faulting vector.
@@ -1799,8 +1843,333 @@ fn switch_app(app: u32) {
     if app == 2 { vex_draw(); }
 }
 
+// ----- session & power (clock, power menu, lock, sleep, shutdown) -----
+//
+// A small session layer over the desktop. A clock ticks in the top bar (read
+// from the CMOS RTC); F12 opens a power flyout (Lock / Sleep / Restart / Shut
+// down); the lock screen wants a password; sleep blanks the screen until a key.
+// Overlays own the keyboard while active (see on_key) and draw with the same
+// framebuffer primitives as the rest of the desktop.
+
+// Centered text at horizontal center cx (glyphs are 8px wide).
+fn draw_center(s: *u8, cx: u32, y: u32, fg: u32, bg: u32) {
+    let w: u32 = str_len(s) * 8;
+    draw_text_abs(s, cx - w / 2, y, fg, bg);
+}
+
+// ---- clock (CMOS RTC) ----
+
+fn rtc_reg(reg: u8) -> u8 {
+    outb(0x70, reg);
+    return inb(0x71);
+}
+
+fn rtc_conv(v: u8, binmode: bool) -> u8 {
+    if binmode {
+        return v;
+    }
+    return ((v >> 4) * 10) + (v & 15);      // BCD -> binary
+}
+
+// Write v as two decimal digits at buf+off.
+fn write2(buf: u64, off: u32, v: u8) {
+    let t: *u8 = (buf + (off as u64)) as *u8;
+    *t = (48 + (v / 10)) as u8;
+    let o: *u8 = (buf + (off as u64) + 1) as *u8;
+    *o = (48 + (v % 10)) as u8;
+}
+
+// Draw HH:MM:SS at the top-right of the top bar.
+fn draw_clock() {
+    if !g_gfx {
+        return;
+    }
+    if g_overlay != 0 {
+        return;
+    }
+    let stb: u8 = rtc_reg(0x0B);
+    let binmode: bool = (stb & 4) != 0;
+    let s: u8 = rtc_conv(rtc_reg(0), binmode);
+    let m: u8 = rtc_conv(rtc_reg(2), binmode);
+    let h: u8 = rtc_conv(rtc_reg(4), binmode);
+    let buf: [u8; 12] = [0; 12];
+    let b: u64 = &buf as u64;
+    write2(b, 0, h);
+    let c0: *u8 = (b + 2) as *u8; *c0 = 58;         // ':'
+    write2(b, 3, m);
+    let c1: *u8 = (b + 5) as *u8; *c1 = 58;
+    write2(b, 6, s);
+    let term: *u8 = (b + 8) as *u8; *term = 0;
+    fill_rect(g_fb_w - 84, 0, 84, 24, 0x0d141c);
+    draw_text_abs(&buf as *u8, g_fb_w - 76, 4, 0x9fd0d8, 0x0d141c);
+}
+
+// ---- power flyout ----
+
+// Save / restore the 260x200 framebuffer region under the flyout, so cancelling
+// it leaves whatever was underneath (terminal, an app) exactly as it was.
+fn save_box() {
+    let dst: u64 = &g_boxsave as u64;
+    let yy: u32 = 0;
+    while yy < 200 {
+        let srow: u32 = g_fb + (g_box_y + yy) * g_fb_pitch + g_box_x * 4;
+        let drow: u64 = dst + ((yy * 260 * 4) as u64);
+        let xx: u32 = 0;
+        while xx < 260 {
+            *((drow + (xx as u64) * 4) as *u32) = *((srow + xx * 4) as *u32);
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+}
+
+fn restore_box() {
+    let src: u64 = &g_boxsave as u64;
+    let yy: u32 = 0;
+    while yy < 200 {
+        let drow: u32 = g_fb + (g_box_y + yy) * g_fb_pitch + g_box_x * 4;
+        let srow: u64 = src + ((yy * 260 * 4) as u64);
+        let xx: u32 = 0;
+        while xx < 260 {
+            *((drow + xx * 4) as *u32) = *((srow + (xx as u64) * 4) as *u32);
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+}
+
+fn draw_power_item(idx: u32, label: *u8, x: u32, iy: u32) {
+    let bg: u32 = 0x11202b;
+    let fg: u32 = 0xc8d0d4;
+    if idx == g_power_sel {
+        bg = 0x2c5364;
+        fg = 0xffffff;
+    }
+    fill_rect(x + 12, iy - 5, 236, 28, bg);
+    draw_text_abs(label, x + 28, iy, fg, bg);
+}
+
+fn draw_power_menu() {
+    let x: u32 = g_box_x;
+    let y: u32 = g_box_y;
+    fill_rect(x, y, 260, 200, 0x11202b);            // panel
+    fill_rect(x, y, 260, 3, 0x3fb950);              // accent bar
+    draw_text_abs("Power", x + 20, y + 16, 0x9fd0d8, 0x11202b);
+    draw_power_item(0, "Lock", x, y + 52);
+    draw_power_item(1, "Sleep", x, y + 88);
+    draw_power_item(2, "Restart", x, y + 124);
+    draw_power_item(3, "Shut down", x, y + 160);
+}
+
+fn open_power_menu() {
+    if !g_gfx {
+        return;
+    }
+    g_box_x = (g_fb_w - 260) / 2;
+    g_box_y = (g_fb_h - 200) / 2;
+    save_box();
+    g_power_sel = 0;
+    g_ov_ext = false;
+    g_overlay = 1;
+    draw_power_menu();
+}
+
+// Repaint the desktop and re-render the active app after a full-screen overlay.
+fn restore_desktop() {
+    fill_gradient(0x0a1830, 0x2c5364);
+    fill_rect(180, 160, 664, 456, 0x1b2733);        // window frame
+    switch_app(g_app);                              // top bar + active app content
+    draw_clock();
+}
+
+// ---- lock screen ----
+
+fn draw_lock() {
+    fill_gradient(0x081327, 0x14324a);
+    let cx: u32 = g_fb_w / 2;
+    let cy: u32 = g_fb_h / 2;
+    fill_rect(cx - 190, cy - 120, 380, 240, 0x11202b);
+    fill_rect(cx - 190, cy - 120, 380, 3, 0x2c5364);
+    draw_center("MORT OS", cx, cy - 92, 0xffffff, 0x11202b);
+    draw_center("Locked", cx, cy - 66, 0x9fd0d8, 0x11202b);
+
+    // password field with masked characters
+    fill_rect(cx - 130, cy - 20, 260, 30, 0x0b0f14);
+    let stars: [u8; 24] = [0; 24];
+    let n: u32 = g_lock_len;
+    if n > 16 {
+        n = 16;
+    }
+    for i: u32 in 0..n {
+        let d: *u8 = ((&stars as u64) + (i as u64)) as *u8;
+        *d = 42;                                    // '*'
+    }
+    let term: *u8 = ((&stars as u64) + (n as u64)) as *u8;
+    *term = 0;
+    draw_center(&stars as *u8, cx, cy - 13, 0xdfeef2, 0x0b0f14);
+
+    if g_lock_err {
+        draw_center("wrong password", cx, cy + 30, 0xff6b6b, 0x11202b);
+    } else {
+        draw_center("type your password, then Enter", cx, cy + 30, 0x5a6b73, 0x11202b);
+    }
+}
+
+fn open_lock() {
+    if !g_gfx {
+        feed();
+        print_string("lock needs the graphical desktop", g_row, 12);
+        return;
+    }
+    g_lock_len = 0;
+    g_lock_err = false;
+    g_overlay = 2;
+    draw_lock();
+}
+
+// The password is "mort".
+fn lock_ok() -> bool {
+    if g_lock_len != 4 {
+        return false;
+    }
+    let p: u64 = &g_lockbuf as u64;
+    return *(p as *u8) == 109 && *((p + 1) as *u8) == 111
+        && *((p + 2) as *u8) == 114 && *((p + 3) as *u8) == 116;
+}
+
+// ---- sleep ----
+
+fn draw_sleep() {
+    fill_rect(0, 0, g_fb_w, g_fb_h, 0x02060a);
+    draw_center("Sleeping", g_fb_w / 2, g_fb_h / 2 - 10, 0x46575f, 0x02060a);
+    draw_center("press any key to wake", g_fb_w / 2, g_fb_h / 2 + 14, 0x30414a, 0x02060a);
+}
+
+fn open_sleep() {
+    if !g_gfx {
+        feed();
+        print_string("sleep needs the graphical desktop", g_row, 12);
+        return;
+    }
+    g_overlay = 3;
+    draw_sleep();
+}
+
+// ---- shutdown ----
+
+fn poweroff() {
+    if g_gfx {
+        fill_rect(0, 0, g_fb_w, g_fb_h, 0x0a1020);
+        draw_center("MORT OS", g_fb_w / 2, g_fb_h / 2 - 30, 0xffffff, 0x0a1020);
+        draw_center("It is now safe to turn off your computer.",
+                    g_fb_w / 2, g_fb_h / 2 + 4, 0x9fd0d8, 0x0a1020);
+    } else {
+        print_at("It is now safe to turn off your computer.", 24, 0, 15);
+    }
+    // Emulator ACPI power-off ports (QEMU, Bochs, VirtualBox). On real hardware
+    // these do nothing, and we fall through to a permanent halt.
+    outw(0x604, 0x2000);
+    outw(0xB004, 0x2000);
+    outw(0x4004, 0x3400);
+    asm("cli");
+    while true {
+        asm("hlt");
+    }
+}
+
+fn power_activate(sel: u32) {
+    if sel == 0 { open_lock(); return; }            // full-screen; box stays saved but unused
+    if sel == 1 { open_sleep(); return; }
+    if sel == 2 { reboot(); return; }
+    if sel == 3 { poweroff(); return; }
+}
+
+// ---- overlay key routing ----
+
+fn power_on_key(sc: u8) {
+    if sc == 224 {                                  // extended prefix (arrows)
+        g_ov_ext = true;
+        return;
+    }
+    if g_ov_ext {
+        g_ov_ext = false;
+        if sc == 72 {                               // Up
+            if g_power_sel > 0 { g_power_sel = g_power_sel - 1; }
+            draw_power_menu();
+        }
+        if sc == 80 {                               // Down
+            if g_power_sel < 3 { g_power_sel = g_power_sel + 1; }
+            draw_power_menu();
+        }
+        return;
+    }
+    if sc == 1 {                                    // Esc: cancel, restore what was under it
+        restore_box();
+        g_overlay = 0;
+        return;
+    }
+    if sc == 28 {                                   // Enter: activate
+        power_activate(g_power_sel);
+        return;
+    }
+}
+
+fn lock_on_key(sc: u8) {
+    if sc == 42 || sc == 54 { g_shift = true; return; }
+    if sc == 170 || sc == 182 { g_shift = false; return; }
+    if sc == 224 { return; }
+    if sc >= 128 { return; }
+    if sc == 28 {                                   // Enter: check password
+        if lock_ok() {
+            g_overlay = 0;
+            restore_desktop();
+        } else {
+            g_lock_err = true;
+            g_lock_len = 0;
+            draw_lock();
+        }
+        return;
+    }
+    if sc == 14 {                                   // Backspace
+        if g_lock_len > 0 {
+            g_lock_len = g_lock_len - 1;
+            draw_lock();
+        }
+        return;
+    }
+    let ch: u8 = scancode_to_ascii(sc, g_shift);
+    if ch != 0 && g_lock_len < 16 {
+        let d: *u8 = ((&g_lockbuf as u64) + (g_lock_len as u64)) as *u8;
+        *d = ch;
+        g_lock_len = g_lock_len + 1;
+        g_lock_err = false;
+        draw_lock();
+    }
+}
+
+fn overlay_on_key(sc: u8) {
+    if g_overlay == 1 { power_on_key(sc); return; }
+    if g_overlay == 2 { lock_on_key(sc); return; }
+    if g_overlay == 3 {                             // sleep: any key press wakes
+        if sc < 128 {
+            g_overlay = 0;
+            restore_desktop();
+        }
+        return;
+    }
+}
+
 fn on_key() {
     let sc: u8 = inb(0x60);
+
+    if g_overlay != 0 {              // an overlay owns the keyboard while it's up
+        overlay_on_key(sc);
+        return;
+    }
+    if g_gfx && sc == 88 {           // F12 opens the power menu from anywhere
+        open_power_menu();
+        return;
+    }
 
     if g_gfx {                       // F1/F2/F3 switch apps (graphics desktop only)
         if sc == 59 { switch_app(0); return; }
@@ -1850,6 +2219,9 @@ fn on_key() {
         }
         g_hist_nav = 0;
         let cleared: bool = run_command(g_buf);
+        if g_overlay != 0 {          // a command opened an overlay — leave the terminal be
+            return;
+        }
         if !cleared {                // move to a fresh prompt line (scrolls)
             feed();
         }
