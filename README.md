@@ -4,7 +4,15 @@
 ![arch](https://img.shields.io/badge/arch-x86%20(32--bit)-lightgrey)
 ![lang](https://img.shields.io/badge/kernel%20written%20in-Mort-8b5cf6)
 
-**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and paints a **graphical desktop with multiple apps** — a Terminal, a Files manager, and a Vex-styled browser, switched with `F1`/`F2`/`F3`, all drawn to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — and it **runs real, interactive compiled programs**: a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls (one sample asks your name and greets you). Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the shell — is written in Mort.
+**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and paints a **graphical desktop with multiple apps** — a Terminal, a Files manager, and a Vex-styled browser, switched with `F1`/`F2`/`F3`, all drawn to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — it **runs real, interactive compiled programs** (a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls), and it **speaks TCP/IP**: the [mortnet](https://github.com/0xmortuex/mortnet) stack is vendored into the kernel, so MORT OS gets its own IP over DHCP and **runs a web server**. Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the RTL8139 network driver, the shell — is written in Mort.
+
+## Networking — it serves a web page
+
+`net` brings up the RTL8139 NIC and leases an address over DHCP; `httpd` then serves an HTML page on port 80. This is the [mortnet](https://github.com/0xmortuex/mortnet) stack — NIC driver, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP, all written from scratch in Mort — vendored into `net/` and compiled into the kernel.
+
+![MORT OS networking: net leases 10.0.2.15 over DHCP, httpd serves on port 80](docs/mortos-net.png)
+
+<sub>A web server, on an OS, over a TCP/IP stack — every layer in one language. Networking needs an RTL8139 NIC (QEMU emulates one; on real hardware, a ~$5 PCI card). The rest of the OS boots and runs on any machine.</sub>
 
 ![MORT OS graphical desktop](docs/desktop.png)
 
@@ -15,7 +23,7 @@
 
 ## What it does
 
-- **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager**: a top bar with tabs and `F1`/`F2`/`F3` app switching between a **Terminal**, a **Files** manager (browse MortFS, open files), and a **Vex-styled browser** app (local pages, a tribute to [Vex](https://github.com/0xmortuex/Vex) — *not* a real web browser; there's no network stack). The whole shell renders to the framebuffer because only the cell-drawing primitive changed; everything else is untouched. Falls back to VGA text mode when no framebuffer is present (the bare `-kernel` path).
+- **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager**: a top bar with tabs and `F1`/`F2`/`F3` app switching between a **Terminal**, a **Files** manager (browse MortFS, open files), and a **Vex-styled browser** app (local pages, a tribute to [Vex](https://github.com/0xmortuex/Vex)). The whole shell renders to the framebuffer because only the cell-drawing primitive changed; everything else is untouched. Falls back to VGA text mode when no framebuffer is present (the bare `-kernel` path).
 
 ![MORT OS Files app](docs/app-files.png)
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.

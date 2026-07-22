@@ -1,0 +1,58 @@
+// net/arp.mx — Address Resolution Protocol (RFC 826), IPv4-over-Ethernet.
+//
+// ARP is how the network finds our MAC before it can send us IP: a peer
+// broadcasts "who has 10.0.2.15?" and we answer "10.0.2.15 is at <our MAC>".
+// Answering ARP is the prerequisite for anyone pinging us at all.
+//
+// 28-byte packet: htype (2) | ptype (2) | hlen (1) | plen (1) | oper (2) |
+// sender MAC (6) | sender IP (4) | target MAC (6) | target IP (4).
+
+let ARP_REQUEST: u16 = 1;
+let ARP_REPLY: u16 = 2;
+let ARP_LEN: u32 = 28;
+
+fn arp_oper(buf: u64) -> u16 { return be16_load(buf + 6); }
+
+// Sender hardware (MAC) and protocol (IP) addresses of a received packet, and
+// the target IP it is asking about.
+fn arp_sha(buf: u64) -> u64 { return buf + 8; }
+fn arp_spa(buf: u64) -> u64 { return buf + 14; }
+fn arp_tpa(buf: u64) -> u64 { return buf + 24; }
+
+// Build a 28-byte broadcast ARP request at dst: "who has target_ip?", from
+// our_mac / our_ip. Target MAC is left zero (that is what we are asking for).
+// The caller wraps this in an Ethernet frame with a broadcast destination.
+fn arp_build_request(dst: u64, our_mac: u64, our_ip: u64, target_ip: u64) -> u32 {
+    be16_store(dst, 1);                     // htype: Ethernet
+    be16_store(dst + 2, 0x0800);            // ptype: IPv4
+    let hlen: *u8 = (dst + 4) as *u8;
+    *hlen = 6;
+    let plen: *u8 = (dst + 5) as *u8;
+    *plen = 4;
+    be16_store(dst + 6, ARP_REQUEST);       // oper: request
+    mac_copy(dst + 8, our_mac);             // sender MAC = ours
+    ip4_copy(dst + 14, our_ip);             // sender IP  = ours
+    for i: u32 in 0..6 {                    // target MAC = unknown (zero)
+        let z: *u8 = (dst + 18 + (i as u64)) as *u8;
+        *z = 0;
+    }
+    ip4_copy(dst + 24, target_ip);          // target IP = who we're asking about
+    return ARP_LEN;
+}
+
+// Build a 28-byte ARP reply at dst answering the request at src, claiming
+// our_ip is at our_mac. Returns 28.
+fn arp_build_reply(dst: u64, src: u64, our_mac: u64, our_ip: u64) -> u32 {
+    be16_store(dst, 1);                     // htype: Ethernet
+    be16_store(dst + 2, 0x0800);            // ptype: IPv4
+    let hlen: *u8 = (dst + 4) as *u8;
+    *hlen = 6;
+    let plen: *u8 = (dst + 5) as *u8;
+    *plen = 4;
+    be16_store(dst + 6, ARP_REPLY);         // oper: reply
+    mac_copy(dst + 8, our_mac);             // sender MAC = ours
+    ip4_copy(dst + 14, our_ip);             // sender IP  = ours
+    mac_copy(dst + 18, arp_sha(src));       // target MAC = the asker's
+    ip4_copy(dst + 24, arp_spa(src));       // target IP  = the asker's
+    return ARP_LEN;
+}

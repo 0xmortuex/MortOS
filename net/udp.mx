@@ -1,0 +1,53 @@
+// net/udp.mx — UDP (RFC 768), the transport DHCP and DNS ride on.
+//
+// Header is 8 bytes: src port (2) | dst port (2) | length (2) | checksum (2),
+// then the payload. The checksum is the tricky part: it covers a 12-byte
+// pseudo-header (src IP, dst IP, zero, protocol 17, UDP length) that isn't
+// contiguous with the segment, so we sum it separately with inet_sum and fold
+// the combined total.
+
+let IP_PROTO_UDP: u8 = 17;
+let UDP_HDR_LEN: u32 = 8;
+
+fn udp_src_port(buf: u64) -> u16 { return be16_load(buf); }
+fn udp_dst_port(buf: u64) -> u16 { return be16_load(buf + 2); }
+fn udp_length(buf: u64) -> u16 { return be16_load(buf + 4); }
+fn udp_payload(buf: u64) -> u64 { return buf + 8; }
+
+// Checksum over pseudo-header + the whole UDP segment of `udp_total` bytes.
+fn udp_checksum(src_ip: u64, dst_ip: u64, udp: u64, udp_total: u32) -> u16 {
+    let ph: [u8; 12] = [0; 12];
+    let p: u64 = &ph as u64;
+    ip4_copy(p, src_ip);
+    ip4_copy(p + 4, dst_ip);
+    let z: *u8 = (p + 8) as *u8; *z = 0;
+    let pr: *u8 = (p + 9) as *u8; *pr = IP_PROTO_UDP;
+    be16_store(p + 10, udp_total as u16);
+    return inet_fold(inet_sum(udp, udp_total, inet_sum(p, 12, 0)));
+}
+
+// Build the 8-byte header at buf; the payload already sits at buf+8 (data_len
+// bytes). Returns the UDP total length (8 + data_len).
+fn udp_build(buf: u64, src_port: u16, dst_port: u16,
+             src_ip: u64, dst_ip: u64, data_len: u32) -> u32 {
+    let total: u32 = UDP_HDR_LEN + data_len;
+    be16_store(buf, src_port);
+    be16_store(buf + 2, dst_port);
+    be16_store(buf + 4, total as u16);
+    be16_store(buf + 6, 0);                 // zero before computing
+    let ck: u16 = udp_checksum(src_ip, dst_ip, buf, total);
+    if ck == 0 {
+        ck = 0xFFFF;                        // 0 means "no checksum"; send all-ones
+    }
+    be16_store(buf + 6, ck);
+    return total;
+}
+
+// A received datagram is intact iff a zero checksum (sender opted out) or the
+// checksum over pseudo-header + segment folds to zero.
+fn udp_verify(src_ip: u64, dst_ip: u64, udp: u64) -> bool {
+    if be16_load(udp + 6) == 0 {
+        return true;
+    }
+    return udp_checksum(src_ip, dst_ip, udp, udp_length(udp) as u32) == 0;
+}

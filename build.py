@@ -106,16 +106,30 @@ def build():
     os.makedirs(BUILD, exist_ok=True)
     cc = _zig()
 
-    # 1. Mort kernel -> freestanding C.
+    # 1. Mort kernel -> freestanding C. The kernel is kmain.mx plus the vendored
+    # mortnet network stack in net/*.mx (ordered so declarations resolve; Mort
+    # emits prototypes first, so calls across files work regardless). All one
+    # translation unit, compiled together.
+    net_dir = os.path.join(HERE, "net")
+    net_src = ""
+    if os.path.isdir(net_dir):
+        for name in sorted(os.listdir(net_dir)):
+            if name.endswith(".mx"):
+                with open(os.path.join(net_dir, name), encoding="utf-8") as fh:
+                    net_src += fh.read() + "\n"
     with open(os.path.join(HERE, "kmain.mx"), encoding="utf-8") as fh:
-        c_source = mortc.compile_to_c(fh.read(), freestanding=True)
+        combined = net_src + fh.read()
+    c_source = mortc.compile_to_c(combined, freestanding=True)
     kmain_c = os.path.join(BUILD, "kmain.c")
     with open(kmain_c, "w", encoding="utf-8") as fh:
         fh.write(c_source)
 
+    # -mno-sse/-mmx: the kernel runs with SSE disabled (CR4.OSFXSR=0). At -O2 the
+    # compiler can vectorize a memset/zero-init to xorps, which would #UD; forbid
+    # vector codegen so the network buffers stay scalar. (See mortnet notes.)
     c_flags = ["-target", TARGET, "-ffreestanding", "-fno-stack-protector",
                "-fno-pie", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
-               "-O2"]
+               "-mno-sse", "-mno-sse2", "-mno-mmx", "-O2"]
     asm_flags = ["-target", TARGET, "-fno-pie"]  # assembling needs no C flags
     kmain_o = os.path.join(BUILD, "kmain.o")
     boot_o = os.path.join(BUILD, "boot.o")

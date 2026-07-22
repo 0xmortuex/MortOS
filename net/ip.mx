@@ -1,0 +1,76 @@
+// net/ip.mx — IPv4 (RFC 791), header only, no fragmentation or options.
+//
+// Enough IP to receive an ICMP echo and answer it: parse a 20-byte header,
+// build one back, and lean on the RFC 1071 checksum from net/checksum.mx. IPs
+// are 4-byte regions addressed by u64, matching the rest of the stack.
+
+let IP_PROTO_ICMP: u8 = 1;
+let IP_HDR_LEN: u32 = 20;
+
+// Copy a 4-byte IPv4 address.
+fn ip4_copy(dst: u64, src: u64) {
+    for i: u32 in 0..4 {
+        let s: *u8 = (src + (i as u64)) as *u8;
+        let d: *u8 = (dst + (i as u64)) as *u8;
+        *d = *s;
+    }
+}
+
+fn ip4_eq(a: u64, b: u64) -> bool {
+    for i: u32 in 0..4 {
+        let pa: *u8 = (a + (i as u64)) as *u8;
+        let pb: *u8 = (b + (i as u64)) as *u8;
+        if *pa != *pb {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ---- accessors on a received header ----
+
+fn ip_ihl_bytes(buf: u64) -> u32 {
+    let b0: *u8 = buf as *u8;
+    return ((*b0 & 0x0F) as u32) * 4;
+}
+
+fn ip_proto(buf: u64) -> u8 {
+    let p: *u8 = (buf + 9) as *u8;
+    return *p;
+}
+
+fn ip_total_len(buf: u64) -> u16 {
+    return be16_load(buf + 2);
+}
+
+fn ip_src(buf: u64) -> u64 { return buf + 12; }
+fn ip_dst(buf: u64) -> u64 { return buf + 16; }
+
+// A received header is intact iff its checksum sums to zero.
+fn ip_verify(buf: u64) -> bool {
+    return inet_checksum(buf, ip_ihl_bytes(buf)) == 0;
+}
+
+// Build a 20-byte header at buf. src/dst are addresses of 4-byte IPs;
+// payload_len is the bytes that will follow the header. Fills TTL 64, the
+// given protocol, DF set, and a correct header checksum. Returns 20.
+fn ip_build_header(buf: u64, src: u64, dst: u64, proto: u8,
+                   ident: u16, payload_len: u16) -> u32 {
+    let b0: *u8 = buf as *u8;
+    *b0 = 0x45;                             // version 4, IHL 5 (20 bytes)
+    let b1: *u8 = (buf + 1) as *u8;
+    *b1 = 0x00;                             // DSCP / ECN
+    be16_store(buf + 2, (IP_HDR_LEN as u16) + payload_len);   // total length
+    be16_store(buf + 4, ident);
+    be16_store(buf + 6, 0x4000);           // flags: Don't Fragment, offset 0
+    let b8: *u8 = (buf + 8) as *u8;
+    *b8 = 64;                              // TTL
+    let b9: *u8 = (buf + 9) as *u8;
+    *b9 = proto;
+    be16_store(buf + 10, 0);               // checksum: zero, then fill in
+    ip4_copy(buf + 12, src);
+    ip4_copy(buf + 16, dst);
+    let ck: u16 = inet_checksum(buf, IP_HDR_LEN);
+    be16_store(buf + 10, ck);
+    return IP_HDR_LEN;
+}
