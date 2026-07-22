@@ -79,10 +79,11 @@ submit forms, or provide a general-purpose DOM. HTTP traffic is unencrypted and
 must not be used for passwords or other sensitive data.
 
 The TLS foundation is being built as independently testable Mort primitives.
-SHA-256, HMAC-SHA256, and HKDF-SHA256 are present and must pass their published
-standard vectors during every boot. This does **not** enable HTTPS by itself:
-key exchange, authenticated encryption, the TLS state machine, X.509 parsing,
-trust anchors, hostname checks, and time validation must also be complete.
+SHA-256, HMAC-SHA256, HKDF-SHA256, and the ChaCha20 block function are present
+and must pass their published standard vectors during every boot. This does
+**not** enable HTTPS by itself: X25519, Poly1305/AEAD, the TLS state machine,
+X.509 parsing, trust anchors, hostname checks, and time validation must also be
+complete.
 
 Those are browser-engine projects in their own right, not hidden switches.
 The UI reports these limits directly so supported local pages and small HTTP

@@ -62,10 +62,21 @@ let TLS_HKDF_OKM1: [u8; 42] = [
     0x34, 0x00, 0x72, 0x08, 0xd5, 0xb8, 0x87, 0x18,
     0x58, 0x65
 ];
+let TLS_CHACHA_BLOCK1: [u8; 64] = [
+    0x10, 0xf1, 0xe7, 0xe4, 0xd1, 0x3b, 0x59, 0x15,
+    0x50, 0x0f, 0xdd, 0x1f, 0xa3, 0x20, 0x71, 0xc4,
+    0xc7, 0xd1, 0xf4, 0xc7, 0x33, 0xc0, 0x68, 0x03,
+    0x04, 0x22, 0xaa, 0x9a, 0xc3, 0xd4, 0x6c, 0x4e,
+    0xd2, 0x82, 0x64, 0x46, 0x07, 0x9f, 0xaa, 0x09,
+    0x14, 0xc2, 0xd7, 0x05, 0xd9, 0x8b, 0x02, 0xa2,
+    0xb5, 0x12, 0x9c, 0xd1, 0xde, 0x16, 0x4e, 0xb9,
+    0xcb, 0xd0, 0x83, 0xe8, 0xa2, 0x50, 0x3c, 0x4e
+];
 
 let g_tls_crypto_sha256_ok: bool = false;
 let g_tls_crypto_hmac_ok: bool = false;
 let g_tls_crypto_hkdf_ok: bool = false;
+let g_tls_crypto_chacha_ok: bool = false;
 
 fn tls_rotr32(value: u32, amount: u32) -> u32 {
     return (value >> amount) | (value << (32 - amount));
@@ -89,6 +100,20 @@ fn tls_store_be64(dst: u64, value: u64) {
     for i: u32 in 0..8 {
         *((dst + (i as u64)) as *u8) = (value >> ((7 - i) * 8)) as u8;
     }
+}
+
+fn tls_load_le32(src: u64) -> u32 {
+    return (*((src + 0) as *u8) as u32)
+        | ((*((src + 1) as *u8) as u32) << 8)
+        | ((*((src + 2) as *u8) as u32) << 16)
+        | ((*((src + 3) as *u8) as u32) << 24);
+}
+
+fn tls_store_le32(dst: u64, value: u32) {
+    *((dst + 0) as *u8) = value as u8;
+    *((dst + 1) as *u8) = (value >> 8) as u8;
+    *((dst + 2) as *u8) = (value >> 16) as u8;
+    *((dst + 3) as *u8) = (value >> 24) as u8;
 }
 
 fn tls_bytes_equal(a: u64, b: u64, length: u32) -> bool {
@@ -187,6 +212,44 @@ fn tls_hkdf_expand(prk: u64, info: u64, info_length: u32, output: u64, output_le
     return true;
 }
 
+fn tls_rotl32(value: u32, amount: u32) -> u32 {
+    return (value << amount) | (value >> (32 - amount));
+}
+
+fn tls_chacha_quarter(state: u64, ai: u32, bi: u32, ci: u32, di: u32) {
+    let a: *u32 = (state + ((ai * 4) as u64)) as *u32;
+    let b: *u32 = (state + ((bi * 4) as u64)) as *u32;
+    let c: *u32 = (state + ((ci * 4) as u64)) as *u32;
+    let d: *u32 = (state + ((di * 4) as u64)) as *u32;
+    let av: u32 = *a; let bv: u32 = *b; let cv: u32 = *c; let dv: u32 = *d;
+    av = av + bv; dv = tls_rotl32(dv ^ av, 16);
+    cv = cv + dv; bv = tls_rotl32(bv ^ cv, 12);
+    av = av + bv; dv = tls_rotl32(dv ^ av, 8);
+    cv = cv + dv; bv = tls_rotl32(bv ^ cv, 7);
+    *a = av; *b = bv; *c = cv; *d = dv;
+}
+
+fn tls_chacha20_block(key: u64, counter: u32, nonce: u64, output: u64) {
+    let initial: [u32; 16] = [0; 16]; let work: [u32; 16] = [0; 16];
+    initial[0] = 0x61707865; initial[1] = 0x3320646e;
+    initial[2] = 0x79622d32; initial[3] = 0x6b206574;
+    for i: u32 in 0..8 { initial[4 + i] = tls_load_le32(key + ((i * 4) as u64)); }
+    initial[12] = counter;
+    for i: u32 in 0..3 { initial[13 + i] = tls_load_le32(nonce + ((i * 4) as u64)); }
+    for i: u32 in 0..16 { work[i] = initial[i]; }
+    for round: u32 in 0..10 {
+        tls_chacha_quarter(&work as u64, 0, 4, 8, 12);
+        tls_chacha_quarter(&work as u64, 1, 5, 9, 13);
+        tls_chacha_quarter(&work as u64, 2, 6, 10, 14);
+        tls_chacha_quarter(&work as u64, 3, 7, 11, 15);
+        tls_chacha_quarter(&work as u64, 0, 5, 10, 15);
+        tls_chacha_quarter(&work as u64, 1, 6, 11, 12);
+        tls_chacha_quarter(&work as u64, 2, 7, 8, 13);
+        tls_chacha_quarter(&work as u64, 3, 4, 9, 14);
+    }
+    for i: u32 in 0..16 { tls_store_le32(output + ((i * 4) as u64), work[i] + initial[i]); }
+}
+
 fn tls_crypto_self_test() {
     let digest: [u8; 32] = [0; 32];
     tls_sha256("" as u64, 0, &digest as u64);
@@ -206,4 +269,10 @@ fn tls_crypto_self_test() {
     g_tls_crypto_hkdf_ok = extract_ok && expand_ok
         && tls_bytes_equal(&prk as u64, &TLS_HKDF_PRK1 as u64, 32)
         && tls_bytes_equal(&okm as u64, &TLS_HKDF_OKM1 as u64, 42);
+
+    let chacha_key: [u8; 32] = [0; 32]; for i: u32 in 0..32 { chacha_key[i] = i as u8; }
+    let chacha_nonce: [u8; 12] = [0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00];
+    let chacha_out: [u8; 64] = [0; 64];
+    tls_chacha20_block(&chacha_key as u64, 1, &chacha_nonce as u64, &chacha_out as u64);
+    g_tls_crypto_chacha_ok = tls_bytes_equal(&chacha_out as u64, &TLS_CHACHA_BLOCK1 as u64, 64);
 }

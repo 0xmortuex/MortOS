@@ -407,6 +407,7 @@ def smoke(disk_img=None):
     sha256_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_sha256_ok")
     hmac_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_hmac_ok")
     hkdf_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_hkdf_ok")
+    chacha_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_chacha_ok")
 
     results = []
 
@@ -429,6 +430,8 @@ def smoke(disk_img=None):
               (_guest_u32(handle, hmac_ok_addr) & 0xff) != 0, handle)
         check("Mort HKDF-SHA256 passes RFC 5869 case 1",
               (_guest_u32(handle, hkdf_ok_addr) & 0xff) != 0, handle)
+        check("Mort ChaCha20 passes the RFC 8439 block vector",
+              (_guest_u32(handle, chacha_ok_addr) & 0xff) != 0, handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",
