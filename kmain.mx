@@ -31,6 +31,12 @@ let g_acct_uid: [u32; 8] = [0; 8];                            // each account's 
 let g_acct_hash: [u32; 8] = [0; 8];                           // each account's password hash
 let g_cwd: u32 = 255;                                         // current working directory (index; 255 = root)
 let g_cwdpath: [u8; 128] = [0; 128];                          // cwd as an absolute path string (for pwd)
+// ----- environment variables -----
+let g_env_count: u32 = 0;                                     // number of custom variables
+let g_env_name: [u8; 256] = [0; 256];                         // 8 slots x 32 bytes
+let g_env_val: [u8; 512] = [0; 512];                          // 8 slots x 64 bytes
+let g_envscratch: [u8; 80] = [0; 80];                         // scratch for computed built-ins
+let g_cmdexp: [u8; 256] = [0; 256];                           // a command line after $VAR expansion
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
 let g_pcol: u32 = 0;                                           // program-output cursor column (syscalls)
 let g_gfx: bool = false;                                       // a linear framebuffer is available
@@ -461,10 +467,7 @@ fn draw_tab(label: *u8, x: u32, id: u32) {
 fn draw_topbar() {
     fill_rect(0, 0, g_fb_w, 24, 0x0d141c);
     draw_text_abs("MORT OS", 12, 4, 0x9fd0d8, 0x0d141c);
-    draw_tab("F1 terminal", 300, 0);
-    draw_tab("F2 files", 470, 1);
-    draw_tab("F3 vex", 600, 2);
-    draw_tab("F4 settings", 700, 3);
+    draw_text_abs("F5 home", g_fb_w - 290, 4, 0x6a7b83, 0x0d141c);
     draw_text_abs("F12 power", g_fb_w - 190, 4, 0x6a7b83, 0x0d141c);
     draw_clock();
 }
@@ -624,6 +627,13 @@ fn scancode_to_ascii(sc: u8, shift: bool) -> u8 {
     }
     if sc == 57 { return 32; }
     if sc == 12 { if shift { return 95; } return 45; }   // -  _
+    if sc == 13 { if shift { return 43; } return 61; }   // =  +
+    if sc == 26 { if shift { return 123; } return 91; }  // [  {
+    if sc == 27 { if shift { return 125; } return 93; }  // ]  }
+    if sc == 39 { if shift { return 58; } return 59; }   // ;  :
+    if sc == 40 { if shift { return 34; } return 39; }   // '  "
+    if sc == 41 { if shift { return 126; } return 96; }  // `  ~
+    if sc == 43 { if shift { return 124; } return 92; }  // \  |
     if sc == 51 { if shift { return 60; } return 44; }   // ,  <
     if sc == 52 { if shift { return 62; } return 46; }   // .  >
     if sc == 53 { if shift { return 63; } return 47; }   // /  ?
@@ -1911,6 +1921,114 @@ fn exec_file(name: *u8) {
 
 // Run a command, printing any output on new (scrolling) lines. Returns true if
 // it cleared the screen (so the caller knows not to add another blank line).
+// ----- environment variables -----
+
+fn env_find(name: *u8) -> u32 {
+    let i: u32 = 0;
+    while i < g_env_count {
+        let base: u64 = (&g_env_name as u64) + ((i * 32) as u64);
+        if streq(name, base as *u8) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 64;
+}
+
+fn env_set(name: *u8, val: *u8) {
+    let i: u32 = env_find(name);
+    if i == 64 {
+        if g_env_count >= 8 {
+            return;
+        }
+        i = g_env_count;
+        g_env_count = g_env_count + 1;
+        let nb: u64 = (&g_env_name as u64) + ((i * 32) as u64);
+        let k: u32 = 0;
+        while k < 32 { *((nb + (k as u64)) as *u8) = 0; k = k + 1; }
+        str_copy(nb as *u8, name);
+    }
+    let vb: u64 = (&g_env_val as u64) + ((i * 64) as u64);
+    let k: u32 = 0;
+    while k < 64 { *((vb + (k as u64)) as *u8) = 0; k = k + 1; }
+    str_copy(vb as *u8, val);
+}
+
+// Return the value (as an address) of `name` — a computed built-in (USER, HOME,
+// PATH, PWD) or a custom variable, or an empty string.
+fn env_get(name: *u8) -> u64 {
+    if streq(name, "USER") { return &g_username as u64; }
+    if streq(name, "PWD") { return &g_cwdpath as u64; }
+    if streq(name, "PATH") { return "/bin" as u64; }
+    if streq(name, "HOME") {
+        str_copy((&g_envscratch as u64) as *u8, "/home/");
+        str_copy(((&g_envscratch as u64) + 6) as *u8, (&g_username as u64) as *u8);
+        return &g_envscratch as u64;
+    }
+    let i: u32 = env_find(name);
+    if i != 64 {
+        return (&g_env_val as u64) + ((i * 64) as u64);
+    }
+    *((&g_envscratch as u64) as *u8) = 0;                       // unknown -> ""
+    return &g_envscratch as u64;
+}
+
+fn is_name_char(c: u8) -> bool {
+    if c >= 48 && c <= 57 { return true; }                      // 0-9
+    if c >= 65 && c <= 90 { return true; }                      // A-Z
+    if c >= 97 && c <= 122 { return true; }                     // a-z
+    if c == 95 { return true; }                                // _
+    return false;
+}
+
+// Copy src to dst, expanding $NAME references to their values.
+fn expand_vars(src: u64, dst: u64) {
+    let si: u32 = 0;
+    let di: u32 = 0;
+    let done: bool = false;
+    while !done {
+        let c: u8 = *((src + (si as u64)) as *u8);
+        if c == 0 {
+            done = true;
+        } else if c == 36 {                                    // '$'
+            let nc: u8 = *((src + ((si + 1) as u64)) as *u8);
+            if is_name_char(nc) {
+                si = si + 1;
+                let vn: [u8; 32] = [0; 32];
+                let nl: u32 = 0;
+                while is_name_char(*((src + (si as u64)) as *u8)) && nl < 30 {
+                    *(((&vn as u64) + (nl as u64)) as *u8) = *((src + (si as u64)) as *u8);
+                    nl = nl + 1;
+                    si = si + 1;
+                }
+                *(((&vn as u64) + (nl as u64)) as *u8) = 0;
+                let val: u64 = env_get((&vn as u64) as *u8);
+                let vi: u32 = 0;
+                while *((val + (vi as u64)) as *u8) != 0 && di < 250 {
+                    *((dst + (di as u64)) as *u8) = *((val + (vi as u64)) as *u8);
+                    di = di + 1;
+                    vi = vi + 1;
+                }
+            } else {
+                if di < 250 { *((dst + (di as u64)) as *u8) = 36; di = di + 1; }
+                si = si + 1;
+            }
+        } else {
+            if di < 250 { *((dst + (di as u64)) as *u8) = c; di = di + 1; }
+            si = si + 1;
+        }
+    }
+    *((dst + (di as u64)) as *u8) = 0;
+}
+
+fn env_print(name: *u8) {
+    feed();
+    print_at(name, g_row, 0, 11);
+    let nl: u32 = str_len(name);
+    print_at("=", g_row, nl, 7);
+    print_at(env_get(name) as *u8, g_row, nl + 1, 15);
+}
+
 // Run `path` if it resolves to an executable file (any exec bit). A ".bin" is
 // loaded as a flat binary (exec_file); anything else runs as a script
 // (run_file). Returns true if it launched something.
@@ -1972,7 +2090,14 @@ fn try_exec_path(cmd: *u8) -> bool {
     return false;
 }
 
+// Expand $VARs in the command line, then dispatch. Every caller (the shell,
+// scripts, sudo) goes through here, so expansion happens everywhere.
 fn run_command(cmd: *u8) -> bool {
+    expand_vars(cmd as u64, &g_cmdexp as u64);
+    return run_command_impl((&g_cmdexp as u64) as *u8);
+}
+
+fn run_command_impl(cmd: *u8) -> bool {
     if streq(cmd, "") {
         return false;
     }
@@ -1987,6 +2112,8 @@ fn run_command(cmd: *u8) -> bool {
         print_string("power: F12 menu, or lock sleep restart shutdown", g_row, 7);
         feed();
         print_string("users: whoami su sudo passwd chmod chown", g_row, 7);
+        feed();
+        print_string("env: env export unset  ($VAR expands in commands)", g_row, 7);
         return false;
     }
     if streq(cmd, "readme") {
@@ -2230,6 +2357,50 @@ fn run_command(cmd: *u8) -> bool {
         num_to_str(g_uid as u32, g_numbuf);
         print_at(g_numbuf, g_row, ul + 6, 15);
         print_at(")", g_row, ul + 6 + g_numlen, 7);
+        return false;
+    }
+    if starts_with(cmd, "export ") {
+        let arg: u64 = (cmd as u32 + 7) as u64;
+        let eq: u32 = find_char(arg as *u8, 61);               // '='
+        if eq == 0 {
+            feed();
+            print_string("usage: export NAME=value", g_row, 12);
+            return false;
+        }
+        let nm: [u8; 32] = [0; 32];
+        let k: u32 = 0;
+        while k < eq && k < 30 {
+            *(((&nm as u64) + (k as u64)) as *u8) = *((arg + (k as u64)) as *u8);
+            k = k + 1;
+        }
+        *(((&nm as u64) + (k as u64)) as *u8) = 0;
+        env_set((&nm as u64) as *u8, (arg + (eq as u64) + 1) as *u8);
+        return false;
+    }
+    if streq(cmd, "env") {
+        env_print("USER");
+        env_print("HOME");
+        env_print("PATH");
+        env_print("PWD");
+        let i: u32 = 0;
+        while i < g_env_count {
+            env_print(((&g_env_name as u64) + ((i * 32) as u64)) as *u8);
+            i = i + 1;
+        }
+        return false;
+    }
+    if starts_with(cmd, "unset ") {
+        let i: u32 = env_find((cmd as u32 + 6) as *u8);
+        if i != 64 {
+            let last: u32 = g_env_count - 1;
+            if i != last {
+                str_copy(((&g_env_name as u64) + ((i * 32) as u64)) as *u8,
+                         ((&g_env_name as u64) + ((last * 32) as u64)) as *u8);
+                str_copy(((&g_env_val as u64) + ((i * 64) as u64)) as *u8,
+                         ((&g_env_val as u64) + ((last * 64) as u64)) as *u8);
+            }
+            g_env_count = last;
+        }
         return false;
     }
     if streq(cmd, "su") || starts_with(cmd, "su ") {
