@@ -8,6 +8,7 @@
 // so these call print_string/feed/g_row defined in kmain.mx directly.
 
 let g_net_up: bool = false;
+let g_net_quiet: bool = false;       // GUI callers suppress terminal progress text
 let g_net_tx: [u8; 1024] = [0; 1024];
 let g_net_rx: [u8; 2048] = [0; 2048];
 let g_net_resp: [u8; 1024] = [0; 1024];
@@ -44,8 +45,10 @@ fn net_ip_to_str(ip: u64) {
 // IP on success. Prints progress on the shell.
 fn net_dhcp() -> bool {
     if !rtl_init() {
-        feed();
-        print_string("no RTL8139 NIC found (need vendor 10EC device 8139)", g_row, 12);
+        if !g_net_quiet {
+            feed();
+            print_string("no RTL8139 NIC found (need vendor 10EC device 8139)", g_row, 12);
+        }
         return false;
     }
     let mymac: [u8; 6] = [0; 6];
@@ -54,8 +57,10 @@ fn net_dhcp() -> bool {
     let noip: [u8; 4] = [0, 0, 0, 0];
     net_set_ip(&noip as u64);
 
-    feed();
-    print_string("NIC up. DHCP: DISCOVER...", g_row, 7);
+    if !g_net_quiet {
+        feed();
+        print_string("NIC up. DHCP: DISCOVER...", g_row, 7);
+    }
 
     // Build the DHCP body at the payload slot, wrap and send (DISCOVER).
     let xid: u32 = 0x6D6F7274;
@@ -89,9 +94,11 @@ fn net_dhcp() -> bool {
                     if mt == DHCP_ACK && requested {
                         net_set_ip(dhcp_yiaddr(dhcp));
                         net_ip_to_str(net_our_ip());
-                        feed();
-                        print_string("DHCP: bound to ", g_row, 10);
-                        print_at(&g_ipstr as *u8, g_row, 15, 11);
+                        if !g_net_quiet {
+                            feed();
+                            print_string("DHCP: bound to ", g_row, 10);
+                            print_at(&g_ipstr as *u8, g_row, 15, 11);
+                        }
                         g_net_up = true;
                         return true;
                     }
@@ -106,8 +113,10 @@ fn net_dhcp() -> bool {
         }
         spins = spins + 1;
     }
-    feed();
-    print_string("DHCP: no response (timeout)", g_row, 12);
+    if !g_net_quiet {
+        feed();
+        print_string("DHCP: no response (timeout)", g_row, 12);
+    }
     return false;
 }
 

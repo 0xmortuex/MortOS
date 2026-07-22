@@ -237,8 +237,8 @@ fn settings_network() {
     settings_text("DHCP lease", 438, 320, false); settings_text(settings_yes_no(g_net_up), 650, 320, true);
     settings_text("IPv4 address", 438, 360, false);
     if g_net_up { settings_draw_ip(650, 360); } else { settings_text("Not assigned", 650, 360, true); }
-    settings_text("Use 'net dhcp' in Terminal to connect.", 438, 424, false);
-    settings_text("Use 'net httpd' to start the web server.", 438, 450, false);
+    settings_text("Enter to manage Ethernet and DHCP.", 438, 424, false);
+    settings_text("Stack: ARP, IPv4, ICMP, UDP and TCP.", 438, 450, false);
 }
 
 fn settings_apps() {
@@ -274,14 +274,16 @@ fn settings_power() {
 }
 
 fn settings_hardware() {
+    if !g_hw_scanned { hw_scan_pci(); }
     settings_title("Hardware & Devices", "Detected drivers and capabilities");
     settings_text("PS/2 keyboard", 438, 276, false); settings_text("Ready", 674, 276, true);
     settings_text("Framebuffer", 438, 310, false); settings_text(settings_yes_no(g_gfx), 650, 310, true);
     settings_text("ATA storage", 438, 344, false); settings_text(settings_yes_no(g_disk_ok), 650, 344, true);
-    settings_text("RTL8139 Ethernet", 438, 378, false); settings_text(settings_yes_no(g_rtl_ok), 650, 378, true);
-    settings_text("Pointer / touch", 438, 412, false); settings_text("Not detected", 650, 412, true);
-    settings_text("Audio", 438, 446, false); settings_text("Not supported yet", 610, 446, true);
-    settings_text("Bluetooth / Wi-Fi", 438, 480, false); settings_text("Not supported yet", 610, 480, true);
+    settings_text("Ethernet controller", 438, 378, false); settings_text(settings_yes_no(g_hw_ethernet), 650, 378, true);
+    settings_text("Wireless controller", 438, 412, false); settings_text(settings_yes_no(g_hw_wifi), 650, 412, true);
+    settings_text("USB controller", 438, 446, false); settings_text(settings_yes_no(g_hw_usb), 650, 446, true);
+    settings_text("PC speaker", 438, 480, false); settings_text(settings_on_off(g_speaker_enabled), 650, 480, true);
+    settings_text("Enter for device controls and a live rescan.", 438, 516, false);
 }
 
 fn settings_update() {
@@ -394,8 +396,33 @@ fn settings_draw_accessibility() {
     settings_title("Accessibility", "Visual clarity and guidance controls");
     settings_option_row("High contrast", settings_on_off(g_settings_high_contrast), 286, g_settings_sel == 0);
     settings_option_row("Navigation hints", settings_on_off(g_settings_show_hints), 334, g_settings_sel == 1);
-    settings_text("High contrast uses black and gold for stronger edges.", 438, 394, false);
+    settings_text("High contrast uses stronger black/gold edges.", 438, 394, false);
     if g_settings_show_hints { settings_text("Up/Down: select   Enter: toggle   Esc/Left: back", 420, 580, false); }
+}
+
+fn settings_draw_network_controls() {
+    settings_title("Ethernet", "RTL8139 adapter and IPv4 configuration");
+    settings_option_row("Connect with DHCP", "Run", 280, g_settings_sel == 0);
+    settings_option_row("Disconnect adapter", "Run", 322, g_settings_sel == 1);
+    settings_text("Driver", 438, 374, false); settings_text(settings_yes_no(g_rtl_ok), 650, 374, true);
+    settings_text("DHCP lease", 438, 406, false); settings_text(settings_yes_no(g_net_up), 650, 406, true);
+    settings_text("IPv4", 438, 438, false);
+    if g_net_up { settings_draw_ip(650, 438); } else { settings_text("Not assigned", 650, 438, true); }
+    settings_text("QEMU: use -netdev user and -device rtl8139.", 438, 488, false);
+    settings_text("Up/Down: select   Enter: run   Esc/Left: back", 420, 580, false);
+}
+
+fn settings_draw_hardware_controls() {
+    settings_title("Device Controls", "PCI discovery and legacy audio");
+    settings_option_row("Rescan PCI devices", "Run", 278, g_settings_sel == 0);
+    settings_option_row("PC speaker", settings_on_off(g_speaker_enabled), 320, g_settings_sel == 1);
+    settings_option_row("Test speaker tone", "Run", 362, g_settings_sel == 2);
+    settings_text("PCI devices", 438, 414, false); num_to_str(g_hw_pci_count, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 414, 0xffffff, 0x0b0f14);
+    settings_text("Wi-Fi", 438, 446, false); settings_text(settings_yes_no(g_hw_wifi), 650, 446, true);
+    settings_text("Bluetooth HCI", 438, 478, false); settings_text(settings_yes_no(g_hw_bluetooth), 650, 478, true);
+    settings_text("Bluetooth needs USB and an HCI host stack.", 438, 516, false);
+    settings_text("Up/Down: select   Enter: run   Esc/Left: back", 420, 580, false);
 }
 
 fn settings_draw() {
@@ -406,6 +433,8 @@ fn settings_draw() {
     if g_settings_view == 1 { settings_draw_personalization(); }
     if g_settings_view == 2 { settings_draw_clock(); }
     if g_settings_view == 3 { settings_draw_accessibility(); }
+    if g_settings_view == 4 { settings_draw_hardware_controls(); }
+    if g_settings_view == 5 { settings_draw_network_controls(); }
 }
 
 fn settings_up() {
@@ -429,7 +458,9 @@ fn settings_down() {
         }
         return;
     }
-    if g_settings_sel < 1 { g_settings_sel = g_settings_sel + 1; settings_draw(); }
+    let last: u32 = 1;
+    if g_settings_view == 4 { last = 2; }
+    if g_settings_sel < last { g_settings_sel = g_settings_sel + 1; settings_draw(); }
 }
 
 fn settings_apply_accent() {
@@ -457,6 +488,8 @@ fn settings_enter() {
         if g_settings_section == 1 { g_settings_view = 1; g_settings_sel = 0; settings_draw(); }
         if g_settings_section == 5 { g_settings_view = 2; g_settings_sel = 0; settings_draw(); }
         if g_settings_section == 6 { g_settings_view = 3; g_settings_sel = 0; settings_draw(); }
+        if g_settings_section == 3 { g_settings_view = 5; g_settings_sel = 0; settings_draw(); }
+        if g_settings_section == 10 { g_settings_view = 4; g_settings_sel = 0; hw_scan_pci(); settings_draw(); }
         return;
     }
     if g_settings_view == 1 {
@@ -478,6 +511,21 @@ fn settings_enter() {
             draw_desktop(); settings_draw();
         }
         if g_settings_sel == 1 { g_settings_show_hints = !g_settings_show_hints; settings_draw(); }
+        return;
+    }
+    if g_settings_view == 4 {
+        if g_settings_sel == 0 { hw_scan_pci(); settings_draw(); }
+        if g_settings_sel == 1 { g_speaker_enabled = !g_speaker_enabled; if !g_speaker_enabled { speaker_stop(); } settings_draw(); }
+        if g_settings_sel == 2 { speaker_test(); settings_draw(); }
+        return;
+    }
+    if g_settings_view == 5 {
+        if g_settings_sel == 0 {
+            clear_window(); window_title("settings - connecting...");
+            draw_text_abs("Bringing up RTL8139 and requesting a DHCP lease...", 240, 300, 0xffffff, 0x0b0f14);
+            g_net_quiet = true; net_dhcp(); g_net_quiet = false; settings_draw();
+        }
+        if g_settings_sel == 1 { ethernet_disconnect(); settings_draw(); }
     }
 }
 
