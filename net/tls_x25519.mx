@@ -1,0 +1,171 @@
+// X25519 for TLS 1.3 key exchange, implemented with 16 little-endian 16-bit
+// field limbs and a constant-time Montgomery ladder (RFC 7748 section 5).
+
+let TLS_X25519_ITER1: [u8; 32] = [
+    0x42, 0x2c, 0x8e, 0x7a, 0x62, 0x27, 0xd7, 0xbc,
+    0xa1, 0x35, 0x0b, 0x3e, 0x2b, 0xb7, 0x27, 0x9f,
+    0x78, 0x97, 0xb8, 0x7b, 0xb6, 0x85, 0x4b, 0x78,
+    0x3c, 0x60, 0xe8, 0x03, 0x11, 0xae, 0x30, 0x79
+];
+let TLS_X25519_ALICE_PRIVATE: [u8; 32] = [
+    0x77, 0x07, 0x6d, 0x0a, 0x73, 0x18, 0xa5, 0x7d, 0x3c, 0x16, 0xc1, 0x72, 0x51, 0xb2, 0x66, 0x45,
+    0xdf, 0x4c, 0x2f, 0x87, 0xeb, 0xc0, 0x99, 0x2a, 0xb1, 0x77, 0xfb, 0xa5, 0x1d, 0xb9, 0x2c, 0x2a
+];
+let TLS_X25519_ALICE_PUBLIC: [u8; 32] = [
+    0x85, 0x20, 0xf0, 0x09, 0x89, 0x30, 0xa7, 0x54, 0x74, 0x8b, 0x7d, 0xdc, 0xb4, 0x3e, 0xf7, 0x5a,
+    0x0d, 0xbf, 0x3a, 0x0d, 0x26, 0x38, 0x1a, 0xf4, 0xeb, 0xa4, 0xa9, 0x8e, 0xaa, 0x9b, 0x4e, 0x6a
+];
+let TLS_X25519_BOB_PRIVATE: [u8; 32] = [
+    0x5d, 0xab, 0x08, 0x7e, 0x62, 0x4a, 0x8a, 0x4b, 0x79, 0xe1, 0x7f, 0x8b, 0x83, 0x80, 0x0e, 0xe6,
+    0x6f, 0x3b, 0xb1, 0x29, 0x26, 0x18, 0xb6, 0xfd, 0x1c, 0x2f, 0x8b, 0x27, 0xff, 0x88, 0xe0, 0xeb
+];
+let TLS_X25519_BOB_PUBLIC: [u8; 32] = [
+    0xde, 0x9e, 0xdb, 0x7d, 0x7b, 0x7d, 0xc1, 0xb4, 0xd3, 0x5b, 0x61, 0xc2, 0xec, 0xe4, 0x35, 0x37,
+    0x3f, 0x83, 0x43, 0xc8, 0x5b, 0x78, 0x67, 0x4d, 0xad, 0xfc, 0x7e, 0x14, 0x6f, 0x88, 0x2b, 0x4f
+];
+let TLS_X25519_SHARED: [u8; 32] = [
+    0x4a, 0x5d, 0x9d, 0x5b, 0xa4, 0xce, 0x2d, 0xe1, 0x72, 0x8e, 0x3b, 0xf4, 0x80, 0x35, 0x0f, 0x25,
+    0xe0, 0x7e, 0x21, 0xc9, 0x47, 0xd1, 0x9e, 0x33, 0x76, 0xf0, 0x9b, 0x3c, 0x1e, 0x16, 0x17, 0x42
+];
+
+let g_tls_crypto_x25519_ok: bool = false;
+let g_tls_x25519_test_output: [u8; 32] = [0; 32];
+
+fn tls_gf_get(a: u64, index: u32) -> i64 {
+    return *((a + ((index * 8) as u64)) as *i64);
+}
+
+fn tls_gf_put(a: u64, index: u32, value: i64) {
+    *((a + ((index * 8) as u64)) as *i64) = value;
+}
+
+fn tls_gf_copy(output: u64, input: u64) {
+    for i: u32 in 0..16 { tls_gf_put(output, i, tls_gf_get(input, i)); }
+}
+
+fn tls_gf_add(output: u64, a: u64, b: u64) {
+    for i: u32 in 0..16 { tls_gf_put(output, i, tls_gf_get(a, i) + tls_gf_get(b, i)); }
+}
+
+fn tls_gf_sub(output: u64, a: u64, b: u64) {
+    for i: u32 in 0..16 { tls_gf_put(output, i, tls_gf_get(a, i) - tls_gf_get(b, i)); }
+}
+
+fn tls_gf_carry(value: u64) {
+    for i: u32 in 0..16 {
+        let limb: i64 = tls_gf_get(value, i) + 65536;
+        let carry: i64 = limb >> 16;
+        tls_gf_put(value, i, limb - (carry << 16));
+        if i < 15 { tls_gf_put(value, i + 1, tls_gf_get(value, i + 1) + carry - 1); }
+        else { tls_gf_put(value, 0, tls_gf_get(value, 0) + 38 * (carry - 1)); }
+    }
+}
+
+fn tls_gf_select(a: u64, b: u64, select: u32) {
+    let mask: i64 = 0 - (select as i64);
+    for i: u32 in 0..16 {
+        let av: i64 = tls_gf_get(a, i); let bv: i64 = tls_gf_get(b, i);
+        let swap: i64 = mask & (av ^ bv);
+        tls_gf_put(a, i, av ^ swap); tls_gf_put(b, i, bv ^ swap);
+    }
+}
+
+fn tls_gf_mul(output: u64, a: u64, b: u64) {
+    let product: [i64; 31] = [0; 31];
+    for i: u32 in 0..16 {
+        for j: u32 in 0..16 { product[i + j] = product[i + j] + tls_gf_get(a, i) * tls_gf_get(b, j); }
+    }
+    for i: u32 in 0..15 { product[i] = product[i] + 38 * product[i + 16]; }
+    for i: u32 in 0..16 { tls_gf_put(output, i, product[i]); }
+    tls_gf_carry(output); tls_gf_carry(output);
+}
+
+fn tls_gf_square(output: u64, input: u64) { tls_gf_mul(output, input, input); }
+
+fn tls_gf_unpack(output: u64, input: u64) {
+    for i: u32 in 0..16 {
+        let lo: i64 = *((input + ((i * 2) as u64)) as *u8) as i64;
+        let hi: i64 = *((input + ((i * 2 + 1) as u64)) as *u8) as i64;
+        tls_gf_put(output, i, lo + (hi << 8));
+    }
+    tls_gf_put(output, 15, tls_gf_get(output, 15) & 0x7fff);
+}
+
+fn tls_gf_pack(output: u64, input: u64) {
+    let t: [i64; 16] = [0; 16]; let m: [i64; 16] = [0; 16]; tls_gf_copy(&t as u64, input);
+    tls_gf_carry(&t as u64); tls_gf_carry(&t as u64); tls_gf_carry(&t as u64);
+    for round: u32 in 0..2 {
+        m[0] = t[0] - 0xffed;
+        for i: u32 in 1..15 {
+            m[i] = t[i] - 0xffff - ((m[i - 1] >> 16) & 1);
+            m[i - 1] = m[i - 1] & 0xffff;
+        }
+        m[15] = t[15] - 0x7fff - ((m[14] >> 16) & 1);
+        let borrow: u32 = ((m[15] >> 16) & 1) as u32; m[14] = m[14] & 0xffff;
+        tls_gf_select(&t as u64, &m as u64, 1 - borrow);
+    }
+    for i: u32 in 0..16 {
+        *((output + ((i * 2) as u64)) as *u8) = t[i] as u8;
+        *((output + ((i * 2 + 1) as u64)) as *u8) = (t[i] >> 8) as u8;
+    }
+}
+
+fn tls_gf_inverse(output: u64, input: u64) {
+    let value: [i64; 16] = [0; 16]; tls_gf_copy(&value as u64, input);
+    let power: i32 = 253;
+    while power >= 0 {
+        tls_gf_square(&value as u64, &value as u64);
+        if power != 2 && power != 4 { tls_gf_mul(&value as u64, &value as u64, input); }
+        power = power - 1;
+    }
+    tls_gf_copy(output, &value as u64);
+}
+
+fn tls_x25519(scalar_input: u64, u_input: u64, output: u64) {
+    let scalar: [u8; 32] = [0; 32];
+    for i: u32 in 0..32 { scalar[i] = *((scalar_input + (i as u64)) as *u8); }
+    scalar[0] = scalar[0] & 248; scalar[31] = (scalar[31] & 127) | 64;
+
+    let x1: [i64; 16] = [0; 16]; let x2: [i64; 16] = [0; 16]; let z2: [i64; 16] = [0; 16];
+    let x3: [i64; 16] = [0; 16]; let z3: [i64; 16] = [0; 16]; let a24: [i64; 16] = [0; 16];
+    let a: [i64; 16] = [0; 16]; let aa: [i64; 16] = [0; 16]; let b: [i64; 16] = [0; 16];
+    let bb: [i64; 16] = [0; 16]; let e: [i64; 16] = [0; 16]; let c: [i64; 16] = [0; 16];
+    let d: [i64; 16] = [0; 16]; let da: [i64; 16] = [0; 16]; let cb: [i64; 16] = [0; 16];
+    let temp: [i64; 16] = [0; 16];
+    tls_gf_unpack(&x1 as u64, u_input); x2[0] = 1; tls_gf_copy(&x3 as u64, &x1 as u64); z3[0] = 1; a24[0] = 121665;
+    let swap: u32 = 0; let bit_index: i32 = 254;
+    while bit_index >= 0 {
+        let bit: u32 = ((scalar[(bit_index as u32) >> 3] >> ((bit_index as u32) & 7)) & 1) as u32;
+        swap = swap ^ bit; tls_gf_select(&x2 as u64, &x3 as u64, swap); tls_gf_select(&z2 as u64, &z3 as u64, swap); swap = bit;
+        tls_gf_add(&a as u64, &x2 as u64, &z2 as u64); tls_gf_square(&aa as u64, &a as u64);
+        tls_gf_sub(&b as u64, &x2 as u64, &z2 as u64); tls_gf_square(&bb as u64, &b as u64);
+        tls_gf_sub(&e as u64, &aa as u64, &bb as u64); tls_gf_add(&c as u64, &x3 as u64, &z3 as u64);
+        tls_gf_sub(&d as u64, &x3 as u64, &z3 as u64); tls_gf_mul(&da as u64, &d as u64, &a as u64);
+        tls_gf_mul(&cb as u64, &c as u64, &b as u64); tls_gf_add(&temp as u64, &da as u64, &cb as u64);
+        tls_gf_square(&x3 as u64, &temp as u64); tls_gf_sub(&temp as u64, &da as u64, &cb as u64);
+        tls_gf_square(&temp as u64, &temp as u64); tls_gf_mul(&z3 as u64, &temp as u64, &x1 as u64);
+        tls_gf_mul(&x2 as u64, &aa as u64, &bb as u64); tls_gf_mul(&temp as u64, &a24 as u64, &e as u64);
+        tls_gf_add(&temp as u64, &aa as u64, &temp as u64); tls_gf_mul(&z2 as u64, &e as u64, &temp as u64);
+        bit_index = bit_index - 1;
+    }
+    tls_gf_select(&x2 as u64, &x3 as u64, swap); tls_gf_select(&z2 as u64, &z3 as u64, swap);
+    tls_gf_inverse(&z2 as u64, &z2 as u64); tls_gf_mul(&x2 as u64, &x2 as u64, &z2 as u64);
+    tls_gf_pack(output, &x2 as u64);
+}
+
+fn tls_x25519_self_test() {
+    let input: [u8; 32] = [0; 32]; input[0] = 9;
+    tls_x25519(&input as u64, &input as u64, &g_tls_x25519_test_output as u64);
+    let iteration_ok: bool = tls_bytes_equal(&g_tls_x25519_test_output as u64, &TLS_X25519_ITER1 as u64, 32);
+    let alice_public: [u8; 32] = [0; 32]; let bob_public: [u8; 32] = [0; 32];
+    let alice_shared: [u8; 32] = [0; 32]; let bob_shared: [u8; 32] = [0; 32];
+    tls_x25519(&TLS_X25519_ALICE_PRIVATE as u64, &input as u64, &alice_public as u64);
+    tls_x25519(&TLS_X25519_BOB_PRIVATE as u64, &input as u64, &bob_public as u64);
+    tls_x25519(&TLS_X25519_ALICE_PRIVATE as u64, &bob_public as u64, &alice_shared as u64);
+    tls_x25519(&TLS_X25519_BOB_PRIVATE as u64, &alice_public as u64, &bob_shared as u64);
+    g_tls_crypto_x25519_ok = iteration_ok
+        && tls_bytes_equal(&alice_public as u64, &TLS_X25519_ALICE_PUBLIC as u64, 32)
+        && tls_bytes_equal(&bob_public as u64, &TLS_X25519_BOB_PUBLIC as u64, 32)
+        && tls_bytes_equal(&alice_shared as u64, &TLS_X25519_SHARED as u64, 32)
+        && tls_bytes_equal(&bob_shared as u64, &TLS_X25519_SHARED as u64, 32);
+}

@@ -421,4 +421,5 @@ fn tls_crypto_self_test() {
     g_tls_crypto_aead_ok = aead_ok
         && tls_bytes_equal(&aead_cipher as u64, &TLS_AEAD_CIPHER1 as u64, 114)
         && tls_bytes_equal(&aead_tag as u64, &TLS_AEAD_TAG1 as u64, 16);
+    tls_x25519_self_test();
 }
