@@ -491,11 +491,20 @@ fn browser_draw_links() {
 
 fn browser_draw_network() {
     draw_text_abs("Network", 208, 272, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("RTL8139", 208, 310, 0x8fa1aa, 0x0b0f14); draw_text_abs(settings_yes_no(g_rtl_ok), 400, 310, 0xffffff, 0x0b0f14);
-    draw_text_abs("DHCP lease", 208, 342, 0x8fa1aa, 0x0b0f14); draw_text_abs(settings_yes_no(g_net_up), 400, 342, 0xffffff, 0x0b0f14);
-    draw_text_abs("Transport", 208, 374, 0x8fa1aa, 0x0b0f14); draw_text_abs("Ethernet / IPv4 / TCP", 400, 374, 0xffffff, 0x0b0f14);
-    draw_text_abs("Secure transport", 208, 406, 0x8fa1aa, 0x0b0f14); draw_text_abs("TLS unavailable", 400, 406, 0xffb454, 0x0b0f14);
-    draw_text_abs("Open Settings > Network to connect with DHCP.", 208, 454, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("RTL8139", 208, 300, 0x8fa1aa, 0x0b0f14); draw_text_abs(settings_yes_no(g_rtl_ok), 400, 300, 0xffffff, 0x0b0f14);
+    draw_text_abs("DHCP lease", 208, 332, 0x8fa1aa, 0x0b0f14); draw_text_abs(settings_yes_no(g_net_up), 400, 332, 0xffffff, 0x0b0f14);
+    draw_text_abs("IPv4", 208, 364, 0x8fa1aa, 0x0b0f14);
+    if g_net_up { settings_draw_ip_addr(net_our_ip(), 400, 364); }
+    else { draw_text_abs("Not assigned", 400, 364, 0xffffff, 0x0b0f14); }
+    draw_text_abs("Gateway", 208, 396, 0x8fa1aa, 0x0b0f14);
+    if g_net_up { settings_draw_ip_addr(net_gateway_ip(), 400, 396); }
+    else { draw_text_abs("Not assigned", 400, 396, 0xffffff, 0x0b0f14); }
+    draw_text_abs("DNS", 208, 428, 0x8fa1aa, 0x0b0f14);
+    if g_net_up { settings_draw_ip_addr(net_dns_ip(), 400, 428); }
+    else { draw_text_abs("Not assigned", 400, 428, 0xffffff, 0x0b0f14); }
+    draw_text_abs("Transport", 208, 460, 0x8fa1aa, 0x0b0f14); draw_text_abs("Ethernet / IPv4 / TCP", 400, 460, 0xffffff, 0x0b0f14);
+    draw_text_abs("Secure transport", 208, 492, 0x8fa1aa, 0x0b0f14); draw_text_abs("TLS unavailable", 400, 492, 0xffb454, 0x0b0f14);
+    draw_text_abs("Open Settings > Network to renew DHCP.", 208, 532, 0xc8d0d4, 0x0b0f14);
 }
 
 fn browser_draw_error() {

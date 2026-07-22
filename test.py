@@ -606,6 +606,8 @@ def browser_ui():
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
     app_addr = _elf32_symbol(ELF, "m_g_app")
     remote_addr = _elf32_symbol(ELF, "m_g_browser_remote")
+    gateway_addr = _elf32_symbol(ELF, "m_g_gateway_ip")
+    dns_addr = _elf32_symbol(ELF, "m_g_dns_ip")
     content_addr = _elf32_symbol(ELF, "m_g_browser_content")
     content_len_addr = _elf32_symbol(ELF, "m_g_browser_content_len")
     downloaded_addr = _elf32_symbol(ELF, "m_g_browser_downloaded")
@@ -688,6 +690,10 @@ def browser_ui():
                 timeout_s=25)
             check("Vex completes DHCP, ARP, TCP, and HTTP loading",
                   (remote & 0xff) != 0)
+            check("DHCP lease records the router-provided default gateway",
+                  _guest_bytes(handle, gateway_addr, 4) == bytes((10, 0, 2, 2)))
+            check("DHCP lease records the router-provided DNS server",
+                  _guest_bytes(handle, dns_addr, 4) == bytes((10, 0, 2, 3)))
             content_len = _guest_u32(handle, content_len_addr)
             content = _guest_bytes(handle, content_addr, min(content_len, 512))
             text_content = content.decode("ascii", "replace")

@@ -42,7 +42,7 @@ fn net_ip_to_str(ip: u64) {
 }
 
 // Bring up the RTL8139 and lease an address via DHCP. Returns true and sets our
-// IP on success. Prints progress on the shell.
+// address, subnet mask, default gateway and DNS server on success.
 fn net_dhcp() -> bool {
     if !rtl_init() {
         if !g_net_quiet {
@@ -93,6 +93,12 @@ fn net_dhcp() -> bool {
                     }
                     if mt == DHCP_ACK && requested {
                         net_set_ip(dhcp_yiaddr(dhcp));
+                        let mask: u64 = dhcp_find_option(dhcp, dhcp_len, 1);
+                        let router: u64 = dhcp_find_option(dhcp, dhcp_len, 3);
+                        let dns: u64 = dhcp_find_option(dhcp, dhcp_len, 6);
+                        if mask != 0 && dhcp_option_length(dhcp, dhcp_len, 1) >= 4 { net_set_mask(mask); }
+                        if router != 0 && dhcp_option_length(dhcp, dhcp_len, 3) >= 4 { net_set_gateway(router); }
+                        if dns != 0 && dhcp_option_length(dhcp, dhcp_len, 6) >= 4 { net_set_dns(dns); }
                         net_ip_to_str(net_our_ip());
                         if !g_net_quiet {
                             feed();

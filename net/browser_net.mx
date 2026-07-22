@@ -1,6 +1,6 @@
 // Synchronous HTTP/1.x client for the Vex browser. It uses the existing
-// RTL8139, ARP, IPv4, UDP/DNS and TCP format layers. QEMU user networking uses
-// 10.0.2.2 as the gateway and 10.0.2.3 as DNS; DHCP still supplies our address.
+// RTL8139, ARP, IPv4, UDP/DNS and TCP format layers, including the subnet,
+// gateway, and DNS configuration learned from DHCP.
 
 let g_browser_net_host: [u8; 64] = [0; 64];
 let g_browser_net_path: [u8; 96] = [0; 96];
@@ -111,16 +111,25 @@ fn browser_arp_resolve(target_ip: u64, out_mac: u64) -> bool {
     return false;
 }
 
+fn browser_route_ip(destination: u64) -> u64 {
+    if net_same_subnet(destination) { return destination; }
+    if net_ip_present(net_gateway_ip()) { return net_gateway_ip(); }
+    return 0;
+}
+
 fn browser_dns_resolve(host: u64, out_ip: u64) -> bool {
     if browser_parse_ipv4(host, out_ip) { return true; }
-    let dns_ip: [u8; 4] = [10, 0, 2, 3]; let dns_mac: [u8; 6] = [0; 6];
-    if !browser_arp_resolve(&dns_ip as u64, &dns_mac as u64) { browser_set_status("DNS gateway ARP failed"); return false; }
+    let dns_ip: u64 = net_dns_ip(); let dns_mac: [u8; 6] = [0; 6];
+    if !net_ip_present(dns_ip) { browser_set_status("DHCP did not provide a DNS server"); return false; }
+    let arp_ip: u64 = browser_route_ip(dns_ip);
+    if arp_ip == 0 { browser_set_status("DHCP did not provide a default gateway"); return false; }
+    if !browser_arp_resolve(arp_ip, &dns_mac as u64) { browser_set_status("DNS route ARP failed"); return false; }
     let base: u64 = &g_net_tx as u64; let ip: u64 = eth_payload(base); let udp: u64 = ip + 20;
     let query: u64 = udp + 8; let id: u16 = (0x5600 | ((g_ticks as u16) & 0xff));
     let qlen: u32 = dns_build_query(query, id, host);
     eth_build_header(base, &dns_mac as u64, net_our_mac(), ETH_IP);
-    let ulen: u32 = udp_build(udp, 53000, DNS_PORT, net_our_ip(), &dns_ip as u64, qlen);
-    ip_build_header(ip, net_our_ip(), &dns_ip as u64, IP_PROTO_UDP, 0x5500, ulen as u16);
+    let ulen: u32 = udp_build(udp, 53000, DNS_PORT, net_our_ip(), dns_ip, qlen);
+    ip_build_header(ip, net_our_ip(), dns_ip, IP_PROTO_UDP, 0x5500, ulen as u16);
     net_send(base, 14 + 20 + ulen);
     for spin: u32 in 0..12000000 {
         let n: u32 = rtl_poll_rx(&g_net_rx as u64);
@@ -426,10 +435,8 @@ fn browser_http_fetch_inner(url: u64, redirects: u32) -> bool {
     }
     browser_set_status("Resolving host name"); browser_draw();
     if !browser_dns_resolve(&g_browser_net_host as u64, &g_browser_net_ip as u64) { return false; }
-    let route_ip: [u8; 4] = [10, 0, 2, 2];
-    let local: bool = g_browser_net_ip[0] == g_our_ip[0] && g_browser_net_ip[1] == g_our_ip[1]
-        && g_browser_net_ip[2] == g_our_ip[2];
-    let arp_ip: u64 = &route_ip as u64; if local { arp_ip = &g_browser_net_ip as u64; }
+    let arp_ip: u64 = browser_route_ip(&g_browser_net_ip as u64);
+    if arp_ip == 0 { browser_set_status("DHCP did not provide a default gateway"); return false; }
     browser_set_status("Resolving Ethernet route"); browser_draw();
     if !browser_arp_resolve(arp_ip, &g_browser_net_mac as u64) { browser_set_status("Gateway ARP timed out"); return false; }
     browser_set_status("Opening TCP connection"); browser_draw();

@@ -11,6 +11,9 @@
 // default SLIRP guest address so the demo needs no DHCP (that arrives in M3).
 let g_our_mac: [u8; 6] = [0; 6];
 let g_our_ip: [u8; 4] = [10, 0, 2, 15];
+let g_subnet_mask: [u8; 4] = [255, 255, 255, 0];
+let g_gateway_ip: [u8; 4] = [10, 0, 2, 2];
+let g_dns_ip: [u8; 4] = [10, 0, 2, 3];
 
 fn net_set_mac(addr: u64) {
     mac_copy(&g_our_mac as u64, addr);
@@ -21,8 +24,28 @@ fn net_set_ip(addr: u64) {
     ip4_copy(&g_our_ip as u64, addr);
 }
 
+fn net_set_mask(addr: u64) { ip4_copy(&g_subnet_mask as u64, addr); }
+fn net_set_gateway(addr: u64) { ip4_copy(&g_gateway_ip as u64, addr); }
+fn net_set_dns(addr: u64) { ip4_copy(&g_dns_ip as u64, addr); }
+
 fn net_our_mac() -> u64 { return &g_our_mac as u64; }
 fn net_our_ip() -> u64 { return &g_our_ip as u64; }
+fn net_subnet_mask() -> u64 { return &g_subnet_mask as u64; }
+fn net_gateway_ip() -> u64 { return &g_gateway_ip as u64; }
+fn net_dns_ip() -> u64 { return &g_dns_ip as u64; }
+
+fn net_ip_present(addr: u64) -> bool {
+    for i: u32 in 0..4 { if *((addr + (i as u64)) as *u8) != 0 { return true; } }
+    return false;
+}
+
+fn net_same_subnet(addr: u64) -> bool {
+    for i: u32 in 0..4 {
+        let mask: u8 = g_subnet_mask[i];
+        if (g_our_ip[i] & mask) != (*((addr + (i as u64)) as *u8) & mask) { return false; }
+    }
+    return true;
+}
 
 // Given a received frame (rx, rxlen), build any response into tx and return its
 // length. Returns 0 when the frame is not ours to answer.

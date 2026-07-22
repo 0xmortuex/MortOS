@@ -11,7 +11,8 @@ instead of being represented by decorative switches.
 - Display: framebuffer mode, resolution, pitch, and color depth.
 - Clock: 12/24-hour mode and seconds visibility.
 - Storage: MortFS status, file-table use, disk sectors, and Files shortcut.
-- Network: RTL8139 state, MAC/IPv4 information, DHCP connect, and disconnect.
+- Network: RTL8139 state, MAC/IPv4 information, DHCP connect/disconnect, and
+  the router-provided gateway and DNS server.
 - Apps: launch Terminal, Files, and the native Vex browser.
 - Privacy & Security: local-first security state and session locking.
 - Power: lock, sleep, restart, shutdown, and the protected power menu.

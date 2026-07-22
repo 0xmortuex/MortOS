@@ -230,15 +230,17 @@ fn settings_draw_search() {
     draw_text_abs("Up/Down: results   Enter: open   Esc: close search", 208, 580, 0x7f929b, 0x0b0f14);
 }
 
-fn settings_draw_ip(x: u32, y: u32) {
+fn settings_draw_ip_addr(ip: u64, x: u32, y: u32) {
     let pos: u32 = x;
     for i: u32 in 0..4 {
-        num_to_str(*((&g_our_ip as u64 + (i as u64)) as *u8) as u32, g_numbuf);
+        num_to_str(*((ip + (i as u64)) as *u8) as u32, g_numbuf);
         draw_text_abs(g_numbuf, pos, y, 0xe8f1f4, 0x0b0f14);
         pos = pos + g_numlen * 8;
         if i < 3 { draw_text_abs(".", pos, y, 0x8fa1aa, 0x0b0f14); pos = pos + 8; }
     }
 }
+
+fn settings_draw_ip(x: u32, y: u32) { settings_draw_ip_addr(net_our_ip(), x, y); }
 
 fn settings_file_count() -> u32 {
     if !g_fs_ok { return 0; }
@@ -503,7 +505,11 @@ fn settings_draw_network_controls() {
     settings_text("DHCP lease", 438, 406, false); settings_text(settings_yes_no(g_net_up), 650, 406, true);
     settings_text("IPv4", 438, 438, false);
     if g_net_up { settings_draw_ip(650, 438); } else { settings_text("Not assigned", 650, 438, true); }
-    settings_text("QEMU: use -netdev user and -device rtl8139.", 438, 488, false);
+    settings_text("Gateway", 438, 470, false);
+    if g_net_up { settings_draw_ip_addr(net_gateway_ip(), 650, 470); } else { settings_text("Not assigned", 650, 470, true); }
+    settings_text("DNS server", 438, 502, false);
+    if g_net_up { settings_draw_ip_addr(net_dns_ip(), 650, 502); } else { settings_text("Not assigned", 650, 502, true); }
+    settings_text("Addresses are learned from the DHCP lease.", 438, 542, false);
     settings_text("Up/Down: select   Enter: run   Esc/Left: back", 420, 580, false);
 }
 

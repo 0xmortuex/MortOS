@@ -18,8 +18,9 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
   bodies are never executed or displayed.
 - Link extraction, relative-link resolution, a keyboard link picker, and up to
   three HTTP redirects.
-- DHCP, DNS A queries, ARP routing, TCP handshakes, HTTP/1.0 requests, and
-  HTTP/1.1 chunked-transfer decoding over an RTL8139 interface.
+- DHCP lease parsing for address/subnet/router/DNS, DNS A queries, subnet-aware
+  ARP routing, TCP handshakes, HTTP/1.0 requests, and HTTP/1.1 chunked-transfer
+  decoding over an RTL8139 interface.
 - Saving the current rendered document as `vex-page.txt` in the user's home
   directory.
 - Local pages for Home, About, History, Bookmarks, Downloads, Settings, and
@@ -49,7 +50,7 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 ```text
 address bar
     -> URL parser
-    -> DHCP (when no lease exists)
+    -> DHCP address, subnet, gateway, and DNS (when no lease exists)
     -> DNS or IPv4 literal
     -> ARP for the host or gateway
     -> TCP handshake and stream collection
@@ -84,7 +85,7 @@ python test.py usb-hotplug
 python test.py smoke
 ```
 
-The browser regression covers real DHCP, ARP, TCP and HTTP loading, HTML text
+The browser regression covers real DHCP configuration, ARP, TCP and HTTP loading, HTML text
 conversion, script/style removal, links, redirects, chunked responses, local
 suggestions, tabs, private mode, bookmarks, downloads, screenshots, and
 bookmark persistence after a full reboot.

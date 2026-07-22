@@ -84,7 +84,9 @@ fn dhcp_find_option(buf: u64, dhcp_len: u32, code: u8) -> u64 {
         if c == 0 {
             p = p + 1;                      // pad byte
         } else {
+            if p + 1 >= limit { return 0; }
             let l: u8 = *((p + 1) as *u8);
+            if p + 2 + (l as u64) > limit { return 0; }
             if c == code {
                 return p + 2;
             }
@@ -92,6 +94,12 @@ fn dhcp_find_option(buf: u64, dhcp_len: u32, code: u8) -> u64 {
         }
     }
     return 0;
+}
+
+fn dhcp_option_length(buf: u64, dhcp_len: u32, code: u8) -> u32 {
+    let value: u64 = dhcp_find_option(buf, dhcp_len, code);
+    if value == 0 { return 0; }
+    return *((value - 1) as *u8) as u32;
 }
 
 // The DHCP message type (option 53), or 0 if absent.
