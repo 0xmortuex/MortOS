@@ -13,11 +13,27 @@ let TLS13_DERIVED_OUTPUT1: [u8; 32] = [
     0x16, 0xc0, 0x76, 0x18, 0x9c, 0x48, 0x25, 0x0c,
     0xeb, 0xea, 0xc3, 0x57, 0x6c, 0x36, 0x11, 0xba
 ];
+let TLS13_SERVER_HELLO1: [u8; 95] = [
+    0x16, 0x03, 0x03, 0x00, 0x5a, 0x02, 0x00, 0x00, 0x56, 0x03, 0x03,
+    0xa6, 0xaf, 0x06, 0xa4, 0x12, 0x18, 0x60, 0xdc, 0x5e, 0x6e, 0x60, 0x24, 0x9c, 0xd3, 0x4c, 0x95,
+    0x93, 0x0c, 0x8a, 0xc5, 0xcb, 0x14, 0x34, 0xda, 0xc1, 0x55, 0x77, 0x2e, 0xd3, 0xe2, 0x69, 0x28,
+    0x00, 0x13, 0x01, 0x00, 0x00, 0x2e,
+    0x00, 0x33, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20,
+    0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, 0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1,
+    0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, 0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f,
+    0x00, 0x2b, 0x00, 0x02, 0x03, 0x04
+];
+let TLS13_SERVER_KEY1: [u8; 32] = [
+    0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, 0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1,
+    0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, 0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f
+];
 
 let g_tls13_key_schedule_ok: bool = false;
 let g_tls13_client_hello_ok: bool = false;
 let g_tls13_client_hello_test: [u8; 512] = [0; 512];
 let g_tls13_client_hello_test_len: u32 = 0;
+let g_tls13_server_hello_ok: bool = false;
+let g_tls13_server_key_test: [u8; 32] = [0; 32];
 
 fn tls13_write_u16(output: u64, position: u32, value: u32) {
     *((output + (position as u64)) as *u8) = (value >> 8) as u8;
@@ -67,6 +83,45 @@ fn tls13_build_client_hello(host: u64, host_length: u32, random: u64,
     tls13_write_u24(output, 6, pos - 9); tls13_write_u16(output, 3, pos - 5); return pos;
 }
 
+fn tls13_read_u16(input: u64, position: u32) -> u32 {
+    return ((*((input + (position as u64)) as *u8) as u32) << 8)
+        | (*((input + ((position + 1) as u64)) as *u8) as u32);
+}
+
+fn tls13_read_u24(input: u64, position: u32) -> u32 {
+    return ((*((input + (position as u64)) as *u8) as u32) << 16)
+        | ((*((input + ((position + 1) as u64)) as *u8) as u32) << 8)
+        | (*((input + ((position + 2) as u64)) as *u8) as u32);
+}
+
+fn tls13_parse_server_hello(record: u64, record_length: u32, expected_cipher: u32, server_key: u64) -> bool {
+    if record_length < 50 || *((record + 0) as *u8) != 22 || tls13_read_u16(record, 3) + 5 != record_length
+        || *((record + 5) as *u8) != 2 || tls13_read_u24(record, 6) + 9 != record_length
+        || tls13_read_u16(record, 9) != 0x0303 { return false; }
+    let session_length: u32 = *((record + 43) as *u8) as u32;
+    let pos: u32 = 44 + session_length;
+    if pos + 5 > record_length || tls13_read_u16(record, pos) != expected_cipher
+        || *((record + ((pos + 2) as u64)) as *u8) != 0 { return false; }
+    pos = pos + 3; let extensions_length: u32 = tls13_read_u16(record, pos); pos = pos + 2;
+    if pos + extensions_length != record_length { return false; }
+    let end: u32 = record_length; let have_version: bool = false; let have_key: bool = false;
+    while pos + 4 <= end {
+        let kind: u32 = tls13_read_u16(record, pos); let size: u32 = tls13_read_u16(record, pos + 2); pos = pos + 4;
+        if pos + size > end { return false; }
+        if kind == 0x002b {
+            if size != 2 || tls13_read_u16(record, pos) != 0x0304 { return false; }
+            have_version = true;
+        }
+        if kind == 0x0033 {
+            if size != 36 || tls13_read_u16(record, pos) != 0x001d || tls13_read_u16(record, pos + 2) != 32 { return false; }
+            for i: u32 in 0..32 { *((server_key + (i as u64)) as *u8) = *((record + ((pos + 4 + i) as u64)) as *u8); }
+            have_key = true;
+        }
+        pos = pos + size;
+    }
+    return pos == end && have_version && have_key;
+}
+
 fn tls13_expand_label(secret: u64, label: u64, label_length: u32,
                       context: u64, context_length: u32,
                       output: u64, output_length: u32) -> bool {
@@ -99,4 +154,7 @@ fn tls13_self_test() {
     g_tls13_client_hello_ok = g_tls13_client_hello_test_len > 128
         && g_tls13_client_hello_test[0] == 22 && g_tls13_client_hello_test[5] == 1
         && g_tls13_client_hello_test[46] == 0x13 && g_tls13_client_hello_test[47] == 0x03;
+    g_tls13_server_hello_ok = tls13_parse_server_hello(
+        &TLS13_SERVER_HELLO1 as u64, 95, 0x1301, &g_tls13_server_key_test as u64)
+        && tls_bytes_equal(&g_tls13_server_key_test as u64, &TLS13_SERVER_KEY1 as u64, 32);
 }

@@ -88,9 +88,11 @@ A native ClientHello builder now emits SNI, TLS 1.3 supported versions,
 Curve25519 groups/key share, signature algorithms, and the
 TLS_CHACHA20_POLY1305_SHA256 cipher suite; the guest-memory regression parses
 its record and handshake lengths plus each required extension. This does
-**not** enable HTTPS by itself: ServerHello/record processing, authentication,
-X.509 parsing, trust anchors, hostname checks, and time validation must also be
-complete.
+not stop at the outbound message: a strict ServerHello parser validates record
+and handshake lengths, the negotiated TLS version/cipher, and the X25519 server
+key share against RFC 8448's published trace. This does **not** enable HTTPS by
+itself: encrypted handshake records, authentication, X.509 parsing, trust
+anchors, hostname checks, and time validation must also be complete.
 
 Ephemeral TLS material is also fail-closed behind an x86 hardware-entropy gate.
 Mort checks CPUID for RDRAND, retries failed samples, and enables the gate only

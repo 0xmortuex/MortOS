@@ -417,6 +417,8 @@ def smoke(disk_img=None):
     hello_len_addr = _elf32_symbol(ELF, "m_g_tls13_client_hello_test_len")
     entropy_ready_addr = _elf32_symbol(ELF, "m_g_tls_entropy_ready")
     entropy_sample_addr = _elf32_symbol(ELF, "m_g_tls_entropy_sample")
+    server_hello_ok_addr = _elf32_symbol(ELF, "m_g_tls13_server_hello_ok")
+    server_key_addr = _elf32_symbol(ELF, "m_g_tls13_server_key_test")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -468,6 +470,12 @@ def smoke(disk_img=None):
         check("TLS entropy gate accepts a nonzero x86 RDRAND sample",
               (_guest_u32(handle, entropy_ready_addr) & 0xff) != 0
               and any(entropy_sample), handle)
+        expected_server_key = bytes.fromhex(
+            "c9828876112095fe66762bdbf7c672e156d6cc253b833df1dd69b1b04e751f0f")
+        check("Mort parses the RFC 8448 TLS 1.3 ServerHello",
+              (_guest_u32(handle, server_hello_ok_addr) & 0xff) != 0
+              and _guest_bytes(handle, server_key_addr, 32) == expected_server_key,
+              handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",
