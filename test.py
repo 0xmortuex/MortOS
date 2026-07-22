@@ -596,6 +596,9 @@ def settings_ui():
 
 def browser_ui():
     """Load a host-served HTTP page and verify browser state and persistence."""
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
     sys.path.insert(0, HERE)
     import build as kernel_build
     kernel_build.iso()
@@ -609,6 +612,7 @@ def browser_ui():
     links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
     tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
     private_addr = _elf32_symbol(ELF, "m_g_browser_private")
+    suggestions_addr = _elf32_symbol(ELF, "m_g_browser_suggestion_count")
     state_addr = _elf32_symbol(ELF, "m_g_browser_state")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
@@ -623,6 +627,7 @@ def browser_ui():
         marker = "MORT-VEX-HTTP-OK"
         second_marker = "MORT-VEX-LINK-OK"
         redirect_marker = "MORT-VEX-REDIRECT-OK"
+        chunked_marker = "MORT-VEX-CHUNKED-OK"
         with open(os.path.join(webroot, "index.html"), "w", encoding="ascii") as fh:
             fh.write("<!doctype html><html><head><title>Vex Network Test</title>"
                      "<style>hidden-style{color:red}</style></head><body>"
@@ -634,14 +639,34 @@ def browser_ui():
         os.mkdir(os.path.join(webroot, "redirected"))
         with open(os.path.join(webroot, "redirected", "index.html"), "w", encoding="ascii") as fh:
             fh.write(f"<!doctype html><title>Redirected</title><h1>{redirect_marker}</h1>")
+
+        class VexHandler(SimpleHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                if self.path == "/chunked":
+                    chunks = [b"<!doctype html><title>Chunked</title><h1>",
+                              chunked_marker.encode("ascii"), b"</h1>"]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    for chunk in chunks:
+                        self.wfile.write(f"{len(chunk):x}\r\n".encode("ascii"))
+                        self.wfile.write(chunk + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                    return
+                super().do_GET()
+
+            def log_message(self, _format, *args):
+                pass
+
         port = 18080
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        server = subprocess.Popen(
-            [sys.executable, "-m", "http.server", str(port),
-             "--bind", "127.0.0.1", "--directory", webroot],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=flags)
-        time.sleep(0.5)
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", port), partial(VexHandler, directory=webroot))
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
         handle = boot_iso(
             kernel_build.ISO, temp_disk,
             ["-netdev", "user,id=vexnet", "-device", "rtl8139,netdev=vexnet"])
@@ -727,6 +752,42 @@ def browser_ui():
                 lambda value: ((value >> 16) & 0xff) >= 1)
             check("Bookmark command updates local browser state",
                   ((state_word >> 16) & 0xff) >= 1)
+
+            send_key(handle, "slash")
+            for char in "redirected":
+                send_key(handle, key_name(char))
+            suggestions = _wait_guest_u32(
+                handle, suggestions_addr, lambda value: value >= 1)
+            check("Address bar suggests matching local bookmarks and history",
+                  suggestions >= 1)
+            send_key(handle, "down")
+            send_key(handle, "ret")
+            deadline = time.monotonic() + 25
+            suggested_text = ""
+            while time.monotonic() < deadline and redirect_marker not in suggested_text:
+                length = _guest_u32(handle, content_len_addr)
+                suggested_text = _guest_bytes(
+                    handle, content_addr, min(max(length, 1), 512)).decode("ascii", "replace")
+                if redirect_marker not in suggested_text:
+                    time.sleep(0.25)
+            check("Selected address suggestion opens its saved URL",
+                  redirect_marker in suggested_text)
+
+            send_key(handle, "slash")
+            chunked_address = f"http://10.0.2.2:{port}/chunked"
+            for char in chunked_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            deadline = time.monotonic() + 25
+            chunked_text = ""
+            while time.monotonic() < deadline and chunked_marker not in chunked_text:
+                length = _guest_u32(handle, content_len_addr)
+                chunked_text = _guest_bytes(
+                    handle, content_addr, min(max(length, 1), 512)).decode("ascii", "replace")
+                if chunked_marker not in chunked_text:
+                    time.sleep(0.25)
+            check("HTTP/1.1 chunked transfer bodies are decoded",
+                  chunked_marker in chunked_text)
             send_key(handle, "d")
             downloaded = _wait_guest_u32(
                 handle, downloaded_addr, lambda value: (value & 0xff) != 0)
@@ -738,11 +799,9 @@ def browser_ui():
                   os.path.exists(os.path.join(BUILD, "browser-http.ppm")))
         finally:
             shutdown(handle)
-            server.terminate()
-            try:
-                server.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                server.kill()
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=5)
 
     handle = boot_iso(kernel_build.ISO, temp_disk)
     try:

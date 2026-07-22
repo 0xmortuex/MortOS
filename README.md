@@ -12,9 +12,15 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 
 <img src="docs/mortos-power.png" alt="MORT OS power menu: Lock, Sleep, Restart, Shut down, with a live clock in the top bar" width="640" />
 
-## Networking — it serves a web page
+## Networking — it serves and browses web pages
 
 `net` brings up the RTL8139 NIC and leases an address over DHCP; `httpd` then serves an HTML page on port 80. This is the [mortnet](https://github.com/0xmortuex/mortnet) stack — NIC driver, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP, all written from scratch in Mort — vendored into `net/` and compiled into the kernel.
+
+`F3` opens the native **Vex browser**, which uses that same stack as an HTTP
+client. It has tabs, persistent history and bookmarks, local address
+suggestions, private mode, find, link navigation, redirects, chunked-transfer
+decoding, and MortFS downloads. See [the browser guide](docs/browser.md) for its
+controls, architecture, tests, and honest engine limits.
 
 ![MORT OS networking: net leases 10.0.2.15 over DHCP, httpd serves on port 80](docs/mortos-net.png)
 
@@ -29,7 +35,8 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 
 ## What it does
 
-- **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager**: a top bar with tabs and `F1`/`F2`/`F3` app switching between a **Terminal**, a **Files** manager (browse MortFS, open files), and a **Vex-styled browser** app (local pages, a tribute to [Vex](https://github.com/0xmortuex/Vex)). The whole shell renders to the framebuffer because only the cell-drawing primitive changed; everything else is untouched. Falls back to VGA text mode when no framebuffer is present (the bare `-kernel` path).
+- **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager**: a top bar with tabs and `F1`/`F2`/`F3` app switching between a **Terminal**, a **Files** manager (browse MortFS, open files), and the native **Vex browser** (real HTTP over the Mort network stack, tabs, history, bookmarks, safe text rendering, and downloads). The whole shell renders to the framebuffer. Falls back to VGA text mode when no framebuffer is present (the bare `-kernel` path).
+- **A real Settings control center** — `F4` opens searchable system settings for personalization, display, clock, storage, Ethernet, apps, privacy, power, detected hardware, accessibility, diagnostics, and maintenance. Preferences persist per user in MortFS. See [the Settings guide](docs/settings.md).
 
 ![MORT OS Files app](docs/app-files.png)
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.
@@ -101,6 +108,9 @@ python test.py smoke      # boot + shell basics (text-mode -kernel path)
 python test_fs.py         # the disk stack, incl. write-reboot-cat persistence
 python test_exec.py       # build programs, seed, boot, exec, check syscall output
 python test_gfx.py        # boot the ISO, screendump, assert the desktop + console rendered
+python test.py settings-ui    # Settings controls, search, persistence, and screenshot
+python test.py browser-ui     # Vex DHCP/TCP/HTTP, navigation, state, and screenshot
+python test.py usb-hotplug    # automatic USB discovery and device inventory
 ```
 
 The graphical desktop comes up on the ISO path (`run-iso`), where Limine

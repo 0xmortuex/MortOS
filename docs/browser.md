@@ -1,0 +1,90 @@
+# Vex browser
+
+Vex is MortOS's native, keyboard-first web browser. Its browser shell, state
+management, HTTP client, TCP connection handling, HTML-to-text renderer, and
+MortFS integration are written in Mort and run inside the kernel. It does not
+embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
+
+## What works
+
+- Up to four tabs with page titles, switching, creation, and closing.
+- Address entry for `vex://`, `http://`, and bare host names.
+- Private, on-device address suggestions from bookmarks and recent history.
+- Back, forward, home, reload, scrolling, and find-in-page.
+- Persistent bookmarks and six-entry history in the current user's
+  `.vex-state` MortFS file.
+- Private mode, which prevents new visits from entering persistent history.
+- Safe text rendering for HTML and plain-text responses. Script and style
+  bodies are never executed or displayed.
+- Link extraction, relative-link resolution, a keyboard link picker, and up to
+  three HTTP redirects.
+- DHCP, DNS A queries, ARP routing, TCP handshakes, HTTP/1.0 requests, and
+  HTTP/1.1 chunked-transfer decoding over an RTL8139 interface.
+- Saving the current rendered document as `vex-page.txt` in the user's home
+  directory.
+- Local pages for Home, About, History, Bookmarks, Downloads, Settings, and
+  Network status.
+
+## Controls
+
+| Key | Action |
+| --- | --- |
+| `F3` | Open Vex from anywhere in the desktop |
+| `/` | Edit the address; Up/Down chooses a local suggestion |
+| Left / Right | Back / forward |
+| Up / Down | Scroll the page or move through a list |
+| `1` / `4` | Home / reload |
+| `5` / `6` / `7` / `8` | Bookmarks / history / downloads / settings |
+| `B` | Bookmark the current page |
+| `F` | Find text in the current HTTP document |
+| `L` | Open the extracted-links panel |
+| `D` | Save the rendered document to MortFS |
+| `T` / `X` | New tab / close tab |
+| `Tab` | Switch to the next tab |
+| `P` | Toggle private mode |
+| `C` | Clear history while on `vex://settings` |
+
+## Network path
+
+```text
+address bar
+    -> URL parser
+    -> DHCP (when no lease exists)
+    -> DNS or IPv4 literal
+    -> ARP for the host or gateway
+    -> TCP handshake and stream collection
+    -> HTTP status, redirect, and chunked-body handling
+    -> safe HTML-to-text conversion
+    -> framebuffer renderer
+```
+
+The QEMU test route uses the guest's RTL8139 adapter, not a mocked browser API.
+`python test.py browser-ui` starts a host HTTP server and verifies this entire
+path in the booted ISO, including persistence across a reboot.
+
+## Security and current engine boundary
+
+Vex deliberately blocks `https://` instead of silently downgrading it because
+MortOS does not yet have a TLS implementation or certificate store. It does
+not execute JavaScript, accept cookies, load images or media, apply CSS layout,
+submit forms, or provide a general-purpose DOM. HTTP traffic is unencrypted and
+must not be used for passwords or other sensitive data.
+
+Those are browser-engine projects in their own right, not hidden switches.
+The UI reports these limits directly so supported local pages and small HTTP
+documents remain useful without giving a false security promise.
+
+## Verification
+
+```bash
+python build.py check
+python test.py browser-ui
+python test.py settings-ui
+python test.py usb-hotplug
+python test.py smoke
+```
+
+The browser regression covers real DHCP, ARP, TCP and HTTP loading, HTML text
+conversion, script/style removal, links, redirects, chunked responses, local
+suggestions, tabs, private mode, bookmarks, downloads, screenshots, and
+bookmark persistence after a full reboot.

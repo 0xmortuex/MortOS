@@ -319,6 +319,59 @@ fn browser_http_to_text(body: u32) {
     if g_browser_content_len < 8192 { g_browser_content[g_browser_content_len] = 0; }
 }
 
+fn browser_hex_digit(ch: u8) -> u32 {
+    if ch >= 48 && ch <= 57 { return (ch - 48) as u32; }
+    let lower: u8 = browser_net_lower(ch);
+    if lower >= 97 && lower <= 102 { return (lower - 97 + 10) as u32; }
+    return 16;
+}
+
+fn browser_headers_chunked(body: u32) -> bool {
+    let pos: u32 = 0;
+    while pos + 18 < body {
+        if browser_match_ci(&g_browser_http_raw as u64, pos, body, "transfer-encoding:" as u64) {
+            let end: u32 = pos;
+            while end < body && g_browser_http_raw[end] != 10 { end = end + 1; }
+            let scan: u32 = pos + 18;
+            while scan + 7 <= end {
+                if browser_match_ci(&g_browser_http_raw as u64, scan, end, "chunked" as u64) { return true; }
+                scan = scan + 1;
+            }
+            return false;
+        }
+        pos = pos + 1;
+    }
+    return false;
+}
+
+fn browser_decode_chunked(body: u32) -> bool {
+    let read: u32 = body; let write: u32 = body;
+    while read < g_browser_http_raw_len {
+        let size: u32 = 0; let digits: u32 = 0;
+        while read < g_browser_http_raw_len && g_browser_http_raw[read] != 13 && g_browser_http_raw[read] != 10 {
+            if g_browser_http_raw[read] == 59 { // optional chunk extension
+                while read < g_browser_http_raw_len && g_browser_http_raw[read] != 13 && g_browser_http_raw[read] != 10 { read = read + 1; }
+                break;
+            }
+            let digit: u32 = browser_hex_digit(g_browser_http_raw[read]);
+            if digit >= 16 { browser_set_status("Invalid chunked HTTP response"); return false; }
+            size = size * 16 + digit; digits = digits + 1; read = read + 1;
+        }
+        if digits == 0 { browser_set_status("Invalid chunked HTTP response"); return false; }
+        if read < g_browser_http_raw_len && g_browser_http_raw[read] == 13 { read = read + 1; }
+        if read >= g_browser_http_raw_len || g_browser_http_raw[read] != 10 { browser_set_status("Incomplete chunk header"); return false; }
+        read = read + 1;
+        if size == 0 { g_browser_http_raw_len = write; g_browser_http_raw[write] = 0; return true; }
+        if read + size > g_browser_http_raw_len { browser_set_status("Incomplete chunked HTTP body"); return false; }
+        for i: u32 in 0..size { g_browser_http_raw[write + i] = g_browser_http_raw[read + i]; }
+        write = write + size; read = read + size;
+        if read < g_browser_http_raw_len && g_browser_http_raw[read] == 13 { read = read + 1; }
+        if read >= g_browser_http_raw_len || g_browser_http_raw[read] != 10 { browser_set_status("Invalid chunk boundary"); return false; }
+        read = read + 1;
+    }
+    browser_set_status("Chunked HTTP body ended early"); return false;
+}
+
 fn browser_http_parse() -> bool {
     if g_browser_http_raw_len < 12 || !browser_match_ci(&g_browser_http_raw as u64, 0, g_browser_http_raw_len, "HTTP/" as u64) {
         browser_set_status("Invalid HTTP response"); return false;
@@ -335,6 +388,7 @@ fn browser_http_parse() -> bool {
     if code < 200 || code >= 300 {
         browser_set_status("HTTP server returned a non-success status"); return false;
     }
+    if browser_headers_chunked(body) && !browser_decode_chunked(body) { return false; }
     browser_http_to_text(body); return g_browser_content_len > 0;
 }
 

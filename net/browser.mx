@@ -35,10 +35,14 @@ let g_browser_tab_titles: [u8; 96] = [0; 96];
 let g_browser_tab_count: u32 = 0;
 let g_browser_active_tab: u32 = 0;
 let g_browser_links: [u8; 480] = [0; 480];
+let g_browser_suggestions: [u8; 240] = [0; 240];
 let g_browser_link_count: u32 = 0;
 let g_browser_link_sel: u32 = 0;
 let g_browser_links_open: bool = false;
 let g_browser_list_sel: u32 = 0;
+let g_browser_suggestion_count: u32 = 0;
+let g_browser_suggestion_sel: u32 = 0;
+let g_browser_suggestion_active: bool = false;
 
 fn browser_zero(dst: u64, count: u32) {
     for i: u32 in 0..count { *((dst + (i as u64)) as *u8) = 0; }
@@ -79,6 +83,45 @@ fn browser_slot(base: u32, index: u32) -> u64 {
 fn browser_tab_slot(index: u32) -> u64 { return &g_browser_tabs as u64 + ((index * 80) as u64); }
 fn browser_tab_title(index: u32) -> u64 { return &g_browser_tab_titles as u64 + ((index * 24) as u64); }
 fn browser_link_slot(index: u32) -> u64 { return &g_browser_links as u64 + ((index * 80) as u64); }
+fn browser_suggestion_slot(index: u32) -> u64 { return &g_browser_suggestions as u64 + ((index * 80) as u64); }
+
+fn browser_input_matches(candidate: u64) -> bool {
+    if g_browser_input_len == 0 { return false; }
+    let start: u32 = 0;
+    while *((candidate + (start as u64)) as *u8) != 0 {
+        let ok: bool = true;
+        for i: u32 in 0..g_browser_input_len {
+            let ch: u8 = *((candidate + ((start + i) as u64)) as *u8);
+            if ch == 0 || settings_lower(ch) != settings_lower(g_browser_input[i]) { ok = false; }
+        }
+        if ok { return true; }
+        start = start + 1;
+    }
+    return false;
+}
+
+fn browser_suggestion_add(candidate: u64) {
+    if g_browser_suggestion_count >= 3 || !browser_input_matches(candidate) { return; }
+    for i: u32 in 0..g_browser_suggestion_count {
+        if browser_streq(browser_suggestion_slot(i), candidate) { return; }
+    }
+    browser_zero(browser_suggestion_slot(g_browser_suggestion_count), 80);
+    browser_copy(browser_suggestion_slot(g_browser_suggestion_count), candidate, 80);
+    g_browser_suggestion_count = g_browser_suggestion_count + 1;
+}
+
+fn browser_suggestions_update() {
+    browser_zero(&g_browser_suggestions as u64, 240); g_browser_suggestion_count = 0;
+    g_browser_suggestion_sel = 0; g_browser_suggestion_active = false;
+    if g_browser_input_len == 0 || g_browser_replace_address { return; }
+    for i: u32 in 0..BROWSER_BOOKMARK_MAX {
+        if i < browser_bookmark_count() { browser_suggestion_add(browser_slot(BROWSER_BOOKMARK_BASE, i)); }
+    }
+    let count: u32 = browser_history_count();
+    for offset: u32 in 0..BROWSER_HISTORY_MAX {
+        if offset < count { browser_suggestion_add(browser_slot(BROWSER_HISTORY_BASE, count - 1 - offset)); }
+    }
+}
 
 fn browser_links_reset() {
     browser_zero(&g_browser_links as u64, 480); g_browser_link_count = 0; g_browser_link_sel = 0; g_browser_links_open = false;
@@ -427,7 +470,7 @@ fn browser_draw_settings_page() {
     draw_text_abs("Home page", 208, 310, 0x8fa1aa, 0x0b0f14); draw_text_abs("vex://home", 400, 310, 0xffffff, 0x0b0f14);
     draw_text_abs("History", 208, 342, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local only / 6 entries", 400, 342, 0xffffff, 0x0b0f14);
     draw_text_abs("Bookmarks", 208, 374, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local only / 4 entries", 400, 374, 0xffffff, 0x0b0f14);
-    draw_text_abs("Search suggestions", 208, 406, 0x8fa1aa, 0x0b0f14); draw_text_abs("Off", 400, 406, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("Address suggestions", 208, 406, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local history + bookmarks", 400, 406, 0x4fd1c5, 0x0b0f14);
     draw_text_abs("Cookies / scripts", 208, 438, 0x8fa1aa, 0x0b0f14); draw_text_abs("Not implemented", 400, 438, 0xffb454, 0x0b0f14);
     draw_text_abs("State", 208, 470, 0x8fa1aa, 0x0b0f14);
     if g_browser_state_saved { draw_text_abs("Saved to MortFS", 400, 470, 0xffffff, 0x0b0f14); }
@@ -476,6 +519,19 @@ fn browser_draw_remote_text() {
     }
 }
 
+fn browser_draw_suggestions() {
+    if g_browser_mode != 1 || g_browser_suggestion_count == 0 { return; }
+    fill_rect(292, 248, 514, 18 + g_browser_suggestion_count * 28, 0x11161d);
+    draw_text_abs("ON THIS DEVICE", 304, 254, 0x6f828b, 0x11161d);
+    for i: u32 in 0..g_browser_suggestion_count {
+        let y: u32 = 274 + i * 28; let bg: u32 = 0x11161d; let fg: u32 = 0xb8c4ca;
+        if g_browser_suggestion_active && i == g_browser_suggestion_sel {
+            bg = 0x1d303a; fg = 0xffffff; fill_rect(296, y - 5, 506, 24, bg);
+        }
+        draw_text_abs(browser_suggestion_slot(i) as *u8, 304, y, fg, bg);
+    }
+}
+
 fn browser_draw() {
     if !g_gfx { return; }
     if g_browser_loaded_dir != g_cwd { browser_state_load(); }
@@ -498,6 +554,7 @@ fn browser_draw() {
     else if g_browser_page == 5 { browser_draw_settings_page(); }
     else if g_browser_page == 6 { browser_draw_network(); }
     else { browser_draw_error(); }
+    browser_draw_suggestions();
     fill_rect(196, 562, 620, 22, 0x11161d);
     if g_browser_mode == 2 {
         draw_text_abs("Find: ", 204, 568, 0x4fd1c5, 0x11161d); draw_text_abs(&g_browser_find as *u8, 252, 568, 0xffffff, 0x11161d);
@@ -508,7 +565,7 @@ fn browser_draw() {
 fn browser_begin_address() {
     browser_zero(&g_browser_input as u64, 80);
     g_browser_input_len = browser_copy(&g_browser_input as u64, &g_browser_url as u64, 80);
-    g_browser_mode = 1; g_browser_replace_address = true; browser_draw();
+    g_browser_mode = 1; g_browser_replace_address = true; browser_suggestions_update(); browser_draw();
 }
 
 fn browser_submit_address() {
@@ -564,19 +621,41 @@ fn browser_save_page() {
 fn browser_edit_key(sc: u8) {
     if sc == 42 || sc == 54 { g_browser_shift = true; return; }
     if sc == 170 || sc == 182 { g_browser_shift = false; return; }
-    if sc == 1 { g_browser_mode = 0; browser_draw(); return; }
-    if sc == 14 {
-        if g_browser_replace_address { browser_zero(&g_browser_input as u64, 80); g_browser_input_len = 0; g_browser_replace_address = false; browser_draw(); return; }
-        if g_browser_input_len > 0 { g_browser_input_len = g_browser_input_len - 1; g_browser_input[g_browser_input_len] = 0; browser_draw(); }
+    if sc == 224 { g_browser_ext = true; return; }
+    if g_browser_ext {
+        g_browser_ext = false;
+        if g_browser_suggestion_count == 0 { return; }
+        if sc == 72 {
+            if !g_browser_suggestion_active { g_browser_suggestion_active = true; g_browser_suggestion_sel = g_browser_suggestion_count - 1; }
+            else if g_browser_suggestion_sel > 0 { g_browser_suggestion_sel = g_browser_suggestion_sel - 1; }
+            browser_draw(); return;
+        }
+        if sc == 80 {
+            if !g_browser_suggestion_active { g_browser_suggestion_active = true; g_browser_suggestion_sel = 0; }
+            else if g_browser_suggestion_sel + 1 < g_browser_suggestion_count { g_browser_suggestion_sel = g_browser_suggestion_sel + 1; }
+            browser_draw(); return;
+        }
         return;
     }
-    if sc == 28 { browser_submit_address(); return; }
+    if sc == 1 { g_browser_mode = 0; g_browser_suggestion_count = 0; browser_draw(); return; }
+    if sc == 14 {
+        if g_browser_replace_address { browser_zero(&g_browser_input as u64, 80); g_browser_input_len = 0; g_browser_replace_address = false; browser_suggestions_update(); browser_draw(); return; }
+        if g_browser_input_len > 0 { g_browser_input_len = g_browser_input_len - 1; g_browser_input[g_browser_input_len] = 0; browser_suggestions_update(); browser_draw(); }
+        return;
+    }
+    if sc == 28 {
+        if g_browser_suggestion_active && g_browser_suggestion_count > 0 {
+            browser_zero(&g_browser_input as u64, 80);
+            g_browser_input_len = browser_copy(&g_browser_input as u64, browser_suggestion_slot(g_browser_suggestion_sel), 80);
+        }
+        g_browser_suggestion_count = 0; browser_submit_address(); return;
+    }
     if sc >= 128 { return; }
     let ch: u8 = scancode_to_ascii(sc, g_browser_shift);
     if ch >= 32 && ch < 127 && g_browser_input_len < 78 {
         if g_browser_replace_address { browser_zero(&g_browser_input as u64, 80); g_browser_input_len = 0; g_browser_replace_address = false; }
         g_browser_input[g_browser_input_len] = ch; g_browser_input_len = g_browser_input_len + 1;
-        g_browser_input[g_browser_input_len] = 0; browser_draw();
+        g_browser_input[g_browser_input_len] = 0; browser_suggestions_update(); browser_draw();
     }
 }
 
