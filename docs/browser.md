@@ -14,8 +14,9 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 - Persistent bookmarks and six-entry history in the current user's
   `.vex-state` MortFS file.
 - Private mode, which prevents new visits from entering persistent history.
-- Safe text rendering for HTML and plain-text responses. Script and style
-  bodies are never executed or displayed.
+- Content-Type-aware rendering for HTML and literal plain-text responses.
+  Script/style bodies are never executed or displayed, and unsupported binary
+  media is rejected instead of being misrendered.
 - Link extraction, relative-link resolution, a keyboard link picker, and up to
   three HTTP redirects.
 - DHCP lease parsing for address/subnet/router/DNS, DNS A queries, subnet-aware
@@ -85,7 +86,8 @@ python test.py usb-hotplug
 python test.py smoke
 ```
 
-The browser regression covers real DHCP configuration, ARP, TCP and HTTP loading, HTML text
-conversion, script/style removal, links, redirects, chunked responses, local
-suggestions, tabs, private mode, bookmarks, downloads, screenshots, and
-bookmark persistence after a full reboot.
+The browser regression covers real DHCP configuration, ARP, TCP and HTTP
+loading, HTML and literal plain-text rendering, binary-content rejection,
+script/style removal, links, redirects, chunked responses, local suggestions,
+tabs, private mode, bookmarks, downloads, screenshots, and bookmark persistence
+after a full reboot.

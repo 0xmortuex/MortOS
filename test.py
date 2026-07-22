@@ -610,6 +610,7 @@ def browser_ui():
     dns_addr = _elf32_symbol(ELF, "m_g_dns_ip")
     content_addr = _elf32_symbol(ELF, "m_g_browser_content")
     content_len_addr = _elf32_symbol(ELF, "m_g_browser_content_len")
+    status_addr = _elf32_symbol(ELF, "m_g_browser_status")
     downloaded_addr = _elf32_symbol(ELF, "m_g_browser_downloaded")
     links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
     tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
@@ -630,6 +631,7 @@ def browser_ui():
         second_marker = "MORT-VEX-LINK-OK"
         redirect_marker = "MORT-VEX-REDIRECT-OK"
         chunked_marker = "MORT-VEX-CHUNKED-OK"
+        plain_marker = "MORT-VEX-PLAIN-OK"
         with open(os.path.join(webroot, "index.html"), "w", encoding="ascii") as fh:
             fh.write("<!doctype html><html><head><title>Vex Network Test</title>"
                      "<style>hidden-style{color:red}</style></head><body>"
@@ -658,6 +660,22 @@ def browser_ui():
                         self.wfile.write(chunk + b"\r\n")
                     self.wfile.write(b"0\r\n\r\n")
                     self.wfile.flush()
+                    return
+                if self.path == "/plain":
+                    body = f"{plain_marker} <literal-text>\nsecond line\n".encode("ascii")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; charset=ascii")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path == "/binary":
+                    body = b"\x00\x01\x02MORT-BINARY"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                     return
                 super().do_GET()
 
@@ -794,6 +812,22 @@ def browser_ui():
                     time.sleep(0.25)
             check("HTTP/1.1 chunked transfer bodies are decoded",
                   chunked_marker in chunked_text)
+
+            send_key(handle, "slash")
+            plain_address = f"http://10.0.2.2:{port}/plain"
+            for char in plain_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            deadline = time.monotonic() + 25
+            plain_text = ""
+            while time.monotonic() < deadline and plain_marker not in plain_text:
+                length = _guest_u32(handle, content_len_addr)
+                plain_text = _guest_bytes(
+                    handle, content_addr, min(max(length, 1), 512)).decode("ascii", "replace")
+                if plain_marker not in plain_text:
+                    time.sleep(0.25)
+            check("text/plain responses render without HTML tag stripping",
+                  plain_marker in plain_text and "<literal-text>" in plain_text)
             send_key(handle, "d")
             downloaded = _wait_guest_u32(
                 handle, downloaded_addr, lambda value: (value & 0xff) != 0)
@@ -803,6 +837,20 @@ def browser_ui():
             _monitor(handle, f"screendump {shot}")
             check("Browser HTTP screenshot was captured",
                   os.path.exists(os.path.join(BUILD, "browser-http.ppm")))
+
+            send_key(handle, "slash")
+            binary_address = f"http://10.0.2.2:{port}/binary"
+            for char in binary_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            deadline = time.monotonic() + 25
+            binary_status = ""
+            while time.monotonic() < deadline and "Unsupported HTTP content type" not in binary_status:
+                binary_status = _guest_bytes(handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "Unsupported HTTP content type" not in binary_status:
+                    time.sleep(0.25)
+            check("Unsupported binary responses are rejected safely",
+                  "Unsupported HTTP content type" in binary_status)
         finally:
             shutdown(handle)
             server.shutdown()

@@ -328,6 +328,48 @@ fn browser_http_to_text(body: u32) {
     if g_browser_content_len < 8192 { g_browser_content[g_browser_content_len] = 0; }
 }
 
+fn browser_header_line_contains(body: u32, header: u64, value: u64) -> bool {
+    let pos: u32 = 0;
+    while pos < body {
+        if browser_match_ci(&g_browser_http_raw as u64, pos, body, header) {
+            let end: u32 = pos;
+            while end < body && g_browser_http_raw[end] != 10 { end = end + 1; }
+            let scan: u32 = pos;
+            while scan < end {
+                if browser_match_ci(&g_browser_http_raw as u64, scan, end, value) { return true; }
+                scan = scan + 1;
+            }
+            return false;
+        }
+        pos = pos + 1;
+    }
+    return false;
+}
+
+fn browser_content_kind(body: u32) -> u32 {
+    let pos: u32 = 0; let found: bool = false;
+    while pos + 13 < body {
+        if browser_match_ci(&g_browser_http_raw as u64, pos, body, "content-type:" as u64) { found = true; break; }
+        pos = pos + 1;
+    }
+    if !found { return 0; } // HTTP/0.9-style and minimal servers default to HTML.
+    if browser_header_line_contains(body, "content-type:" as u64, "text/plain" as u64) { return 1; }
+    if browser_header_line_contains(body, "content-type:" as u64, "text/html" as u64)
+        || browser_header_line_contains(body, "content-type:" as u64, "application/xhtml+xml" as u64) { return 0; }
+    return 2;
+}
+
+fn browser_plain_to_text(body: u32) {
+    browser_zero(&g_browser_content as u64, 8192); g_browser_content_len = 0;
+    browser_links_reset(); browser_set_title("Text document"); let pos: u32 = body; let col: u32 = 0;
+    while pos < g_browser_http_raw_len && g_browser_content_len < 8190 {
+        let ch: u8 = g_browser_http_raw[pos];
+        if ch != 13 { col = browser_text_char(ch, col); }
+        pos = pos + 1;
+    }
+    if g_browser_content_len < 8192 { g_browser_content[g_browser_content_len] = 0; }
+}
+
 fn browser_hex_digit(ch: u8) -> u32 {
     if ch >= 48 && ch <= 57 { return (ch - 48) as u32; }
     let lower: u8 = browser_net_lower(ch);
@@ -397,8 +439,12 @@ fn browser_http_parse() -> bool {
     if code < 200 || code >= 300 {
         browser_set_status("HTTP server returned a non-success status"); return false;
     }
+    let kind: u32 = browser_content_kind(body);
+    if kind == 2 { browser_set_status("Unsupported HTTP content type"); return false; }
     if browser_headers_chunked(body) && !browser_decode_chunked(body) { return false; }
-    browser_http_to_text(body); return g_browser_content_len > 0;
+    if kind == 1 { browser_plain_to_text(body); }
+    else { browser_http_to_text(body); }
+    return g_browser_content_len > 0;
 }
 
 fn browser_http_redirect_location() -> bool {
