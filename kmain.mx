@@ -438,7 +438,7 @@ fn draw_tab(label: *u8, x: u32, id: u32) {
     let bg: u32 = 0x0d141c;
     let fg: u32 = 0x7a8b93;
     if g_app == id {
-        bg = 0x2c5364;
+        bg = g_accent;
         fg = 0xffffff;
     }
     fill_rect(x - 6, 2, w, 20, bg);
@@ -453,14 +453,15 @@ fn draw_topbar() {
     draw_tab("F1 terminal", 300, 0);
     draw_tab("F2 files", 470, 1);
     draw_tab("F3 vex", 600, 2);
+    draw_tab("F4 settings", 700, 3);
     draw_text_abs("F12 power", g_fb_w - 190, 4, 0x6a7b83, 0x0d141c);
     draw_clock();
 }
 
 // Set the window title bar text (each app names its own window).
 fn window_title(s: *u8) {
-    fill_rect(182, 162, 660, 24, 0x2c5364);
-    draw_text_abs(s, 192, 166, 0xdfeef2, 0x2c5364);
+    fill_rect(182, 162, 660, 24, g_accent);
+    draw_text_abs(s, 192, 166, 0xdfeef2, g_accent);
 }
 
 // Clear the window interior (shared by every app).
@@ -472,7 +473,7 @@ fn clear_window() {
 // Called once at boot when a framebuffer is present; the active app fills the
 // interior. Defaults to the terminal.
 fn draw_desktop() {
-    fill_gradient(0x0a1830, 0x2c5364);
+    fill_gradient(g_wall_top, g_wall_bottom);
     draw_topbar();
     fill_rect(180, 160, 664, 456, 0x1b2733);                   // window frame
     window_title("terminal");
@@ -2008,6 +2009,7 @@ fn switch_app(app: u32) {
         files_draw();
     }
     if app == 2 { vex_draw(); }
+    if app == 3 { settings_draw(); }
 }
 
 // ----- session & power (clock, power menu, lock, sleep, shutdown) -----
@@ -2046,7 +2048,7 @@ fn write2(buf: u64, off: u32, v: u8) {
     *o = (48 + (v % 10)) as u8;
 }
 
-// Draw HH:MM:SS at the top-right of the top bar.
+// Draw the configured time format at the top-right of the top bar.
 fn draw_clock() {
     if !g_gfx {
         return;
@@ -2061,14 +2063,30 @@ fn draw_clock() {
     let h: u8 = rtc_conv(rtc_reg(4), binmode);
     let buf: [u8; 12] = [0; 12];
     let b: u64 = &buf as u64;
-    write2(b, 0, h);
+    let shown_h: u8 = h;
+    if !g_clock_24h {
+        shown_h = h % 12;
+        if shown_h == 0 { shown_h = 12; }
+    }
+    write2(b, 0, shown_h);
     let c0: *u8 = (b + 2) as *u8; *c0 = 58;         // ':'
     write2(b, 3, m);
-    let c1: *u8 = (b + 5) as *u8; *c1 = 58;
-    write2(b, 6, s);
-    let term: *u8 = (b + 8) as *u8; *term = 0;
-    fill_rect(g_fb_w - 84, 0, 84, 24, 0x0d141c);
-    draw_text_abs(&buf as *u8, g_fb_w - 76, 4, 0x9fd0d8, 0x0d141c);
+    let pos: u32 = 5;
+    if g_clock_seconds {
+        let c1: *u8 = (b + 5) as *u8; *c1 = 58;
+        write2(b, 6, s);
+        pos = 8;
+    }
+    if !g_clock_24h {
+        let sp: *u8 = (b + (pos as u64)) as *u8; *sp = 32;
+        let ap: *u8 = (b + (pos as u64) + 1) as *u8;
+        if h < 12 { *ap = 65; } else { *ap = 80; }
+        let mp: *u8 = (b + (pos as u64) + 2) as *u8; *mp = 77;
+        pos = pos + 3;
+    }
+    let term: *u8 = (b + (pos as u64)) as *u8; *term = 0;
+    fill_rect(g_fb_w - 108, 0, 108, 24, 0x0d141c);
+    draw_text_abs(&buf as *u8, g_fb_w - 100, 4, 0x9fd0d8, 0x0d141c);
 }
 
 // ---- power flyout ----
@@ -2342,6 +2360,7 @@ fn on_key() {
         if sc == 59 { switch_app(0); return; }
         if sc == 60 { switch_app(1); return; }
         if sc == 61 { switch_app(2); return; }
+        if sc == 62 { switch_app(3); return; }
     }
     if g_app == 1 {                  // route to the active app
         files_on_key(sc);
@@ -2351,6 +2370,7 @@ fn on_key() {
         vex_on_key(sc);
         return;
     }
+    if g_app == 3 { settings_on_key(sc); return; }
 
     if sc == 224 {                   // 0xE0: extended-scancode prefix
         g_ext = true;
