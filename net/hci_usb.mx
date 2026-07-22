@@ -65,6 +65,14 @@ let g_usb_device_class: [u8; 8] = [0; 8];
 let g_usb_device_protocol: [u8; 8] = [0; 8];
 let g_usb_device_configured: [bool; 8] = [false; 8];
 let g_usb_device_low_speed: [bool; 8] = [false; 8];
+let g_usb_hub_ports: [u8; 8] = [0; 8];
+let g_usb_hub_connection_mask: [u32; 8] = [0; 8];
+let g_usb_root_present: [bool; 2] = [false; 2];
+let g_usb_hotplug_enabled: bool = true;
+let g_usb_hotplug_ticks: u32 = 0;
+let g_usb_hotplug_events: u32 = 0;
+let g_usb_rescan_count: u32 = 0;
+let g_usb_rescanning: bool = false;
 let g_usb_hub_data: [u8; 16] = [0; 16];
 let g_usb_frame_mem: [u32; 2048] = [0; 2048];
 let g_usb_sched_mem: [u32; 96] = [0; 96];
@@ -233,6 +241,7 @@ fn usb_hid_poll_report(address: u8, endpoint: u8, max_packet: u16, low_speed: bo
 // Poll one HID boot-keyboard interrupt report. Returns a set-1 make code for
 // the first newly pressed key, or zero when there is no completed/new report.
 fn usb_hid_poll_scancode() -> u8 {
+    usb_hotplug_poll();
     g_usb_hid_shift = false; g_usb_hid_extended = false;
     if !g_usb_keyboard_ready || !usb_hid_poll_report(g_usb_keyboard_address, g_usb_keyboard_endpoint, g_usb_keyboard_packet, g_usb_keyboard_low_speed, g_usb_keyboard_toggle) { return 0; }
     g_usb_keyboard_toggle = g_usb_keyboard_toggle ^ 1;
@@ -546,6 +555,8 @@ fn usb_hub_enumerate(slot: u32) {
     for clear: u32 in 0..16 { g_usb_hub_data[clear] = 0; }
     if !usb_boot_control_in(0xa0, 6, 0x2900, 0, &g_usb_hub_data as u64, 9) { return; }
     let ports: u32 = g_usb_hub_data[2] as u32;
+    g_usb_hub_ports[slot] = ports as u8; if g_usb_hub_ports[slot] > 8 { g_usb_hub_ports[slot] = 8; }
+    let connection_mask: u32 = 0;
     for p: u32 in 1..9 {
         if p <= ports { usb_hub_feature(hub_address, hub_low_speed, p as u16, 8, true); }
     }
@@ -554,6 +565,7 @@ fn usb_hub_enumerate(slot: u32) {
         if p <= ports && g_usb_devices < 8 {
             let before: u32 = usb_hub_port_status(hub_address, hub_low_speed, p as u16);
             if (before & 1) != 0 {
+                connection_mask = connection_mask | ((1 as u32) << (p - 1));
                 usb_hub_feature(hub_address, hub_low_speed, p as u16, 4, true);
                 usb_delay(300000);
                 let after: u32 = usb_hub_port_status(hub_address, hub_low_speed, p as u16);
@@ -568,6 +580,49 @@ fn usb_hub_enumerate(slot: u32) {
             }
         }
     }
+    g_usb_hub_connection_mask[slot] = connection_mask;
+}
+
+// Rebuild the address table and class bindings after a topology change. The
+// current UHCI implementation is polling-only, so this runs synchronously and
+// cannot race a second transfer submission.
+fn usb_rescan() {
+    if g_usb_rescanning { return; }
+    g_usb_rescanning = true;
+    usb_boot_init();
+    g_usb_rescan_count = g_usb_rescan_count + 1;
+    g_usb_rescanning = false;
+}
+
+// Called from the existing 100 Hz USB keyboard poll. Root-port change bits and
+// hub C_PORT_CONNECTION status are sampled every two seconds, keeping normal
+// HID polling cheap while still providing automatic attach/remove recovery.
+fn usb_hotplug_poll() {
+    if !g_usb_hotplug_enabled || !g_usb_ok || g_usb_rescanning { return; }
+    g_usb_hotplug_ticks = g_usb_hotplug_ticks + 1;
+    if g_usb_hotplug_ticks < 200 { return; }
+    g_usb_hotplug_ticks = 0;
+    let changed: bool = false;
+    let root0: u16 = inw(g_usb_io + 0x10); let root1: u16 = inw(g_usb_io + 0x12);
+    let present0: bool = (root0 & 1) != 0; let present1: bool = (root1 & 1) != 0;
+    if present0 != g_usb_root_present[0] || present1 != g_usb_root_present[1] { changed = true; }
+    if (root0 & 2) != 0 || (root1 & 2) != 0 { changed = true; }
+    if !changed {
+        for slot: u32 in 0..8 {
+            if slot < g_usb_devices && g_usb_device_class[slot] == 9 {
+                let mask: u32 = 0; let ports: u32 = g_usb_hub_ports[slot] as u32;
+                for port: u32 in 1..9 {
+                    if port <= ports {
+                        let status: u32 = usb_hub_port_status(g_usb_device_address[slot], g_usb_device_low_speed[slot], port as u16);
+                        if (status & 1) != 0 { mask = mask | ((1 as u32) << (port - 1)); }
+                        if (status & 0x00010000) != 0 { changed = true; }
+                    }
+                }
+                if mask != g_usb_hub_connection_mask[slot] { changed = true; }
+            }
+        }
+    }
+    if changed { g_usb_hotplug_events = g_usb_hotplug_events + 1; usb_rescan(); }
 }
 
 fn usb_boot_init() {
@@ -594,13 +649,16 @@ fn usb_boot_init() {
     for clear: u32 in 0..8 {
         g_usb_device_address[clear] = 0; g_usb_device_vid[clear] = 0; g_usb_device_pid[clear] = 0;
         g_usb_device_class[clear] = 0; g_usb_device_protocol[clear] = 0; g_usb_device_configured[clear] = false;
-        g_usb_device_low_speed[clear] = false;
+        g_usb_device_low_speed[clear] = false; g_usb_hub_ports[clear] = 0; g_usb_hub_connection_mask[clear] = 0;
     }
     usb_boot_enumerate_port(0x10, 1, 0);
     let next_slot: u32 = g_usb_devices;
     usb_boot_enumerate_port(0x12, (next_slot + 1) as u8, next_slot);
     let root_devices: u32 = g_usb_devices;
     for hub: u32 in 0..root_devices { if g_usb_device_class[hub] == 9 { usb_hub_enumerate(hub); } }
+    g_usb_root_present[0] = (inw(g_usb_io + 0x10) & 1) != 0;
+    g_usb_root_present[1] = (inw(g_usb_io + 0x12) & 1) != 0;
+    g_usb_hotplug_ticks = 0;
     g_usb_descriptor_ok = g_usb_devices > 0; g_usb_addressed = g_usb_devices > 0;
     g_usb_configured = false;
     for configured: u32 in 0..8 { if g_usb_device_configured[configured] { g_usb_configured = true; } }

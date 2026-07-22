@@ -22,6 +22,7 @@ API for other tests:
 import argparse
 import os
 import subprocess
+import struct
 import sys
 import tempfile
 import threading
@@ -158,7 +159,7 @@ def _wait_first_prompt(handle, timeout_s=15):
 
 # ----- public API -----
 
-def boot(disk_img=None, kernel_elf=ELF):
+def boot(disk_img=None, kernel_elf=ELF, extra_args=None):
     """Boot the kernel headless; return a handle once the monitor is ready."""
     qemu = _find_qemu()
     if not qemu:
@@ -170,6 +171,8 @@ def boot(disk_img=None, kernel_elf=ELF):
            "-kernel", kernel_elf]
     if disk_img:
         cmd += ["-hda", disk_img]
+    if extra_args:
+        cmd += list(extra_args)
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, bufsize=0)          # raw, unbuffered pipes
@@ -297,6 +300,57 @@ def _find_qemu():
     return kernel_build._find_qemu()
 
 
+def _elf32_symbol(path, wanted):
+    """Return the address of a local/global symbol in a little-endian ELF32."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if data[:5] != b"\x7fELF\x01" or data[5] != 1:
+        raise RuntimeError(f"expected little-endian ELF32: {path}")
+    shoff = struct.unpack_from("<I", data, 32)[0]
+    shentsize, shnum = struct.unpack_from("<HH", data, 46)
+    sections = []
+    for index in range(shnum):
+        fields = struct.unpack_from("<IIIIIIIIII", data,
+                                    shoff + index * shentsize)
+        sections.append(fields)
+    for section in sections:
+        _name, kind, _flags, _addr, offset, size, link, _info, _align, entsize = section
+        if kind != 2 or entsize == 0:  # SHT_SYMTAB
+            continue
+        strings = sections[link]
+        strtab = data[strings[4]:strings[4] + strings[5]]
+        for pos in range(offset, offset + size, entsize):
+            name_off, value = struct.unpack_from("<II", data, pos)
+            end = strtab.find(b"\0", name_off)
+            name = strtab[name_off:end].decode("ascii", "replace")
+            if name == wanted:
+                return value
+    raise RuntimeError(f"symbol not found in {path}: {wanted}")
+
+
+def _guest_u32(handle, address):
+    text = _monitor(handle, f"xp /1wx 0x{address:x}")
+    values = []
+    for token in text.replace(":", " ").split():
+        if token.startswith("0x"):
+            try:
+                values.append(int(token, 16))
+            except ValueError:
+                pass
+    if not values:
+        raise RuntimeError(f"could not parse monitor memory output: {text!r}")
+    return values[-1]
+
+
+def _wait_guest_u32(handle, address, predicate, timeout_s=10):
+    deadline = time.monotonic() + timeout_s
+    value = _guest_u32(handle, address)
+    while not predicate(value) and time.monotonic() < deadline:
+        time.sleep(0.25)
+        value = _guest_u32(handle, address)
+    return value
+
+
 # ----- smoke test -----
 
 def smoke(disk_img=None):
@@ -339,15 +393,93 @@ def smoke(disk_img=None):
     return 0 if not failed else 1
 
 
+def usb_hotplug():
+    """Exercise automatic UHCI detach and reattach recovery in QEMU."""
+    sys.path.insert(0, HERE)
+    import build as kernel_build
+    kernel_build.build()
+    devices_addr = _elf32_symbol(ELF, "m_g_usb_devices")
+    events_addr = _elf32_symbol(ELF, "m_g_usb_hotplug_events")
+    rescanning_addr = _elf32_symbol(ELF, "m_g_usb_rescanning")
+    keyboard_addr = _elf32_symbol(ELF, "m_g_usb_keyboard_ready")
+    mouse_addr = _elf32_symbol(ELF, "m_g_usb_mouse_ready")
+    handle = boot(extra_args=["-usb", "-device", "usb-kbd,id=mortkbd"])
+    results = []
+
+    def check(name, ok):
+        results.append((name, ok))
+        print(f"{'PASS' if ok else 'FAIL'}: {name}")
+
+    try:
+        devices = _wait_guest_u32(handle, devices_addr, lambda value: value >= 1)
+        check("USB keyboard enumerates at boot", devices >= 1)
+        check("USB keyboard HID binding is ready",
+              (_guest_u32(handle, keyboard_addr) & 0xff) != 0)
+
+        _monitor(handle, "device_del mortkbd")
+        devices = _wait_guest_u32(handle, devices_addr, lambda value: value == 0,
+                                  timeout_s=12)
+        events = _guest_u32(handle, events_addr)
+        check("USB detach automatically rebuilds the device table", devices == 0)
+        check("USB detach increments the hot-plug event counter", events >= 1)
+        _wait_guest_u32(handle, rescanning_addr,
+                        lambda value: (value & 0xff) == 0, timeout_s=12)
+
+        _monitor(handle, "device_add usb-kbd,id=mortkbd")
+        devices = _wait_guest_u32(handle, devices_addr, lambda value: value >= 1,
+                                  timeout_s=12)
+        events = _guest_u32(handle, events_addr)
+        keyboard = _guest_u32(handle, keyboard_addr) & 0xff
+        check("USB reattach automatically enumerates the device", devices >= 1)
+        check("USB reattach restores the HID keyboard binding", keyboard != 0)
+        check("USB reattach records a second hot-plug event", events >= 2)
+    finally:
+        shutdown(handle)
+
+    handle = boot(extra_args=["-usb", "-device", "usb-kbd,id=hubkbd",
+                              "-device", "usb-mouse,id=hubmouse"])
+    try:
+        devices = _wait_guest_u32(handle, devices_addr, lambda value: value >= 3)
+        check("hub topology enumerates keyboard, hub, and mouse", devices >= 3)
+        check("downstream mouse HID binding is ready",
+              (_guest_u32(handle, mouse_addr) & 0xff) != 0)
+
+        _monitor(handle, "device_del hubmouse")
+        devices = _wait_guest_u32(handle, devices_addr, lambda value: value == 2,
+                                  timeout_s=12)
+        check("hub-port detach removes the downstream mouse", devices == 2)
+        _wait_guest_u32(handle, rescanning_addr,
+                        lambda value: (value & 0xff) == 0, timeout_s=12)
+
+        _monitor(handle, "device_add usb-mouse,id=hubmouse")
+        devices = _wait_guest_u32(handle, devices_addr, lambda value: value >= 3,
+                                  timeout_s=12)
+        mouse = _guest_u32(handle, mouse_addr) & 0xff
+        events = _guest_u32(handle, events_addr)
+        check("hub-port reattach re-enumerates the mouse", devices >= 3)
+        check("hub-port reattach restores the mouse binding", mouse != 0)
+        check(f"hub detach and reattach record two events (observed {events})",
+              events >= 2)
+    finally:
+        shutdown(handle)
+
+    failed = [name for name, ok in results if not ok]
+    print(f"\n{len(results) - len(failed)}/{len(results)} passed")
+    return 0 if not failed else 1
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_smoke = sub.add_parser("smoke", help="build, boot, and smoke-test the shell")
     p_smoke.add_argument("--disk", default=None,
                          help="optional disk image to attach as -hda")
+    sub.add_parser("usb-hotplug", help="test live UHCI detach and reattach")
     args = parser.parse_args(argv)
     if args.cmd == "smoke":
         return smoke(disk_img=args.disk)
+    if args.cmd == "usb-hotplug":
+        return usb_hotplug()
     return 2
 
 

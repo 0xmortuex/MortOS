@@ -451,11 +451,12 @@ fn settings_draw_hardware_controls() {
 
 fn settings_draw_usb_devices() {
     settings_title("USB Devices", "Assigned addresses and descriptor identities");
-    settings_text("Addr", 438, 270, false); settings_text("VID / PID", 510, 270, false);
-    settings_text("Class / proto", 650, 270, false);
+    settings_option_row("Rescan USB bus", "Run", 270, g_settings_sel == 0);
+    settings_text("Addr", 438, 318, false); settings_text("VID / PID", 510, 318, false);
+    settings_text("Class / proto", 650, 318, false);
     let shown: u32 = g_usb_devices; if shown > 6 { shown = 6; }
     for i: u32 in 0..shown {
-        let y: u32 = 304 + i * 40;
+        let y: u32 = 350 + i * 34;
         fill_rect(430, y - 7, 372, 30, 0x121a20);
         num_to_str(g_usb_device_address[i] as u32, g_numbuf); draw_text_abs(g_numbuf, 446, y, 0xffffff, 0x121a20);
         num_to_str(g_usb_device_vid[i] as u32, g_numbuf); draw_text_abs(g_numbuf, 510, y, 0xffffff, 0x121a20);
@@ -466,8 +467,10 @@ fn settings_draw_usb_devices() {
         num_to_str(g_usb_device_protocol[i] as u32, g_numbuf); draw_text_abs(g_numbuf, 738, y, 0xffffff, 0x121a20);
         if g_usb_device_configured[i] { draw_text_abs("+", 782, y, g_accent, 0x121a20); }
     }
-    if g_usb_devices == 0 { settings_text("No addressed USB devices.", 438, 320, false); }
-    settings_text("+ configured   Esc/Left: back", 420, 580, false);
+    if g_usb_devices == 0 { settings_text("No addressed USB devices.", 438, 358, false); }
+    settings_text("Auto hot-plug", 438, 558, false); settings_text(settings_on_off(g_usb_hotplug_enabled), 550, 558, true);
+    settings_text("Events", 650, 558, false); num_to_str(g_usb_hotplug_events, g_numbuf); draw_text_abs(g_numbuf, 718, 558, 0xffffff, 0x0b0f14);
+    settings_text("+ configured   Enter: rescan   Esc/Left: back", 420, 580, false);
 }
 
 fn settings_draw() {
@@ -578,6 +581,7 @@ fn settings_enter() {
         }
         if g_settings_sel == 1 { ethernet_disconnect(); settings_draw(); }
     }
+    if g_settings_view == 6 { usb_rescan(); settings_draw(); }
 }
 
 fn settings_open_search_result() {
