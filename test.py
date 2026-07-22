@@ -322,7 +322,7 @@ def smoke(disk_img=None):
 
         type_line(handle, "help")
         check("'help' lists the commands",
-              wait_for(handle, "run exec mods", timeout_s=10), handle)
+              wait_for(handle, "clear about echo", timeout_s=10), handle)
 
         type_line(handle, "echo hi-there")
         check("'echo hi-there' echoes back",

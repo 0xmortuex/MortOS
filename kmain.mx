@@ -28,6 +28,8 @@ let g_acct_count: u32 = 0;                                    // number of accou
 let g_acct_name: [u8; 192] = [0; 192];                        // 8 slots x 24 bytes
 let g_acct_uid: [u32; 8] = [0; 8];                            // each account's uid
 let g_acct_hash: [u32; 8] = [0; 8];                           // each account's password hash
+let g_cwd: u32 = 255;                                         // current working directory (index; 255 = root)
+let g_cwdpath: [u8; 128] = [0; 128];                          // cwd as an absolute path string (for pwd)
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
 let g_pcol: u32 = 0;                                           // program-output cursor column (syscalls)
 let g_gfx: bool = false;                                       // a linear framebuffer is available
@@ -1335,13 +1337,14 @@ fn fs_find_in(name: *u8, parent: u32) -> u32 {
 // component is missing. Walks the parent tree component by component.
 fn fs_resolve(path: u64) -> u32 {
     let p: u32 = path as u32;
-    if *(p as *u8) == 47 {                          // leading '/'
+    let cur: u32 = g_cwd;                           // relative paths start at the cwd
+    if *(p as *u8) == 47 {                          // leading '/' -> absolute, start at root
         p = p + 1;
+        cur = 255;
     }
-    if *(p as *u8) == 0 {                           // "" or "/" -> the root directory
-        return 255;
+    if *(p as *u8) == 0 {                           // "" (the cwd) or "/" (the root)
+        return cur;
     }
-    let cur: u32 = 255;                             // walk from root
     let result: u32 = 64;
     let done: bool = false;
     while !done {
@@ -1355,7 +1358,18 @@ fn fs_resolve(path: u64) -> u32 {
             p = p + 1;
         }
         *(((&comp as u64) + (clen as u64)) as *u8) = 0;
-        let idx: u32 = fs_find_in((&comp as u64) as *u8, cur);
+        let idx: u32 = 64;
+        if streq((&comp as u64) as *u8, ".") {
+            idx = cur;                              // "." stays put
+        } else if streq((&comp as u64) as *u8, "..") {
+            if cur == 255 {
+                idx = 255;                          // ".." at root stays at root
+            } else {
+                idx = fs_parent(cur) as u32;        // up one level
+            }
+        } else {
+            idx = fs_find_in((&comp as u64) as *u8, cur);
+        }
         if idx == 64 {
             done = true;                            // component not found
         } else {
@@ -1366,7 +1380,7 @@ fn fs_resolve(path: u64) -> u32 {
                 result = idx;                       // that was the last component
                 done = true;
             } else {
-                if fs_type(idx) != 1 {              // more path, but this isn't a dir
+                if idx != 255 && fs_type(idx) != 1 {   // more path, but not a directory
                     done = true;
                 } else {
                     cur = idx;
@@ -1375,6 +1389,29 @@ fn fs_resolve(path: u64) -> u32 {
         }
     }
     return result;
+}
+
+// Build the absolute path of directory `idx` (255 = root) into `buf` by walking
+// the parent chain.
+fn path_of(idx: u32, buf: u64) {
+    if idx == 255 {
+        *(buf as *u8) = 47;                         // "/"
+        *((buf + 1) as *u8) = 0;
+        return;
+    }
+    path_of(fs_parent(idx) as u32, buf);           // parent path first
+    let len: u32 = str_len(buf as *u8);
+    if len > 1 {                                    // separator, unless parent is "/"
+        *((buf + (len as u64)) as *u8) = 47;
+        len = len + 1;
+    }
+    let nm: u32 = fs_entry_addr(idx);              // append this directory's name
+    let j: u32 = 0;
+    while *((nm + j) as *u8) != 0 {
+        *((buf + (len as u64) + (j as u64)) as *u8) = *((nm + j) as *u8);
+        j = j + 1;
+    }
+    *((buf + (len as u64) + (j as u64)) as *u8) = 0;
 }
 
 // Split `path` into its parent directory (returned: 255 root, 0..63 a dir, or 64
@@ -1390,9 +1427,9 @@ fn fs_parent_of(path: u64, leaf: u64) -> u32 {
         i = i + 1;
     }
     let total: u32 = i;
-    if last_slash == 0xFFFFFFFF {                   // bare name: parent is root
+    if last_slash == 0xFFFFFFFF {                   // bare name: parent is the cwd
         str_copy(leaf as *u8, path as *u8);
-        return 255;
+        return g_cwd;
     }
     let ls: u32 = last_slash + 1;                   // copy the leaf out
     let j: u32 = 0;
@@ -1826,7 +1863,7 @@ fn run_command(cmd: *u8) -> bool {
         feed();
         print_string("help clear about echo uptime crash readme mem", g_row, 7);
         feed();
-        print_string("files: ls [dir] cat write rm mkdir rmdir run exec mods", g_row, 7);
+        print_string("files: pwd cd ls cat write rm mkdir rmdir run exec", g_row, 7);
         feed();
         print_string("net: net (DHCP)  httpd (serve a page on :80)", g_row, 7);
         feed();
@@ -1855,9 +1892,40 @@ fn run_command(cmd: *u8) -> bool {
         net_httpd();
         return false;
     }
+    if streq(cmd, "pwd") {
+        feed();
+        print_string((&g_cwdpath as u64) as *u8, g_row, 15);
+        return false;
+    }
+    if streq(cmd, "cd") || starts_with(cmd, "cd ") {
+        if !fs_guard() { return false; }
+        let target: u64 = (cmd as u32 + 3) as u64;
+        let hb: [u8; 64] = [0; 64];
+        if streq(cmd, "cd") {                           // no arg -> home
+            str_copy((&hb as u64) as *u8, "/home/");
+            str_copy(((&hb as u64) + 6) as *u8, (&g_username as u64) as *u8);
+            target = &hb as u64;
+        }
+        let idx: u32 = fs_resolve(target);
+        if idx == 64 {
+            feed();
+            print_string("cd: no such directory", g_row, 12);
+            return false;
+        }
+        if idx != 255 {
+            if fs_type(idx) != 1 {
+                feed();
+                print_string("cd: not a directory", g_row, 12);
+                return false;
+            }
+        }
+        g_cwd = idx;
+        path_of(idx, &g_cwdpath as u64);
+        return false;
+    }
     if streq(cmd, "ls") || starts_with(cmd, "ls ") {
         if !fs_guard() { return false; }
-        let dir: u32 = 255;                             // default: the root directory
+        let dir: u32 = g_cwd;                           // default: the current directory
         if starts_with(cmd, "ls ") {
             let r: u32 = fs_resolve((cmd as u32 + 3) as u64);
             if r == 64 {
@@ -2549,6 +2617,24 @@ fn login_default() {
     str_copy((&g_username as u64) as *u8, "mortuex");
 }
 
+// Start the shell in the user's home directory (falling back to root).
+fn cwd_init() {
+    let hb: [u8; 64] = [0; 64];
+    str_copy((&hb as u64) as *u8, "/home/");
+    str_copy(((&hb as u64) + 6) as *u8, (&g_username as u64) as *u8);
+    let idx: u32 = fs_resolve(&hb as u64);
+    if idx == 64 {
+        idx = 255;
+    }
+    if idx != 255 {
+        if fs_type(idx) != 1 {
+            idx = 255;
+        }
+    }
+    g_cwd = idx;
+    path_of(g_cwd, &g_cwdpath as u64);
+}
+
 // Read a line from the keyboard by polling (interrupts are off inside a shell
 // command). Echoes each character, or '*' when mask is true. Returns length.
 fn kread_line(buf: u64, mask: bool) -> u32 {
@@ -3076,6 +3162,7 @@ fn kmain(mbinfo: u32) {
     acct_init();                     // load the account table (root + a normal user)
     ensure_home();                   // create /home/mortuex, owned by the user
     login_default();                 // auto-login as the normal user (uid 1)
+    cwd_init();                      // start in the user's home directory
 
     run_script(1);                   // run the startup script loaded from disk
 
