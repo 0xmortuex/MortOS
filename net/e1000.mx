@@ -1,0 +1,311 @@
+// net/e1000.mx — an Intel 82540EM (E1000) gigabit Ethernet driver in Mort.
+//
+// Priority-A hardware driver for MORT OS (claude-hardware branch). Where the
+// RTL8139 (net/rtl8139.mx) is driven entirely through port I/O, the E1000
+// exposes its registers as MEMORY-MAPPED I/O (a PCI memory BAR) and moves frames
+// through DMA descriptor rings in RAM. This file is self-contained hardware
+// bring-up plus a transmit path, proven by booting QEMU with `-device e1000` and
+// capturing the broadcast frame the card sends.
+//
+// It reuses the PCI config accessors (pci_read32 / pci_write32) and the Ethernet
+// framing helpers (eth_build_header / mac_broadcast) already in the tree; in
+// MORT OS every .mx file is one translation unit, so they are called directly.
+//
+// --- MMIO correctness under -O2 ---
+// Mort lowers pointer stores/loads to plain (non-volatile) C, and the kernel
+// builds at -O2. The kernel already drives the framebuffer this way (kmain.mx),
+// which proves -O2 keeps `*(addr as *u32) = v` stores. The one thing -O2 could
+// break is a *polling read* of an MMIO/descriptor status, which it may hoist out
+// of its loop into an infinite spin. So this driver never tight-polls an MMIO
+// register: it settles the card after reset with a bounded port-I/O delay
+// (io_wait via a volatile `inb`), and hands frames to the card fire-and-forget
+// (write TDT and return) exactly as the RTL8139 path does. Order-sensitive
+// hand-offs get an `asm("")` barrier.
+
+// ---- PCI identity ----
+// QEMU's `-device e1000` is the 82540EM. The 82545EM and the 82574L (e1000e)
+// share the driver-visible register layout used here for basic bring-up + TX.
+let E1000_VENDOR: u16 = 0x8086;
+let E1000_DEV_82540: u16 = 0x100E;   // QEMU default `-device e1000`
+let E1000_DEV_82545: u16 = 0x100F;   // `-device e1000-82545em`
+let E1000_DEV_82574: u16 = 0x10D3;   // `-device e1000e`
+
+// ---- register offsets (bytes from the MMIO base) ----
+let E1000_CTRL: u32 = 0x0000;        // device control
+let E1000_STATUS: u32 = 0x0008;      // device status (LU = link up, bit 1)
+let E1000_ICR: u32 = 0x00C0;         // interrupt cause read (read clears)
+let E1000_IMC: u32 = 0x00D8;         // interrupt mask clear
+let E1000_RCTL: u32 = 0x0100;        // receive control
+let E1000_TCTL: u32 = 0x0400;        // transmit control
+let E1000_TIPG: u32 = 0x0410;        // transmit inter-packet gap
+let E1000_RDBAL: u32 = 0x2800;       // RX descriptor base low
+let E1000_RDBAH: u32 = 0x2804;       // RX descriptor base high
+let E1000_RDLEN: u32 = 0x2808;       // RX descriptor ring length (bytes)
+let E1000_RDH: u32 = 0x2810;         // RX descriptor head
+let E1000_RDT: u32 = 0x2818;         // RX descriptor tail
+let E1000_TDBAL: u32 = 0x3800;       // TX descriptor base low
+let E1000_TDBAH: u32 = 0x3804;       // TX descriptor base high
+let E1000_TDLEN: u32 = 0x3808;       // TX descriptor ring length (bytes)
+let E1000_TDH: u32 = 0x3810;         // TX descriptor head
+let E1000_TDT: u32 = 0x3818;         // TX descriptor tail
+let E1000_RAL: u32 = 0x5400;         // receive address low  (MAC bytes 0..3)
+let E1000_RAH: u32 = 0x5404;         // receive address high (MAC bytes 4..5 + AV)
+
+// ---- driver state (Codex reads these for Settings hardware status) ----
+// Three DISTINCT states so hardware is never called "Ready" from PCI detection
+// alone: present (found on the bus) -> ready (rings up, TX/RX enabled) -> link
+// (the card reports the line actually up).
+let g_e1000_present: bool = false;
+let g_e1000_ready: bool = false;
+let g_e1000_link: bool = false;
+let g_e1000_mmio: u64 = 0;           // MMIO register base (from BAR0)
+let g_e1000_error: u32 = 0;          // 0 = ok; else a diagnostic code (below)
+let g_e1000_devid: u16 = 0;          // the PCI device id we matched
+let g_e1000_mac: [u8; 6] = [0; 6];   // the card's MAC, read at init
+
+// error codes for g_e1000_error
+let E1000_ERR_NONE: u32 = 0;
+let E1000_ERR_NOPCI: u32 = 1;        // no matching PCI device on bus 0
+let E1000_ERR_NOBAR: u32 = 2;        // BAR0 was an I/O BAR, not memory-mapped
+
+// ---- DMA rings and buffers ----
+// A descriptor ring must be 16-byte aligned and its byte length a multiple of
+// 128, so 8 descriptors (8*16 = 128 bytes) is the smallest legal ring. We pad
+// each ring by 16 bytes and align its base by hand. The card DMAs to/from these
+// by physical address; MORT OS runs paging-off (identity mapped), so a global's
+// address equals its physical address.
+let E1000_NDESC: u32 = 8;
+let E1000_RX_BUFSZ: u32 = 2048;
+
+let g_e1000_tx_ring: [u8; 144] = [0; 144];     // 8*16 + 16 pad
+let g_e1000_rx_ring: [u8; 144] = [0; 144];
+let g_e1000_tx_buf: [u8; 2048] = [0; 2048];    // one TX frame (single-descriptor)
+let g_e1000_rx_buf: [u8; 16384] = [0; 16384];  // 8 * 2048 RX buffers
+let g_e1000_tx_tail: u32 = 0;                  // next TX descriptor to fill
+let g_e1000_tx_base: u64 = 0;                  // aligned TX ring base (cached)
+let g_e1000_rx_base: u64 = 0;                  // aligned RX ring base (cached)
+
+// ---- MMIO accessors (32-bit only: E1000 registers are aligned dwords) ----
+fn e1000_w(reg: u32, val: u32) {
+    *((g_e1000_mmio + (reg as u64)) as *u32) = val;
+}
+fn e1000_r(reg: u32) -> u32 {
+    return *((g_e1000_mmio + (reg as u64)) as *u32);
+}
+
+// A bounded delay via the POST diagnostic port (0x80). Reading it is harmless
+// and costs ~1us per access on real hardware; the `inb` is volatile asm, so the
+// loop can never be optimised away. Used for the post-reset settle instead of
+// polling an MMIO bit (which -O2 could hoist into an infinite spin).
+fn e1000_delay(units: u32) {
+    let i: u32 = 0;
+    while i < units {
+        let dummy: u8 = inb(0x80);
+        i = i + 1;
+    }
+}
+
+// Round an address up to the next 16-byte boundary.
+fn align16(addr: u64) -> u64 {
+    return ((addr + 15) >> 4) << 4;
+}
+
+// Find the card on PCI bus 0, map its registers, reset it, and bring the TX and
+// RX rings up. Returns true and sets g_e1000_ready on success.
+fn e1000_init() -> bool {
+    g_e1000_ready = false;
+    g_e1000_link = false;
+    g_e1000_error = E1000_ERR_NONE;
+
+    // 1) Find the card and read its memory BAR0.
+    let found: bool = false;
+    let slot: u32 = 0;
+    while slot < 32 {
+        let id: u32 = pci_read32(0, slot as u8, 0, 0x00);
+        let vendor: u16 = (id & 0xFFFF) as u16;
+        let device: u16 = ((id >> 16) & 0xFFFF) as u16;
+        if vendor == E1000_VENDOR
+            && (device == E1000_DEV_82540
+                || device == E1000_DEV_82545
+                || device == E1000_DEV_82574) {
+            g_e1000_devid = device;
+
+            // BAR0 is a 32-bit memory BAR; bit 0 = 0 marks memory space. Mask off
+            // the low 4 flag bits to get the register base.
+            let bar0: u32 = pci_read32(0, slot as u8, 0, 0x10);
+            if (bar0 & 0x1) != 0 {
+                g_e1000_error = E1000_ERR_NOBAR;
+                slot = 32;
+            } else {
+                g_e1000_mmio = (bar0 & 0xFFFFFFF0) as u64;
+
+                // PCI command reg (0x04): enable memory space (bit 1) and bus
+                // mastering (bit 2) so the card can decode MMIO and DMA.
+                let cmd: u32 = pci_read32(0, slot as u8, 0, 0x04);
+                pci_write32(0, slot as u8, 0, 0x04, cmd | 0x6);
+
+                g_e1000_present = true;
+                found = true;
+                slot = 32;
+            }
+        } else {
+            slot = slot + 1;
+        }
+    }
+    if !found {
+        if g_e1000_error == E1000_ERR_NONE {
+            g_e1000_error = E1000_ERR_NOPCI;
+        }
+        g_e1000_present = false;
+        return false;
+    }
+
+    // 2) Global reset (CTRL.RST, bit 26), then a fixed settle (see MMIO note).
+    e1000_w(E1000_CTRL, 0x04000000);
+    e1000_delay(2000);
+    asm("");                                    // barrier before post-reset config
+
+    // 3) Bring the link up (CTRL: SLU 0x40 | ASDE 0x20) and mask off interrupts;
+    //    we poll / fire-and-forget rather than take IRQs.
+    e1000_w(E1000_CTRL, 0x00000060);
+    e1000_w(E1000_IMC, 0xFFFFFFFF);
+    let clr: u32 = e1000_r(E1000_ICR);          // read-to-clear pending causes
+
+    // 4) Read the MAC from the Receive Address registers (QEMU fills RAL/RAH
+    //    from `-device e1000,mac=...` after reset).
+    let ral: u32 = e1000_r(E1000_RAL);
+    let rah: u32 = e1000_r(E1000_RAH);
+    g_e1000_mac[0] = (ral & 0xFF) as u8;
+    g_e1000_mac[1] = ((ral >> 8) & 0xFF) as u8;
+    g_e1000_mac[2] = ((ral >> 16) & 0xFF) as u8;
+    g_e1000_mac[3] = ((ral >> 24) & 0xFF) as u8;
+    g_e1000_mac[4] = (rah & 0xFF) as u8;
+    g_e1000_mac[5] = ((rah >> 8) & 0xFF) as u8;
+
+    // 5) Transmit ring. Zero the descriptors, point the card at the aligned base,
+    //    then enable the transmitter.
+    g_e1000_tx_base = align16(&g_e1000_tx_ring as u64);
+    let ti: u32 = 0;
+    while ti < E1000_NDESC {
+        let d: u64 = g_e1000_tx_base + (ti as u64) * 16;
+        *((d) as *u32) = 0;
+        *((d + 4) as *u32) = 0;
+        *((d + 8) as *u32) = 0;
+        *((d + 12) as *u32) = 0;
+        ti = ti + 1;
+    }
+    e1000_w(E1000_TDBAL, (g_e1000_tx_base & 0xFFFFFFFF) as u32);
+    e1000_w(E1000_TDBAH, 0);
+    e1000_w(E1000_TDLEN, E1000_NDESC * 16);
+    e1000_w(E1000_TDH, 0);
+    e1000_w(E1000_TDT, 0);
+    g_e1000_tx_tail = 0;
+    // TCTL: EN(0x02) | PSP(0x08) | CT=0x0F (bits 4-11) | COLD=0x40 (bits 12-21).
+    e1000_w(E1000_TCTL, 0x02 | 0x08 | (0x0F << 4) | (0x40 << 12));
+    // TIPG: standard copper inter-packet gap (IPGT=10, IPGR1=8, IPGR2=6).
+    e1000_w(E1000_TIPG, 0x0060200A);
+
+    // 6) Receive ring. Give each descriptor a 2 KB buffer, then enable RX with
+    //    broadcast-accept and CRC-strip.
+    g_e1000_rx_base = align16(&g_e1000_rx_ring as u64);
+    let ri: u32 = 0;
+    while ri < E1000_NDESC {
+        let rd: u64 = g_e1000_rx_base + (ri as u64) * 16;
+        let buf: u64 = (&g_e1000_rx_buf as u64) + (ri as u64) * (E1000_RX_BUFSZ as u64);
+        *((rd) as *u32) = (buf & 0xFFFFFFFF) as u32;   // buffer addr low
+        *((rd + 4) as *u32) = 0;                        // buffer addr high
+        *((rd + 8) as *u32) = 0;                        // length + checksum
+        *((rd + 12) as *u32) = 0;                       // status + errors + special
+        ri = ri + 1;
+    }
+    e1000_w(E1000_RDBAL, (g_e1000_rx_base & 0xFFFFFFFF) as u32);
+    e1000_w(E1000_RDBAH, 0);
+    e1000_w(E1000_RDLEN, E1000_NDESC * 16);
+    e1000_w(E1000_RDH, 0);
+    e1000_w(E1000_RDT, E1000_NDESC - 1);        // hand all but one to the card
+    // RCTL: EN(0x02) | BAM broadcast(0x8000) | BSIZE 2048 (00) | SECRC(0x04000000).
+    e1000_w(E1000_RCTL, 0x02 | 0x8000 | 0x04000000);
+
+    asm("");                                     // config complete before status read
+
+    // 7) Link status (STATUS.LU, bit 1). QEMU reports link up immediately.
+    let st: u32 = e1000_r(E1000_STATUS);
+    if (st & 0x2) != 0 {
+        g_e1000_link = true;
+    }
+
+    g_e1000_ready = true;
+    return true;
+}
+
+// Copy the card's MAC (6 bytes) into `out`.
+fn e1000_mac(out: u64) {
+    let i: u32 = 0;
+    while i < 6 {
+        *((out + (i as u64)) as *u8) = g_e1000_mac[i];
+        i = i + 1;
+    }
+}
+
+// Hand `len` bytes from g_e1000_tx_buf to the card via the current TX descriptor,
+// fire-and-forget (write TDT and return; QEMU transmits synchronously). Returns
+// false if the driver isn't up.
+fn e1000_transmit(len: u32) -> bool {
+    if !g_e1000_ready {
+        return false;
+    }
+    let n: u64 = g_e1000_tx_tail as u64;
+    let d: u64 = g_e1000_tx_base + n * 16;
+
+    // Legacy TX descriptor, written as three dwords over the 16-byte slot:
+    //   [0..3]  buffer address low        [4..7]  buffer address high
+    //   [8..9]  length   [10] CSO   [11] CMD = EOP|IFCS|RS (0x0B)
+    //   [12] STA (card sets DD)  [13] CSS  [14..15] SPECIAL
+    *((d) as *u32) = &g_e1000_tx_buf as u32;
+    *((d + 4) as *u32) = 0;
+    *((d + 8) as *u32) = (len & 0xFFFF) | (0x0B << 24);   // length | CMD
+    *((d + 12) as *u32) = 0;
+
+    asm("");                                     // descriptor written before TDT bump
+
+    // The card transmits descriptors [TDH, TDT); bumping the tail starts DMA.
+    let next: u32 = (g_e1000_tx_tail + 1) % E1000_NDESC;
+    e1000_w(E1000_TDT, next);
+    g_e1000_tx_tail = next;
+    return true;
+}
+
+// Build a broadcast probe frame ("E1000-OK") in the TX buffer and send it.
+// EtherType 0x88B5 is IEEE-reserved for experimental use — honest labelling for
+// a hand-rolled test frame. Returns the byte count handed to the card, 0 if the
+// driver isn't ready.
+fn e1000_send_test() -> u32 {
+    if !g_e1000_ready {
+        return 0;
+    }
+    let base: u64 = &g_e1000_tx_buf as u64;
+
+    let src: [u8; 6] = [0; 6];
+    e1000_mac(&src as u64);
+    let dst: [u8; 6] = [0; 6];
+    mac_broadcast(&dst as u64);
+
+    let hdr: u32 = eth_build_header(base, &dst as u64, &src as u64, 0x88B5);
+
+    let msg: [u8; 8] = [69, 49, 48, 48, 48, 45, 79, 75];   // "E1000-OK"
+    let i: u32 = 0;
+    while i < 8 {
+        *((base + (hdr as u64) + (i as u64)) as *u8) = *((&msg as u64 + (i as u64)) as *u8);
+        i = i + 1;
+    }
+
+    // Pad to the 60-byte Ethernet minimum so the capture shows a clean frame
+    // (the E1000 pads short frames with PSP too, but be explicit).
+    let total: u32 = hdr + 8;
+    while total < 60 {
+        *((base + (total as u64)) as *u8) = 0;
+        total = total + 1;
+    }
+    e1000_transmit(total);
+    return total;
+}

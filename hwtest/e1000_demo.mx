@@ -1,0 +1,123 @@
+// hwtest/e1000_demo.mx — standalone verification kernel for net/e1000.mx.
+//
+// Not part of the OS build. hwtest/build_e1000_demo.py concatenates the pure net
+// stack (endian + eth), the PCI accessors (rtl8139), and net/e1000.mx ahead of
+// this file into a minimal multiboot kernel. Booted with `-device e1000` and a
+// filter-dump, it initialises the card, reports its state over COM1, and
+// transmits a broadcast probe frame — the captured frame is the proof the driver
+// actually drives the hardware, not just PCI detection.
+
+let COM1: u16 = 0x3F8;
+
+// ---- COM1 serial (proof log; QEMU wires COM1 to stdout with -serial stdio) ----
+fn serial_init() {
+    outb(COM1 + 1, 0x00);     // interrupts off
+    outb(COM1 + 3, 0x80);     // DLAB on
+    outb(COM1 + 0, 0x03);     // divisor 3 -> 38400 baud
+    outb(COM1 + 1, 0x00);
+    outb(COM1 + 3, 0x03);     // 8 bits, no parity, 1 stop
+    outb(COM1 + 2, 0xC7);     // FIFO on, cleared
+    outb(COM1 + 4, 0x0B);     // RTS/DSR set
+}
+
+fn serial_putc(c: u8) {
+    // Wait for the transmit-holding register to empty (LSR bit 5). inb is
+    // volatile asm, so this poll reads the port fresh each time (never hoisted).
+    while (inb(COM1 + 5) & 0x20) == 0 {
+    }
+    outb(COM1, c);
+}
+
+fn serial_puts(s: u64) {
+    let i: u64 = 0;
+    let c: u8 = *((s) as *u8);
+    while c != 0 {
+        serial_putc(c);
+        i = i + 1;
+        c = *((s + i) as *u8);
+    }
+}
+
+fn hexdig(v: u8) -> u8 {
+    if v < 10 {
+        return 48 + v;        // '0'..'9'
+    }
+    return 87 + v;            // 'a'..'f'
+}
+
+fn serial_hex8(b: u8) {
+    serial_putc(hexdig((b >> 4) & 0xF));
+    serial_putc(hexdig(b & 0xF));
+}
+
+fn yn(b: bool) -> u8 {
+    if b {
+        return 121;          // 'y'
+    }
+    return 110;              // 'n'
+}
+
+fn kmain(mb: u64) {
+    serial_init();
+    serial_puts("=== e1000 driver demo ===" as u64);
+    serial_putc(10);
+
+    let ok: bool = e1000_init();
+
+    serial_puts("present=" as u64);
+    serial_putc(yn(g_e1000_present));
+    serial_puts(" ready=" as u64);
+    serial_putc(yn(g_e1000_ready));
+    serial_puts(" link=" as u64);
+    serial_putc(yn(g_e1000_link));
+    serial_putc(10);
+
+    serial_puts("devid=" as u64);
+    serial_hex8((g_e1000_devid >> 8) as u8);
+    serial_hex8((g_e1000_devid & 0xFF) as u8);
+    serial_puts(" error=" as u64);
+    serial_hex8(g_e1000_error as u8);
+    serial_putc(10);
+
+    serial_puts("mmio=" as u64);
+    serial_hex8(((g_e1000_mmio >> 24) & 0xFF) as u8);
+    serial_hex8(((g_e1000_mmio >> 16) & 0xFF) as u8);
+    serial_hex8(((g_e1000_mmio >> 8) & 0xFF) as u8);
+    serial_hex8((g_e1000_mmio & 0xFF) as u8);
+    serial_putc(10);
+
+    serial_puts("mac=" as u64);
+    let k: u32 = 0;
+    while k < 6 {
+        serial_hex8(g_e1000_mac[k]);
+        if k < 5 {
+            serial_putc(58);    // ':'
+        }
+        k = k + 1;
+    }
+    serial_putc(10);
+
+    if ok {
+        // Transmit a few probe frames so the capture is unambiguous.
+        let r: u32 = 0;
+        while r < 3 {
+            let n: u32 = e1000_send_test();
+            serial_puts("tx frame bytes=" as u64);
+            serial_hex8(n as u8);
+            serial_putc(10);
+            e1000_delay(4000);
+            r = r + 1;
+        }
+    }
+
+    serial_puts("demo done" as u64);
+    serial_putc(10);
+
+    // Ask QEMU to exit (isa-debug-exit at 0xf4) so the harness doesn't wait.
+    outb(0xf4, 0x00);
+
+    let hang: u32 = 1;
+    while hang == 1 {
+        asm("hlt");
+    }
+}
