@@ -3235,7 +3235,7 @@ fn open_power_menu() {
 
 // Repaint the desktop and re-render the active app after a full-screen overlay.
 fn restore_desktop() {
-    fill_gradient(0x0a1830, 0x2c5364);
+    fill_gradient(g_wall_top, g_wall_bottom);
     fill_rect(180, 160, 664, 456, 0x1b2733);        // window frame
     switch_app(g_app);                              // top bar + active app content
     draw_clock();

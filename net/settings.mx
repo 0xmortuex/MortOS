@@ -1,4 +1,5 @@
-// MORT OS Settings control center. Values are in-memory for v1.
+// MORT OS Settings control center. User preferences persist in .mort-settings
+// in the current home directory when MortFS is available.
 let g_accent: u32 = 0x2c5364;
 let g_wall_top: u32 = 0x0a1830;
 let g_wall_bottom: u32 = 0x2c5364;
@@ -18,6 +19,77 @@ let g_settings_result_count: u32 = 0;
 let g_settings_high_contrast: bool = false;
 let g_settings_show_hints: bool = true;
 let g_settings_scroll: u32 = 0;
+let g_settings_loaded_dir: u32 = 256;
+let g_settings_persisted: bool = false;
+
+fn settings_apply_palette() {
+    if g_settings_accent == 0 { g_accent = 0x2c5364; }
+    if g_settings_accent == 1 { g_accent = 0x654a91; }
+    if g_settings_accent == 2 { g_accent = 0x276749; }
+    if g_settings_accent == 3 { g_accent = 0xa94f55; }
+    if g_settings_accent == 4 { g_accent = 0xb06d18; }
+    if g_settings_accent == 5 { g_accent = 0x397d96; }
+    if g_settings_wall == 0 { g_wall_top = 0x0a1830; g_wall_bottom = 0x2c5364; }
+    if g_settings_wall == 1 { g_wall_top = 0x102a2b; g_wall_bottom = 0x315f58; }
+    if g_settings_wall == 2 { g_wall_top = 0x2b1735; g_wall_bottom = 0x7b3f48; }
+    if g_settings_wall == 3 { g_wall_top = 0x11151a; g_wall_bottom = 0x303942; }
+    if g_settings_high_contrast { g_accent = 0xffc928; g_wall_top = 0x000000; g_wall_bottom = 0x171717; }
+}
+
+fn settings_save() -> bool {
+    g_settings_persisted = false;
+    if !g_fs_ok || g_cwd > 255 { return false; }
+    let idx: u32 = fs_find_in(".mort-settings", g_cwd);
+    if idx == 64 { idx = fs_create_full(".mort-settings", g_cwd, 0); }
+    if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) { return false; }
+    let base: u32 = fs_entry_addr(idx); let start: u32 = *((base + 32) as *u32);
+    if start == 0 { return false; }
+    for clear: u32 in 0..512 { *((0x00800000 + clear) as *u8) = 0; }
+    *(0x00800000 as *u32) = 0x3154534d; // "MST1"
+    *(0x00800004 as *u8) = g_settings_accent as u8;
+    *(0x00800005 as *u8) = g_settings_wall as u8;
+    let flags: u8 = 0;
+    if g_clock_24h { flags = flags | 1; }
+    if g_clock_seconds { flags = flags | 2; }
+    if g_settings_high_contrast { flags = flags | 4; }
+    if g_settings_show_hints { flags = flags | 8; }
+    *(0x00800006 as *u8) = flags;
+    *(0x00800007 as *u8) = 0xa5 ^ (g_settings_accent as u8) ^ (g_settings_wall as u8) ^ flags;
+    if !ata_write(start, 0x00800000 as *u8) { return false; }
+    *((base + 28) as *u32) = 8; *((base + 48) as *u32) = fs_now();
+    g_settings_persisted = fs_sync();
+    return g_settings_persisted;
+}
+
+fn settings_load() -> bool {
+    g_settings_loaded_dir = g_cwd; g_settings_persisted = false;
+    if !g_fs_ok || g_cwd > 255 { return false; }
+    let idx: u32 = fs_find_in(".mort-settings", g_cwd);
+    if idx == 64 { settings_save(); return false; }
+    let base: u32 = fs_entry_addr(idx);
+    if fs_type(idx) != 0 || *((base + 28) as *u32) < 8 { return false; }
+    if !ata_read(*((base + 32) as *u32), 0x00800000 as *u8) { return false; }
+    if *(0x00800000 as *u32) != 0x3154534d { return false; }
+    let accent: u8 = *(0x00800004 as *u8); let wall: u8 = *(0x00800005 as *u8);
+    let flags: u8 = *(0x00800006 as *u8); let check: u8 = *(0x00800007 as *u8);
+    if accent >= 6 || wall >= 4 || check != (0xa5 ^ accent ^ wall ^ flags) { return false; }
+    g_settings_accent = accent as u32; g_settings_wall = wall as u32;
+    g_clock_24h = (flags & 1) != 0; g_clock_seconds = (flags & 2) != 0;
+    g_settings_high_contrast = (flags & 4) != 0; g_settings_show_hints = (flags & 8) != 0;
+    g_settings_persisted = true; settings_apply_palette();
+    return true;
+}
+
+fn settings_reset_defaults() {
+    g_settings_accent = 0; g_settings_wall = 0; g_clock_24h = true; g_clock_seconds = true;
+    g_settings_high_contrast = false; g_settings_show_hints = true;
+    settings_apply_palette(); settings_save(); draw_desktop(); settings_draw();
+}
+
+fn settings_persistence_state() -> *u8 {
+    if g_settings_persisted { return "Saved to MortFS"; }
+    return "Session only";
+}
 
 fn settings_text(label: *u8, x: u32, y: u32, bright: bool) {
     let fg: u32 = 0x8fa1aa;
@@ -191,7 +263,8 @@ fn settings_overview() {
     settings_text("UPTIME", 634, 348, false);
     num_to_str(g_ticks / 100, g_numbuf); draw_text_abs(g_numbuf, 634, 374, 0xffffff, 0x121a20);
     draw_text_abs(" seconds", 634 + g_numlen * 8, 374, 0x8fa1aa, 0x121a20);
-    settings_text("Tip: F1-F4 switches apps instantly.", 436, 452, false);
+    settings_text("Preferences", 436, 452, false); settings_text(settings_persistence_state(), 650, 452, true);
+    settings_text("Tip: F1-F4 switches apps instantly.", 436, 486, false);
 }
 
 fn settings_personalization_preview() {
@@ -473,8 +546,77 @@ fn settings_draw_usb_devices() {
     settings_text("+ configured   Enter: rescan   Esc/Left: back", 420, 580, false);
 }
 
+fn settings_draw_apps_controls() {
+    settings_title("Apps", "Launch and switch between built-in applications");
+    settings_option_row("Open Terminal", "F1", 280, g_settings_sel == 0);
+    settings_option_row("Open Files", "F2", 324, g_settings_sel == 1);
+    settings_option_row("Open Vex browser", "F3", 368, g_settings_sel == 2);
+    settings_text("Four trusted applications are compiled into the kernel.", 438, 430, false);
+    settings_text("External Mort programs launch from Terminal or Files.", 438, 462, false);
+    settings_text("Up/Down: select   Enter: launch   Esc/Left: back", 420, 580, false);
+}
+
+fn settings_draw_privacy_controls() {
+    settings_title("Privacy & Security", "Local-first security and session controls");
+    settings_option_row("Lock this session", "Open", 280, g_settings_sel == 0);
+    settings_text("Current user", 438, 338, false); settings_text(&g_username as *u8, 650, 338, true);
+    settings_text("Permissions", 438, 374, false); settings_text(settings_yes_no(g_fs_ok), 650, 374, true);
+    settings_text("Telemetry", 438, 410, false); settings_text("Always off", 650, 410, true);
+    settings_text("Network sync", 438, 446, false); settings_text("None", 650, 446, true);
+    settings_text("MORT OS stores preferences only in your home folder.", 438, 494, false);
+    settings_text("Enter: lock   Esc/Left: back", 420, 580, false);
+}
+
+fn settings_draw_power_controls() {
+    settings_title("Power", "Protected lock, sleep, restart and shutdown");
+    settings_option_row("Open Power menu", "F12", 280, g_settings_sel == 0);
+    settings_text("Lock", 438, 338, false); settings_text("Password protected", 620, 338, true);
+    settings_text("Sleep", 438, 374, false); settings_text("Display suspend", 620, 374, true);
+    settings_text("Restart", 438, 410, false); settings_text("8042 reset", 620, 410, true);
+    settings_text("Shutdown", 438, 446, false); settings_text("ACPI / emulator", 620, 446, true);
+    settings_text("Enter: open confirmation menu   Esc/Left: back", 420, 580, false);
+}
+
+fn settings_draw_storage_controls() {
+    settings_title("Storage", "MortFS files and memory usage");
+    settings_option_row("Open Files", "F2", 280, g_settings_sel == 0);
+    settings_text("ATA disk", 438, 338, false); settings_text(settings_yes_no(g_disk_ok), 650, 338, true);
+    settings_text("MortFS", 438, 374, false); settings_text(settings_yes_no(g_fs_ok), 650, 374, true);
+    settings_text("Files", 438, 410, false); num_to_str(settings_file_count(), g_numbuf);
+    draw_text_abs(g_numbuf, 650, 410, 0xffffff, 0x0b0f14);
+    settings_text("Preferences", 438, 446, false); settings_text(settings_persistence_state(), 650, 446, true);
+    settings_text("Enter: manage files   Esc/Left: back", 420, 580, false);
+}
+
+fn settings_draw_diagnostics_controls() {
+    settings_title("Diagnostics", "Refresh hardware state and inspect counters");
+    settings_option_row("Rescan PCI devices", "Run", 270, g_settings_sel == 0);
+    settings_option_row("Rescan USB bus", "Run", 310, g_settings_sel == 1);
+    settings_text("Timer ticks", 438, 366, false); num_to_str(g_ticks, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 366, 0xffffff, 0x0b0f14);
+    settings_text("USB events", 438, 402, false); num_to_str(g_usb_hotplug_events, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 402, 0xffffff, 0x0b0f14);
+    settings_text("Heap allocated", 438, 438, false); num_to_str((g_heap_brk - g_heap_base) / 1024, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 438, 0xffffff, 0x0b0f14); draw_text_abs(" KiB", 650 + g_numlen * 8, 438, 0x8fa1aa, 0x0b0f14);
+    settings_text("Up/Down: select   Enter: run   Esc/Left: back", 420, 580, false);
+}
+
+fn settings_draw_maintenance() {
+    settings_title("Update & About", "Build identity and preference maintenance");
+    settings_option_row("Save preferences", "Run", 280, g_settings_sel == 0);
+    settings_option_row("Reset preferences", "Run", 324, g_settings_sel == 1);
+    settings_text("Version", 438, 382, false); settings_text("1.0 development", 620, 382, true);
+    settings_text("Architecture", 438, 418, false); settings_text("x86 32-bit", 620, 418, true);
+    settings_text("Preferences", 438, 454, false); settings_text(settings_persistence_state(), 620, 454, true);
+    settings_text("System updates are installed by building a new ISO.", 438, 502, false);
+    settings_text("Up/Down: select   Enter: run   Esc/Left: back", 420, 580, false);
+}
+
 fn settings_draw() {
     if !g_gfx { return; }
+    if g_settings_loaded_dir != g_cwd {
+        if settings_load() { draw_desktop(); }
+    }
     window_title("settings"); clear_window();
     if g_settings_search { settings_draw_search(); return; }
     if g_settings_view == 0 { settings_draw_sidebar(); }
@@ -484,6 +626,12 @@ fn settings_draw() {
     if g_settings_view == 4 { settings_draw_hardware_controls(); }
     if g_settings_view == 5 { settings_draw_network_controls(); }
     if g_settings_view == 6 { settings_draw_usb_devices(); }
+    if g_settings_view == 7 { settings_draw_apps_controls(); }
+    if g_settings_view == 8 { settings_draw_privacy_controls(); }
+    if g_settings_view == 9 { settings_draw_power_controls(); }
+    if g_settings_view == 10 { settings_draw_storage_controls(); }
+    if g_settings_view == 11 { settings_draw_diagnostics_controls(); }
+    if g_settings_view == 12 { settings_draw_maintenance(); }
 }
 
 fn settings_up() {
@@ -510,36 +658,43 @@ fn settings_down() {
     let last: u32 = 1;
     if g_settings_view == 4 { last = 6; }
     if g_settings_view == 6 { return; }
+    if g_settings_view == 7 { last = 2; }
+    if g_settings_view == 8 || g_settings_view == 9 || g_settings_view == 10 { last = 0; }
+    if g_settings_view == 11 || g_settings_view == 12 { last = 1; }
     if g_settings_sel < last { g_settings_sel = g_settings_sel + 1; settings_draw(); }
 }
 
 fn settings_apply_accent() {
     g_settings_accent = (g_settings_accent + 1) % 6;
-    if g_settings_accent == 0 { g_accent = 0x2c5364; }
-    if g_settings_accent == 1 { g_accent = 0x654a91; }
-    if g_settings_accent == 2 { g_accent = 0x276749; }
-    if g_settings_accent == 3 { g_accent = 0xa94f55; }
-    if g_settings_accent == 4 { g_accent = 0xb06d18; }
-    if g_settings_accent == 5 { g_accent = 0x397d96; }
+    g_settings_high_contrast = false; settings_apply_palette(); settings_save();
     draw_desktop(); settings_draw();
 }
 
 fn settings_apply_wallpaper() {
     g_settings_wall = (g_settings_wall + 1) % 4;
-    if g_settings_wall == 0 { g_wall_top = 0x0a1830; g_wall_bottom = 0x2c5364; }
-    if g_settings_wall == 1 { g_wall_top = 0x102a2b; g_wall_bottom = 0x315f58; }
-    if g_settings_wall == 2 { g_wall_top = 0x2b1735; g_wall_bottom = 0x7b3f48; }
-    if g_settings_wall == 3 { g_wall_top = 0x11151a; g_wall_bottom = 0x303942; }
+    g_settings_high_contrast = false; settings_apply_palette(); settings_save();
     draw_desktop(); settings_draw();
+}
+
+fn settings_open_section(section: u32) {
+    g_settings_view = 0; g_settings_sel = 0;
+    if section == 1 { g_settings_view = 1; }
+    if section == 3 { g_settings_view = 5; }
+    if section == 4 { g_settings_view = 7; }
+    if section == 5 { g_settings_view = 2; }
+    if section == 6 { g_settings_view = 3; }
+    if section == 7 { g_settings_view = 8; }
+    if section == 8 { g_settings_view = 9; }
+    if section == 9 { g_settings_view = 10; }
+    if section == 10 { g_settings_view = 4; hw_scan_pci(); }
+    if section == 11 { g_settings_view = 12; }
+    if section == 12 { g_settings_view = 11; }
+    settings_draw();
 }
 
 fn settings_enter() {
     if g_settings_view == 0 {
-        if g_settings_section == 1 { g_settings_view = 1; g_settings_sel = 0; settings_draw(); }
-        if g_settings_section == 5 { g_settings_view = 2; g_settings_sel = 0; settings_draw(); }
-        if g_settings_section == 6 { g_settings_view = 3; g_settings_sel = 0; settings_draw(); }
-        if g_settings_section == 3 { g_settings_view = 5; g_settings_sel = 0; settings_draw(); }
-        if g_settings_section == 10 { g_settings_view = 4; g_settings_sel = 0; hw_scan_pci(); settings_draw(); }
+        settings_open_section(g_settings_section);
         return;
     }
     if g_settings_view == 1 {
@@ -550,17 +705,16 @@ fn settings_enter() {
     if g_settings_view == 2 {
         if g_settings_sel == 0 { g_clock_24h = !g_clock_24h; }
         if g_settings_sel == 1 { g_clock_seconds = !g_clock_seconds; }
-        draw_topbar(); settings_draw();
+        settings_save(); draw_topbar(); settings_draw();
         return;
     }
     if g_settings_view == 3 {
         if g_settings_sel == 0 {
             g_settings_high_contrast = !g_settings_high_contrast;
-            if g_settings_high_contrast { g_accent = 0xffc928; g_wall_top = 0x000000; g_wall_bottom = 0x171717; }
-            else { g_accent = 0x2c5364; g_wall_top = 0x0a1830; g_wall_bottom = 0x2c5364; g_settings_accent = 0; g_settings_wall = 0; }
+            settings_apply_palette(); settings_save();
             draw_desktop(); settings_draw();
         }
-        if g_settings_sel == 1 { g_settings_show_hints = !g_settings_show_hints; settings_draw(); }
+        if g_settings_sel == 1 { g_settings_show_hints = !g_settings_show_hints; settings_save(); settings_draw(); }
         return;
     }
     if g_settings_view == 4 {
@@ -582,6 +736,22 @@ fn settings_enter() {
         if g_settings_sel == 1 { ethernet_disconnect(); settings_draw(); }
     }
     if g_settings_view == 6 { usb_rescan(); settings_draw(); }
+    if g_settings_view == 7 {
+        if g_settings_sel == 0 { switch_app(0); }
+        if g_settings_sel == 1 { switch_app(1); }
+        if g_settings_sel == 2 { switch_app(2); }
+    }
+    if g_settings_view == 8 { open_lock(); }
+    if g_settings_view == 9 { open_power_menu(); }
+    if g_settings_view == 10 { switch_app(1); }
+    if g_settings_view == 11 {
+        if g_settings_sel == 0 { hw_scan_pci(); settings_draw(); }
+        if g_settings_sel == 1 { usb_rescan(); settings_draw(); }
+    }
+    if g_settings_view == 12 {
+        if g_settings_sel == 0 { settings_save(); settings_draw(); }
+        if g_settings_sel == 1 { settings_reset_defaults(); }
+    }
 }
 
 fn settings_open_search_result() {
@@ -604,7 +774,7 @@ fn settings_open_search_result() {
     if settings_matches("system diagnostics health") { if seen == g_settings_result_sel { g_settings_section = 12; } seen = seen + 1; }
     if g_settings_result_count == 0 { return; }
     if g_settings_section > 7 { g_settings_scroll = g_settings_section - 7; } else { g_settings_scroll = 0; }
-    g_settings_search = false; g_settings_view = 0; settings_draw();
+    g_settings_search = false; settings_open_section(g_settings_section);
 }
 
 fn settings_search_key(sc: u8) {

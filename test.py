@@ -21,6 +21,7 @@ API for other tests:
 """
 import argparse
 import os
+import shutil
 import subprocess
 import struct
 import sys
@@ -29,6 +30,7 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+BUILD = os.path.join(HERE, "build")
 ELF = os.path.join(HERE, "build", "kernel.elf")
 
 MONITOR_PROMPT = b"(qemu)"
@@ -183,6 +185,34 @@ def boot(disk_img=None, kernel_elf=ELF, extra_args=None):
         shutdown(handle)
         raise
     return handle
+
+
+def boot_iso(iso_path, disk_img=None, extra_args=None):
+    """Boot a graphical ISO image headlessly with a QEMU monitor."""
+    qemu = _find_qemu()
+    if not qemu:
+        raise RuntimeError("qemu-system-i386 not found")
+    cmd = [qemu, "-display", "none", "-monitor", "stdio",
+           "-cdrom", iso_path, "-boot", "d"]
+    if disk_img:
+        cmd += ["-hda", disk_img]
+    if extra_args:
+        cmd += list(extra_args)
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, bufsize=0)
+    handle = QemuHandle(proc)
+    try:
+        _wait_first_prompt(handle)
+    except Exception:
+        shutdown(handle)
+        raise
+    return handle
+
+
+def send_key(handle, name, hold_ms=KEY_HOLD_MS):
+    _monitor(handle, f"sendkey {name} {hold_ms}")
+    time.sleep(KEY_GAP_S)
 
 
 def type_line(handle, text):
@@ -468,6 +498,86 @@ def usb_hotplug():
     return 0 if not failed else 1
 
 
+def settings_ui():
+    """Verify graphical Settings navigation and MortFS preference persistence."""
+    sys.path.insert(0, HERE)
+    import build as kernel_build
+    kernel_build.iso()
+    kernel_build.ensure_disk()
+    ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
+    app_addr = _elf32_symbol(ELF, "m_g_app")
+    view_addr = _elf32_symbol(ELF, "m_g_settings_view")
+    accent_addr = _elf32_symbol(ELF, "m_g_settings_accent")
+    persisted_addr = _elf32_symbol(ELF, "m_g_settings_persisted")
+    temp_disk = os.path.join(tempfile.gettempdir(),
+                             f"mort_settings_{os.getpid()}.img")
+    shutil.copyfile(kernel_build.DISK, temp_disk)
+    results = []
+
+    def check(name, ok):
+        results.append((name, ok))
+        print(f"{'PASS' if ok else 'FAIL'}: {name}")
+
+    changed_accent = 0
+    handle = boot_iso(kernel_build.ISO, temp_disk)
+    try:
+        _wait_guest_u32(handle, ticks_addr, lambda value: value >= 100,
+                        timeout_s=20)
+        send_key(handle, "esc")       # close the boot launcher
+        send_key(handle, "f4")
+        app = _wait_guest_u32(handle, app_addr, lambda value: value == 3)
+        check("F4 opens Settings from the graphical desktop", app == 3)
+        persisted = _wait_guest_u32(
+            handle, persisted_addr, lambda value: (value & 0xff) != 0)
+        check("Settings creates a per-user MortFS preference record",
+              (persisted & 0xff) != 0)
+
+        send_key(handle, "down")      # Overview -> Personalization
+        send_key(handle, "ret")
+        view = _wait_guest_u32(handle, view_addr, lambda value: value == 1)
+        check("Enter opens the Personalization control page", view == 1)
+        before = _guest_u32(handle, accent_addr)
+        send_key(handle, "ret")       # cycle accent
+        changed_accent = _wait_guest_u32(
+            handle, accent_addr, lambda value: value != before)
+        check("Accent control changes live kernel state", changed_accent != before)
+
+        send_key(handle, "esc")
+        send_key(handle, "slash")
+        for key in ("c", "l", "o", "c", "k"):
+            send_key(handle, key)
+        send_key(handle, "ret")
+        view = _wait_guest_u32(handle, view_addr, lambda value: value == 2)
+        check("Settings search opens the matching Clock control page", view == 2)
+        shot = os.path.join(BUILD, "settings-complete.ppm").replace(os.sep, "/")
+        _monitor(handle, f"screendump {shot}")
+        check("Settings UI screenshot was captured",
+              os.path.exists(os.path.join(BUILD, "settings-complete.ppm")))
+    finally:
+        shutdown(handle)
+
+    handle = boot_iso(kernel_build.ISO, temp_disk)
+    try:
+        _wait_guest_u32(handle, ticks_addr, lambda value: value >= 100,
+                        timeout_s=20)
+        send_key(handle, "esc")
+        send_key(handle, "f4")
+        loaded_accent = _wait_guest_u32(
+            handle, accent_addr, lambda value: value == changed_accent,
+            timeout_s=10)
+        check("Accent preference survives a full reboot", loaded_accent == changed_accent)
+    finally:
+        shutdown(handle)
+        try:
+            os.remove(temp_disk)
+        except OSError:
+            pass
+
+    failed = [name for name, ok in results if not ok]
+    print(f"\n{len(results) - len(failed)}/{len(results)} passed")
+    return 0 if not failed else 1
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -475,11 +585,14 @@ def main(argv):
     p_smoke.add_argument("--disk", default=None,
                          help="optional disk image to attach as -hda")
     sub.add_parser("usb-hotplug", help="test live UHCI detach and reattach")
+    sub.add_parser("settings-ui", help="test Settings UI and persistence")
     args = parser.parse_args(argv)
     if args.cmd == "smoke":
         return smoke(disk_img=args.disk)
     if args.cmd == "usb-hotplug":
         return usb_hotplug()
+    if args.cmd == "settings-ui":
+        return settings_ui()
     return 2
 
 
