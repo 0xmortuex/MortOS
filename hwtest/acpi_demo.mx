@@ -1,0 +1,112 @@
+// hwtest/acpi_demo.mx — standalone verification kernel for net/acpi.mx.
+//
+// Not part of the OS build. hwtest/build_acpi_demo.py concatenates net/acpi.mx
+// with this file. It discovers the ACPI tables, reports what it found on COM1,
+// then powers the machine off via ACPI S5. A clean QEMU exit (code 0) is the
+// proof the discovered PM1a_CNT + S5 sleep value are correct; the isa-debug-exit
+// fallback (code 1) only fires if the ACPI poweroff did not take.
+
+let COM1: u16 = 0x3F8;
+
+fn serial_init() {
+    outb(COM1 + 1, 0x00);
+    outb(COM1 + 3, 0x80);
+    outb(COM1 + 0, 0x03);
+    outb(COM1 + 1, 0x00);
+    outb(COM1 + 3, 0x03);
+    outb(COM1 + 2, 0xC7);
+    outb(COM1 + 4, 0x0B);
+}
+fn serial_putc(c: u8) {
+    while (inb(COM1 + 5) & 0x20) == 0 {
+    }
+    outb(COM1, c);
+}
+fn serial_puts(s: u64) {
+    let i: u64 = 0;
+    let c: u8 = *((s) as *u8);
+    while c != 0 {
+        serial_putc(c);
+        i = i + 1;
+        c = *((s + i) as *u8);
+    }
+}
+fn hexdig(v: u8) -> u8 {
+    if v < 10 {
+        return 48 + v;
+    }
+    return 87 + v;
+}
+fn serial_hex8(b: u8) {
+    serial_putc(hexdig((b >> 4) & 0xF));
+    serial_putc(hexdig(b & 0xF));
+}
+fn serial_hex32(v: u32) {
+    serial_hex8(((v >> 24) & 0xFF) as u8);
+    serial_hex8(((v >> 16) & 0xFF) as u8);
+    serial_hex8(((v >> 8) & 0xFF) as u8);
+    serial_hex8((v & 0xFF) as u8);
+}
+fn yn(b: bool) -> u8 {
+    if b {
+        return 121;
+    }
+    return 110;
+}
+
+fn kmain(mb: u64) {
+    serial_init();
+    serial_puts("=== acpi discovery demo ===" as u64);
+    serial_putc(10);
+
+    let ok: bool = acpi_init();
+
+    serial_puts("present=" as u64);
+    serial_putc(yn(g_acpi_present));
+    serial_puts(" error=" as u64);
+    serial_hex8(g_acpi_error as u8);
+    serial_puts(" tables=" as u64);
+    serial_hex8(g_acpi_tables as u8);
+    serial_putc(10);
+
+    serial_puts("rsdp=" as u64);
+    serial_hex32((g_acpi_rsdp & 0xFFFFFFFF) as u32);
+    serial_puts(" rsdt=" as u64);
+    serial_hex32((g_acpi_rsdt & 0xFFFFFFFF) as u32);
+    serial_puts(" fadt=" as u64);
+    serial_hex32((g_acpi_fadt & 0xFFFFFFFF) as u32);
+    serial_puts(" dsdt=" as u64);
+    serial_hex32((g_acpi_dsdt & 0xFFFFFFFF) as u32);
+    serial_putc(10);
+
+    serial_puts("pm1a_cnt=" as u64);
+    serial_hex32(g_acpi_pm1a_cnt);
+    serial_puts(" smi=" as u64);
+    serial_hex32(g_acpi_smi_cmd);
+    serial_puts(" en=" as u64);
+    serial_hex8(g_acpi_enable as u8);
+    serial_putc(10);
+
+    serial_puts("s5=" as u64);
+    serial_putc(yn(g_acpi_s5_found));
+    serial_puts(" slp_typ5=" as u64);
+    serial_hex8(g_acpi_slp_typ5 as u8);
+    serial_puts(" battery=" as u64);
+    serial_putc(yn(g_acpi_battery));
+    serial_putc(10);
+
+    if ok {
+        serial_puts("powering off via ACPI S5..." as u64);
+        serial_putc(10);
+        acpi_poweroff();
+        // Reached only if the poweroff did not take.
+        serial_puts("poweroff FAILED (still running)" as u64);
+        serial_putc(10);
+    }
+
+    outb(0xf4, 0x00);            // fallback exit (code 1) if ACPI poweroff failed
+    let hang: u32 = 1;
+    while hang == 1 {
+        asm("hlt");
+    }
+}

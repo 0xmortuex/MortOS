@@ -1,0 +1,274 @@
+// net/acpi.mx — ACPI power discovery for MORT OS in Mort.
+//
+// Priority-E hardware driver for MORT OS (claude-hardware branch). ACPI is how a
+// modern PC exposes power management. This file DISCOVERS the ACPI tables the
+// firmware/QEMU provides — it finds the RSDP, walks the RSDT to the FADT, reads
+// the power-management register block, and parses the DSDT for the S5 (soft-off)
+// sleep value — and offers an ACPI poweroff built from what it found. It also
+// notes whether a battery device is declared in the ACPI namespace.
+//
+// It only READS firmware tables and exposes results + an acpi_poweroff(); it does
+// NOT touch the existing session/power UI. Codex wires the discovered capability
+// in. Battery *status* (charge/rate) lives in AML methods (_BST/_BIF) and needs
+// an AML interpreter — a larger follow-up; this driver reports battery presence
+// (device declared) only, honestly separating "declared" from "readable".
+//
+// Reads physical memory directly (MORT OS runs paging-off, identity mapped).
+
+// ---- discovered state (Codex reads these for Settings power status) ----
+let g_acpi_present: bool = false;   // ACPI RSDP + FADT found
+let g_acpi_rsdp: u64 = 0;           // RSDP address
+let g_acpi_rsdt: u64 = 0;           // RSDT address
+let g_acpi_fadt: u64 = 0;           // FADT (FACP) address
+let g_acpi_dsdt: u64 = 0;           // DSDT address
+let g_acpi_tables: u32 = 0;         // number of tables in the RSDT
+let g_acpi_pm1a_cnt: u32 = 0;       // PM1a control register (I/O port)
+let g_acpi_pm1a_evt: u32 = 0;       // PM1a event register (I/O port)
+let g_acpi_smi_cmd: u32 = 0;        // SMI command port
+let g_acpi_enable: u32 = 0;         // value to write to SMI_CMD to enable ACPI
+let g_acpi_slp_typ5: u32 = 0;       // SLP_TYPa for S5 (soft off), parsed from DSDT
+let g_acpi_s5_found: bool = false;  // _S5_ located in the DSDT
+let g_acpi_battery: bool = false;   // a battery device (PNP0C0A) is declared
+let g_acpi_error: u32 = 0;
+
+let ACPI_ERR_NONE: u32 = 0;
+let ACPI_ERR_NORSDP: u32 = 1;       // no RSDP in EBDA or BIOS area
+let ACPI_ERR_NOFADT: u32 = 2;       // RSDT had no FADT
+
+// ---- physical memory reads ----
+fn acpi_rd8(addr: u64) -> u8 {
+    return *(addr as *u8);
+}
+fn acpi_rd16(addr: u64) -> u32 {
+    return (*(addr as *u16)) as u32;
+}
+fn acpi_rd32(addr: u64) -> u32 {
+    return *(addr as *u32);
+}
+
+// 8-bit checksum of a region (valid ACPI structures sum to 0 mod 256).
+fn acpi_sum(addr: u64, len: u32) -> u8 {
+    let s: u8 = 0;
+    let i: u32 = 0;
+    while i < len {
+        s = s + acpi_rd8(addr + (i as u64));
+        i = i + 1;
+    }
+    return s;
+}
+
+// Compare the 4 bytes at addr to a table signature.
+fn acpi_sig4(addr: u64, a: u8, b: u8, c: u8, d: u8) -> bool {
+    if acpi_rd8(addr) != a {
+        return false;
+    }
+    if acpi_rd8(addr + 1) != b {
+        return false;
+    }
+    if acpi_rd8(addr + 2) != c {
+        return false;
+    }
+    if acpi_rd8(addr + 3) != d {
+        return false;
+    }
+    return true;
+}
+
+// Is there a valid RSDP ("RSD PTR " + good checksum) at addr?
+fn acpi_is_rsdp(addr: u64) -> bool {
+    // "RSD PTR "
+    if acpi_rd8(addr) != 0x52 {
+        return false;
+    }
+    if acpi_rd8(addr + 1) != 0x53 {
+        return false;
+    }
+    if acpi_rd8(addr + 2) != 0x44 {
+        return false;
+    }
+    if acpi_rd8(addr + 3) != 0x20 {
+        return false;
+    }
+    if acpi_rd8(addr + 4) != 0x50 {
+        return false;
+    }
+    if acpi_rd8(addr + 5) != 0x54 {
+        return false;
+    }
+    if acpi_rd8(addr + 6) != 0x52 {
+        return false;
+    }
+    if acpi_rd8(addr + 7) != 0x20 {
+        return false;
+    }
+    // First 20 bytes must checksum to 0.
+    if acpi_sum(addr, 20) != 0 {
+        return false;
+    }
+    return true;
+}
+
+// Scan [start, end) on 16-byte boundaries for the RSDP.
+fn acpi_scan_rsdp(start: u64, end: u64) -> u64 {
+    let a: u64 = start;
+    while a < end {
+        if acpi_is_rsdp(a) {
+            return a;
+        }
+        a = a + 16;
+    }
+    return 0;
+}
+
+// Find the RSDP in the EBDA, then the BIOS ROM area.
+fn acpi_find_rsdp() -> u64 {
+    let ebda: u64 = (acpi_rd16(0x40E) as u64) << 4;
+    if ebda != 0 {
+        let r: u64 = acpi_scan_rsdp(ebda, ebda + 1024);
+        if r != 0 {
+            return r;
+        }
+    }
+    return acpi_scan_rsdp(0xE0000, 0x100000);
+}
+
+// Parse the DSDT for the _S5_ package's SLP_TYPa (the S5 soft-off value), and
+// note whether a battery device (PNP0C0A) is declared.
+fn acpi_scan_dsdt() {
+    if g_acpi_dsdt == 0 {
+        return;
+    }
+    let len: u32 = acpi_rd32(g_acpi_dsdt + 4);
+    let end: u64 = g_acpi_dsdt + (len as u64);
+    let a: u64 = g_acpi_dsdt + 36;
+    let s5_done: bool = false;
+    while a < end {
+        // "_S5_" — Name(_S5, Package(){ SLP_TYPa, SLP_TYPb, ... })
+        if !s5_done {
+            if acpi_rd8(a) == 0x5F && acpi_rd8(a + 1) == 0x53
+                && acpi_rd8(a + 2) == 0x35 && acpi_rd8(a + 3) == 0x5F {
+                let p: u64 = a + 4;
+                if acpi_rd8(p) == 0x12 {           // PackageOp
+                    p = p + 1;
+                    let lead: u8 = acpi_rd8(p);     // PkgLength lead byte
+                    let extra: u64 = (lead >> 6) as u64;
+                    p = p + 1 + extra;              // skip the rest of PkgLength
+                    p = p + 1;                      // skip NumElements
+                    let b: u8 = acpi_rd8(p);        // first element = SLP_TYPa
+                    if b == 0x0A {                  // BytePrefix
+                        g_acpi_slp_typ5 = acpi_rd8(p + 1) as u32;
+                    } else {
+                        if b == 0x01 {              // OneOp
+                            g_acpi_slp_typ5 = 1;
+                        } else {
+                            g_acpi_slp_typ5 = 0;    // ZeroOp / small int
+                        }
+                    }
+                    g_acpi_s5_found = true;
+                    s5_done = true;
+                }
+            }
+        }
+        // "PNP0C0A" — the ACPI Control Method Battery device id (ASCII form).
+        if !g_acpi_battery {
+            if acpi_rd8(a) == 0x50 && acpi_rd8(a + 1) == 0x4E
+                && acpi_rd8(a + 2) == 0x50 && acpi_rd8(a + 3) == 0x30
+                && acpi_rd8(a + 4) == 0x43 && acpi_rd8(a + 5) == 0x30
+                && acpi_rd8(a + 6) == 0x41 {
+                g_acpi_battery = true;
+            }
+        }
+        a = a + 1;
+    }
+}
+
+// Discover ACPI: RSDP -> RSDT -> FADT (power registers) -> DSDT (S5, battery).
+fn acpi_init() -> bool {
+    g_acpi_error = ACPI_ERR_NONE;
+    g_acpi_present = false;
+    g_acpi_s5_found = false;
+    g_acpi_battery = false;
+
+    let rsdp: u64 = acpi_find_rsdp();
+    if rsdp == 0 {
+        g_acpi_error = ACPI_ERR_NORSDP;
+        return false;
+    }
+    g_acpi_rsdp = rsdp;
+
+    // RSDT address is at RSDP+16 (32-bit).
+    g_acpi_rsdt = acpi_rd32(rsdp + 16) as u64;
+    let len: u32 = acpi_rd32(g_acpi_rsdt + 4);
+    let count: u32 = (len - 36) / 4;
+    g_acpi_tables = count;
+
+    // Walk the RSDT entries for the FADT ("FACP").
+    let fadt: u64 = 0;
+    let i: u32 = 0;
+    while i < count {
+        let entry: u32 = acpi_rd32(g_acpi_rsdt + 36 + (i as u64) * 4);
+        let taddr: u64 = entry as u64;
+        if acpi_sig4(taddr, 0x46, 0x41, 0x43, 0x50) {   // "FACP"
+            fadt = taddr;
+            i = count;
+        }
+        if fadt == 0 {
+            i = i + 1;
+        }
+    }
+    if fadt == 0 {
+        g_acpi_error = ACPI_ERR_NOFADT;
+        g_acpi_present = true;                    // ACPI is present, just no FADT
+        return false;
+    }
+    g_acpi_fadt = fadt;
+    g_acpi_present = true;
+
+    // Power-management fields from the FADT.
+    g_acpi_smi_cmd = acpi_rd32(fadt + 0x30);
+    g_acpi_enable = acpi_rd8(fadt + 0x34) as u32;
+    g_acpi_pm1a_evt = acpi_rd32(fadt + 0x38);
+    g_acpi_pm1a_cnt = acpi_rd32(fadt + 0x40);
+    g_acpi_dsdt = acpi_rd32(fadt + 0x28) as u64;
+
+    acpi_scan_dsdt();
+    return true;
+}
+
+// Enter ACPI mode if the firmware asks for it (write ACPI_ENABLE to SMI_CMD and
+// wait for SCI_EN in PM1a_CNT). No-op if already enabled or not required.
+fn acpi_enable_mode() {
+    if g_acpi_smi_cmd == 0 {
+        return;
+    }
+    if g_acpi_enable == 0 {
+        return;
+    }
+    if (inw(g_acpi_pm1a_cnt as u16) & 0x1) != 0 {
+        return;                                   // SCI_EN already set
+    }
+    outb(g_acpi_smi_cmd as u16, g_acpi_enable as u8);
+    let i: u32 = 0;
+    while i < 100000 {
+        if (inw(g_acpi_pm1a_cnt as u16) & 0x1) != 0 {
+            i = 100000;
+        }
+        asm("");
+        i = i + 1;
+    }
+}
+
+// Power the machine off via ACPI S5: write SLP_TYPa | SLP_EN to PM1a_CNT.
+fn acpi_poweroff() -> bool {
+    if !g_acpi_present {
+        return false;
+    }
+    if g_acpi_pm1a_cnt == 0 {
+        return false;
+    }
+    acpi_enable_mode();
+    // SLP_EN is bit 13 (0x2000); SLP_TYP occupies bits 10..12.
+    let val: u16 = ((g_acpi_slp_typ5 << 10) | 0x2000) as u16;
+    outw(g_acpi_pm1a_cnt as u16, val);
+    return true;                                  // unreached if power actually cuts
+}

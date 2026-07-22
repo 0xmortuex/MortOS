@@ -178,3 +178,59 @@ buffer and starts an output stream — a self-contained "make sound" proof. A
 
 **Note:** `net/hda.mx` reuses `pci_read32` / `pci_write32` (from
 `net/rtl8139.mx`); no other dependencies.
+
+## ACPI power discovery — `net/acpi.mx`
+
+Verified working: find the RSDP → walk the RSDT → FADT (power-management register
+block) → parse the DSDT for the S5 soft-off value and any battery device, then
+power the machine off via ACPI S5.
+
+```
+python hwtest/build_acpi_demo.py       # build hwtest/out/acpi_demo.elf
+python hwtest/run_acpi_demo.py         # discover, then ACPI-poweroff (clean exit)
+```
+
+`run_acpi_demo.py` boots the demo, checks the discovered values, and confirms the
+machine powers off cleanly (QEMU exit code 0 = real ACPI S5; the isa-debug-exit
+fallback would give code 1). Expected:
+
+```
+present=y tables=04
+rsdp=000f52e0 fadt=07fe21dc dsdt=07fe0040
+pm1a_cnt=00000604 smi=000000b2 en=f1
+s5=y slp_typ5=00 battery=n
+-> qemu exit code 0 (powered off via ACPI)
+```
+
+This driver only READS firmware tables and offers `acpi_poweroff()`; it does not
+touch the existing session/power UI. Battery *status* (charge/rate) lives in AML
+methods (_BST/_BIF) and needs an AML interpreter — a larger follow-up; this
+reports battery *presence* (device declared in the namespace) only.
+
+### Integration hooks for Codex (kmain.mx / net/settings.mx / power UI)
+
+**Boot hook (early):**
+
+```
+acpi_init();             // returns bool; sets the status globals below
+```
+
+**Discovered globals** (all in `net/acpi.mx`):
+
+| global             | type   | meaning                                            |
+|--------------------|--------|----------------------------------------------------|
+| `g_acpi_present`   | `bool` | ACPI RSDP + FADT found                             |
+| `g_acpi_pm1a_cnt`  | `u32`  | PM1a control register (I/O port) for sleep/wake    |
+| `g_acpi_s5_found`  | `bool` | the S5 soft-off value was parsed from the DSDT     |
+| `g_acpi_slp_typ5`  | `u32`  | SLP_TYPa for S5                                    |
+| `g_acpi_battery`   | `bool` | a battery device (PNP0C0A) is declared             |
+| `g_acpi_tables`    | `u32`  | number of tables in the RSDT                       |
+| `g_acpi_error`     | `u32`  | 0 ok; 1 no RSDP; 2 no FADT                          |
+
+**Power capability:** `acpi_poweroff() -> bool` performs a real ACPI S5 soft-off
+(enables ACPI mode if the firmware asks, then writes SLP_TYPa|SLP_EN to PM1a_CNT).
+Wire the power menu's "Shut Down" to this for a proper power-off. It also exposes
+`acpi_enable_mode()` if ACPI needs enabling before other PM use.
+
+**Note:** `net/acpi.mx` reads firmware tables from physical memory directly (no
+PCI, no other dependencies).
