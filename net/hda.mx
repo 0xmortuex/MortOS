@@ -1,0 +1,411 @@
+// net/hda.mx — an Intel High Definition Audio (HDA) driver in Mort.
+//
+// Priority-C hardware driver for MORT OS (claude-hardware branch). HDA is the
+// standard PC audio controller QEMU (intel-hda / ich9-intel-hda) and real
+// chipsets expose. This driver finds the controller, resets it, sets up the
+// CORB/RIRB command rings, enumerates the codec (root -> audio function group ->
+// widgets) to locate an output DAC and output pin, wires a path DAC->pin, and
+// plays PCM through an output stream via a Buffer Descriptor List. Proven by
+// booting QEMU with `-device intel-hda -device hda-output` and a `wav` audiodev,
+// then checking the captured WAV carries the tone the driver generated.
+//
+// Reuses pci_read32 / pci_write32 already in the tree (one translation unit).
+//
+// MMIO note: like net/ahci.mx, every poll loop carries an asm("") compiler
+// barrier so -O2 re-reads the register each iteration (Mort has no volatile), and
+// is counter-bounded so a stuck device times out instead of hanging.
+
+// ---- PCI class of an HDA controller: class 0x04 / subclass 0x03 ----
+let HDA_CLASS: u32 = 0x04;
+let HDA_SUBCLASS: u32 = 0x03;
+
+// ---- controller registers (offsets from BAR0), u64 to add to the u64 base ----
+let HDA_GCAP: u64 = 0x00;        // global capabilities (16-bit)
+let HDA_GCTL: u64 = 0x08;        // global control (CRST = bit0)
+let HDA_STATESTS: u64 = 0x0E;    // codec state-change status (16-bit)
+let HDA_INTCTL: u64 = 0x20;      // interrupt control
+let HDA_CORBLBASE: u64 = 0x40;
+let HDA_CORBUBASE: u64 = 0x44;
+let HDA_CORBWP: u64 = 0x48;      // CORB write pointer (16-bit)
+let HDA_CORBRP: u64 = 0x4A;      // CORB read pointer (16-bit)
+let HDA_CORBCTL: u64 = 0x4C;     // CORB control (8-bit; RUN = bit1)
+let HDA_CORBSIZE: u64 = 0x4E;    // CORB size (8-bit)
+let HDA_RIRBLBASE: u64 = 0x50;
+let HDA_RIRBUBASE: u64 = 0x54;
+let HDA_RIRBWP: u64 = 0x58;      // RIRB write pointer (16-bit)
+let HDA_RINTCNT: u64 = 0x5A;     // RIRB interrupt count (16-bit)
+let HDA_RIRBCTL: u64 = 0x5C;     // RIRB control (8-bit; DMAEN = bit1)
+let HDA_RIRBSIZE: u64 = 0x5E;    // RIRB size (8-bit)
+let HDA_ICOI: u64 = 0x60;        // immediate command output (verb, 32-bit)
+let HDA_ICII: u64 = 0x64;        // immediate response input (32-bit)
+let HDA_ICIS: u64 = 0x68;        // immediate command status (ICB b0, IRV b1)
+
+// Output stream descriptor register offsets (relative to the stream's base).
+let SD_CTL: u64 = 0x00;          // stream control (24-bit; SRST b0, RUN b1, tag [23:20])
+let SD_STS: u64 = 0x03;
+let SD_CBL: u64 = 0x08;          // cyclic buffer length
+let SD_LVI: u64 = 0x0C;          // last valid index (16-bit)
+let SD_FMT: u64 = 0x12;          // format (16-bit)
+let SD_BDPL: u64 = 0x18;         // BDL pointer low
+let SD_BDPU: u64 = 0x1C;         // BDL pointer high
+
+// Stream format: 48 kHz, 16-bit, stereo = base0 | 16bit(0x10) | 2ch(0x01).
+let HDA_FORMAT: u32 = 0x0011;
+let HDA_STREAM_TAG: u32 = 1;
+
+// ---- driver state (Codex reads these for Settings hardware status) ----
+let g_hda_present: bool = false;   // HDA controller found on the bus
+let g_hda_ready: bool = false;     // codec enumerated, output path found
+let g_hda_playing: bool = false;   // an output stream is running
+let g_hda_mmio: u64 = 0;           // MMIO base (BAR0)
+let g_hda_codec: u32 = 0;          // codec address (from STATESTS)
+let g_hda_vendor: u32 = 0;         // codec vendor/device id
+let g_hda_afg: u32 = 0;            // audio function group node id
+let g_hda_dac_nid: u32 = 0;        // output converter (DAC) node id
+let g_hda_pin_nid: u32 = 0;        // output pin node id
+let g_hda_error: u32 = 0;          // 0 ok; else a diagnostic code (below)
+
+let HDA_ERR_NONE: u32 = 0;
+let HDA_ERR_NOPCI: u32 = 1;        // no HDA controller on bus 0
+let HDA_ERR_NOCODEC: u32 = 2;      // no codec reported after reset
+let HDA_ERR_NOAFG: u32 = 3;        // no audio function group in the codec
+let HDA_ERR_NOPATH: u32 = 4;       // no output DAC + pin found
+let HDA_ERR_TIMEOUT: u32 = 5;      // a codec command got no response
+
+// ---- DMA structures (paging off: a global's address is its physical address) ----
+// CORB: 256 * 4 bytes = 1 KB, 128-aligned. RIRB: 256 * 8 bytes = 2 KB, 128-aligned.
+let g_hda_corb: [u8; 1152] = [0; 1152];   // 1024 + 128 pad
+let g_hda_rirb: [u8; 2176] = [0; 2176];   // 2048 + 128 pad
+let g_hda_bdl: [u8; 256] = [0; 256];      // buffer descriptor list (128-aligned)
+let g_hda_tone: [u8; 16384] = [0; 16384]; // PCM tone: 4096 stereo 16-bit frames
+let g_hda_corb_base: u64 = 0;
+let g_hda_rirb_base: u64 = 0;
+let g_hda_corbwp: u32 = 0;                // software CORB write pointer
+let g_hda_rirbrp: u32 = 0;                // software RIRB read pointer
+
+// ---- MMIO accessors (mixed width) ----
+fn hda_w32(off: u64, val: u32) {
+    *((g_hda_mmio + off) as *u32) = val;
+}
+fn hda_r32(off: u64) -> u32 {
+    return *((g_hda_mmio + off) as *u32);
+}
+fn hda_w16(off: u64, val: u32) {
+    *((g_hda_mmio + off) as *u16) = (val & 0xFFFF) as u16;
+}
+fn hda_r16(off: u64) -> u32 {
+    return (*((g_hda_mmio + off) as *u16)) as u32;
+}
+fn hda_w8(off: u64, val: u32) {
+    *((g_hda_mmio + off) as *u8) = (val & 0xFF) as u8;
+}
+fn hda_r8(off: u64) -> u32 {
+    return (*((g_hda_mmio + off) as *u8)) as u32;
+}
+
+fn hda_align128(a: u64) -> u64 {
+    return ((a + 127) >> 7) << 7;
+}
+
+// Short bounded delay via the POST port (volatile inb, never optimised away).
+fn hda_delay(n: u32) {
+    let i: u32 = 0;
+    while i < n {
+        let d: u8 = inb(0x80);
+        i = i + 1;
+    }
+}
+
+// Wait until (reg32 & mask) == want, bounded. asm("") forces a fresh read.
+fn hda_wait32(off: u64, mask: u32, want: u32, limit: u32) -> bool {
+    let i: u32 = 0;
+    while i < limit {
+        let v: u32 = hda_r32(off) & mask;
+        if v == want {
+            return true;
+        }
+        asm("");
+        i = i + 1;
+    }
+    return false;
+}
+fn hda_wait8(off: u64, mask: u32, want: u32, limit: u32) -> bool {
+    let i: u32 = 0;
+    while i < limit {
+        let v: u32 = hda_r8(off) & mask;
+        if v == want {
+            return true;
+        }
+        asm("");
+        i = i + 1;
+    }
+    return false;
+}
+
+// Send one codec command via the immediate command interface and read its
+// response. (QEMU's intel-hda implements this; it avoids CORB/RIRB ring DMA.)
+// Returns the 32-bit response, or 0 (and sets HDA_ERR_TIMEOUT) on no response.
+fn hda_cmd(cad: u32, nid: u32, verb: u32) -> u32 {
+    let cmd: u32 = (cad << 28) | (nid << 20) | (verb & 0xFFFFF);
+
+    // Wait until the immediate command engine is not busy (ICIS.ICB == 0).
+    let w: u32 = 0;
+    while w < 100000 {
+        let s: u32 = hda_r16(HDA_ICIS);
+        if (s & 0x01) == 0 {
+            w = 100000;
+        }
+        asm("");
+        w = w + 1;
+    }
+
+    hda_w32(HDA_ICOI, cmd);          // verb
+    hda_w16(HDA_ICIS, 0x01);         // ICB = 1: issue the command
+
+    // Wait for the immediate result to be valid (ICIS.IRV == 1).
+    let i: u32 = 0;
+    let got: bool = false;
+    while i < 200000 {
+        let s: u32 = hda_r16(HDA_ICIS);
+        if (s & 0x02) != 0 {
+            got = true;
+            i = 200000;
+        }
+        asm("");
+        i = i + 1;
+    }
+    if !got {
+        g_hda_error = HDA_ERR_TIMEOUT;
+        return 0;
+    }
+    return hda_r32(HDA_ICII);
+}
+
+// GET_PARAMETER (verb 0xF00) with an 8-bit parameter id.
+fn hda_param(cad: u32, nid: u32, param: u32) -> u32 {
+    return hda_cmd(cad, nid, (0xF00 << 8) | param);
+}
+
+// Reset the controller and let the codec report. Codec commands go through the
+// immediate command interface (see hda_cmd), so no CORB/RIRB rings are needed.
+fn hda_reset() {
+    // Assert then deassert controller reset (GCTL.CRST bit0).
+    hda_w32(HDA_GCTL, hda_r32(HDA_GCTL) & 0xFFFFFFFE);
+    hda_wait32(HDA_GCTL, 0x1, 0x0, 100000);
+    hda_delay(300);
+    hda_w32(HDA_GCTL, hda_r32(HDA_GCTL) | 0x1);
+    hda_wait32(HDA_GCTL, 0x1, 0x1, 100000);
+    hda_delay(3000);                             // let codecs report (~521us)
+}
+
+// Enumerate the codec: find its address, vendor id, audio function group, and an
+// output DAC + output pin. Returns false (with an error code) if any is missing.
+fn hda_discover() -> bool {
+    let sts: u32 = hda_r16(HDA_STATESTS);
+    if sts == 0 {
+        g_hda_error = HDA_ERR_NOCODEC;
+        return false;
+    }
+    // lowest set bit of STATESTS = first codec address.
+    let cad: u32 = 0;
+    let a: u32 = 0;
+    let cfound: bool = false;
+    while a < 15 {
+        if (sts & ((1 as u32) << a)) != 0 {
+            cad = a;
+            cfound = true;
+            a = 15;
+        }
+        if !cfound {
+            a = a + 1;
+        }
+    }
+    g_hda_codec = cad;
+    g_hda_vendor = hda_param(cad, 0, 0x00);       // vendor/device id
+
+    // Root node's subordinate node list = the function groups.
+    let rn: u32 = hda_param(cad, 0, 0x04);
+    let fg_start: u32 = (rn >> 16) & 0xFF;
+    let fg_count: u32 = rn & 0xFF;
+    let afg: u32 = 0;
+    let afg_found: bool = false;
+    let f: u32 = 0;
+    while f < fg_count {
+        let nid: u32 = fg_start + f;
+        let t: u32 = hda_param(cad, nid, 0x05) & 0xFF;   // function group type
+        if t == 0x01 {                                    // audio function group
+            afg = nid;
+            afg_found = true;
+            f = fg_count;
+        }
+        if !afg_found {
+            f = f + 1;
+        }
+    }
+    if !afg_found {
+        g_hda_error = HDA_ERR_NOAFG;
+        return false;
+    }
+    g_hda_afg = afg;
+    hda_cmd(cad, afg, (0x705 << 8) | 0x00);       // SET_POWER_STATE D0
+
+    // Walk the AFG's widgets for an output converter (type 0) and output pin.
+    let wn: u32 = hda_param(cad, afg, 0x04);
+    let w_start: u32 = (wn >> 16) & 0xFF;
+    let w_count: u32 = wn & 0xFF;
+    let dac: u32 = 0;
+    let dac_found: bool = false;
+    let pin: u32 = 0;
+    let pin_found: bool = false;
+    let w: u32 = 0;
+    while w < w_count {
+        let nid: u32 = w_start + w;
+        let cap: u32 = hda_param(cad, nid, 0x09);        // audio widget capabilities
+        let wtype: u32 = (cap >> 20) & 0xF;
+        if wtype == 0x0 {
+            if !dac_found {
+                dac = nid;
+                dac_found = true;
+            }
+        }
+        if wtype == 0x4 {
+            if !pin_found {
+                let pcap: u32 = hda_param(cad, nid, 0x0C);   // pin capabilities
+                if (pcap & 0x10) != 0 {                       // output-capable
+                    pin = nid;
+                    pin_found = true;
+                }
+            }
+        }
+        w = w + 1;
+    }
+    if !dac_found || !pin_found {
+        g_hda_error = HDA_ERR_NOPATH;
+        return false;
+    }
+    g_hda_dac_nid = dac;
+    g_hda_pin_nid = pin;
+    return true;
+}
+
+// Find the HDA controller, reset it, bring up the rings, and enumerate the codec.
+fn hda_init() -> bool {
+    g_hda_ready = false;
+    g_hda_present = false;
+    g_hda_playing = false;
+    g_hda_error = HDA_ERR_NONE;
+
+    let found: bool = false;
+    let slot: u32 = 0;
+    while slot < 32 {
+        let id: u32 = pci_read32(0, slot as u8, 0, 0x00);
+        let vendor: u16 = (id & 0xFFFF) as u16;
+        if vendor != 0xFFFF {
+            let cc: u32 = pci_read32(0, slot as u8, 0, 0x08);
+            let class: u32 = (cc >> 24) & 0xFF;
+            let sub: u32 = (cc >> 16) & 0xFF;
+            if class == HDA_CLASS && sub == HDA_SUBCLASS {
+                let bar0: u32 = pci_read32(0, slot as u8, 0, 0x10);
+                g_hda_mmio = (bar0 & 0xFFFFFFF0) as u64;
+                let cmd: u32 = pci_read32(0, slot as u8, 0, 0x04);
+                pci_write32(0, slot as u8, 0, 0x04, cmd | 0x6);   // mem + bus master
+                found = true;
+                slot = 32;
+            }
+        }
+        if !found {
+            slot = slot + 1;
+        }
+    }
+    if !found {
+        g_hda_error = HDA_ERR_NOPCI;
+        return false;
+    }
+    g_hda_present = true;
+
+    hda_reset();
+    if !hda_discover() {
+        return false;
+    }
+    g_hda_ready = true;
+    return true;
+}
+
+// Fill the tone buffer with a ~440 Hz square wave (48 kHz, 16-bit, stereo).
+fn hda_fill_tone() {
+    let frames: u32 = 4096;
+    let half: u32 = 55;                          // half-period in frames (~436 Hz)
+    let base: u64 = &g_hda_tone as u64;
+    let i: u32 = 0;
+    while i < frames {
+        let hi: u32 = (i / half) & 1;
+        let val: u16 = 0x1F40;                   // +8000
+        if hi == 1 {
+            val = 0xE0C0;                        // -8000 (two's complement)
+        }
+        let off: u64 = (i as u64) * 4;
+        *((base + off) as *u16) = val;           // left
+        *((base + off + 2) as *u16) = val;       // right
+        i = i + 1;
+    }
+}
+
+// Configure the DAC->pin path and start an output stream playing the tone.
+fn hda_play_tone() -> bool {
+    if !g_hda_ready {
+        return false;
+    }
+    let cad: u32 = g_hda_codec;
+
+    hda_fill_tone();
+
+    // Power the DAC and pin to D0.
+    hda_cmd(cad, g_hda_dac_nid, (0x705 << 8) | 0x00);
+    hda_cmd(cad, g_hda_pin_nid, (0x705 << 8) | 0x00);
+    // DAC: set format, bind to stream tag / channel 0, unmute (out+in, L+R,
+    // full gain 0x7F — gain 0 reads as silence on some codecs).
+    hda_cmd(cad, g_hda_dac_nid, (0x2 << 16) | HDA_FORMAT);
+    hda_cmd(cad, g_hda_dac_nid, (0x706 << 8) | ((HDA_STREAM_TAG << 4) | 0));
+    hda_cmd(cad, g_hda_dac_nid, (0x3 << 16) | 0xF07F);
+    // Pin: select the DAC as source, enable output, unmute, EAPD on.
+    hda_cmd(cad, g_hda_pin_nid, (0x701 << 8) | 0x00);        // connection select 0
+    hda_cmd(cad, g_hda_pin_nid, (0x707 << 8) | 0x40);        // output enable
+    hda_cmd(cad, g_hda_pin_nid, (0x3 << 16) | 0xF07F);       // unmute
+    hda_cmd(cad, g_hda_pin_nid, (0x70C << 8) | 0x02);        // EAPD
+
+    // First output stream descriptor = base 0x80 + ISS*0x20 (ISS from GCAP).
+    let gcap: u32 = hda_r16(HDA_GCAP);
+    let iss: u32 = (gcap >> 8) & 0xF;
+    let sd: u64 = (0x80 as u64) + (iss as u64) * (0x20 as u64);
+
+    // Reset the stream (SDCTL.SRST): set, wait it reads 1, clear, wait it reads 0.
+    hda_w8(sd + SD_CTL, 0x01);
+    hda_wait8(sd + SD_CTL, 0x01, 0x01, 100000);
+    hda_w8(sd + SD_CTL, 0x00);
+    hda_wait8(sd + SD_CTL, 0x01, 0x00, 100000);
+
+    hda_w16(sd + SD_FMT, HDA_FORMAT);
+
+    // Buffer descriptor list: two entries covering the 16 KB tone buffer.
+    let bdl: u64 = hda_align128(&g_hda_bdl as u64);
+    let tone: u64 = &g_hda_tone as u64;
+    *((bdl) as *u32) = (tone & 0xFFFFFFFF) as u32;
+    *((bdl + 4) as *u32) = 0;
+    *((bdl + 8) as *u32) = 8192;
+    *((bdl + 12) as *u32) = 0;
+    *((bdl + 16) as *u32) = ((tone + 8192) & 0xFFFFFFFF) as u32;
+    *((bdl + 20) as *u32) = 0;
+    *((bdl + 24) as *u32) = 8192;
+    *((bdl + 28) as *u32) = 1;                   // IOC on the last entry
+
+    hda_w32(sd + SD_BDPL, (bdl & 0xFFFFFFFF) as u32);
+    hda_w32(sd + SD_BDPU, 0);
+    hda_w32(sd + SD_CBL, 16384);                 // cyclic buffer length
+    hda_w16(sd + SD_LVI, 1);                     // 2 BDL entries -> last index 1
+
+    // Stream tag in [23:20], set RUN (bit1). Byte 3 (SDSTS) written 0 = harmless.
+    hda_w32(sd + SD_CTL, (HDA_STREAM_TAG << 20) | 0x02);
+
+    g_hda_playing = true;
+    return true;
+}

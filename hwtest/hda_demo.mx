@@ -1,0 +1,129 @@
+// hwtest/hda_demo.mx — standalone verification kernel for net/hda.mx.
+//
+// Not part of the OS build. hwtest/build_hda_demo.py concatenates net/hda.mx with
+// this file. Booted with an intel-hda controller + hda-output codec and a `wav`
+// audiodev, it inits the controller, enumerates the codec, reports what it found
+// on COM1, and plays a square-wave tone through an output stream. The captured
+// WAV carrying that tone is the proof the driver drives the audio hardware.
+// Supplies its own PCI accessors (the full kernel uses net/rtl8139.mx's).
+
+let COM1: u16 = 0x3F8;
+
+fn pci_addr(bus: u8, slot: u8, func: u8, off: u8) -> u32 {
+    return 0x80000000
+        | ((bus as u32) << 16)
+        | ((slot as u32) << 11)
+        | ((func as u32) << 8)
+        | ((off as u32) & 0xFC);
+}
+fn pci_read32(bus: u8, slot: u8, func: u8, off: u8) -> u32 {
+    outl(0xCF8, pci_addr(bus, slot, func, off));
+    return inl(0xCFC);
+}
+fn pci_write32(bus: u8, slot: u8, func: u8, off: u8, val: u32) {
+    outl(0xCF8, pci_addr(bus, slot, func, off));
+    outl(0xCFC, val);
+}
+
+fn serial_init() {
+    outb(COM1 + 1, 0x00);
+    outb(COM1 + 3, 0x80);
+    outb(COM1 + 0, 0x03);
+    outb(COM1 + 1, 0x00);
+    outb(COM1 + 3, 0x03);
+    outb(COM1 + 2, 0xC7);
+    outb(COM1 + 4, 0x0B);
+}
+fn serial_putc(c: u8) {
+    while (inb(COM1 + 5) & 0x20) == 0 {
+    }
+    outb(COM1, c);
+}
+fn serial_puts(s: u64) {
+    let i: u64 = 0;
+    let c: u8 = *((s) as *u8);
+    while c != 0 {
+        serial_putc(c);
+        i = i + 1;
+        c = *((s + i) as *u8);
+    }
+}
+fn hexdig(v: u8) -> u8 {
+    if v < 10 {
+        return 48 + v;
+    }
+    return 87 + v;
+}
+fn serial_hex8(b: u8) {
+    serial_putc(hexdig((b >> 4) & 0xF));
+    serial_putc(hexdig(b & 0xF));
+}
+fn serial_hex32(v: u32) {
+    serial_hex8(((v >> 24) & 0xFF) as u8);
+    serial_hex8(((v >> 16) & 0xFF) as u8);
+    serial_hex8(((v >> 8) & 0xFF) as u8);
+    serial_hex8((v & 0xFF) as u8);
+}
+fn yn(b: bool) -> u8 {
+    if b {
+        return 121;
+    }
+    return 110;
+}
+
+fn kmain(mb: u64) {
+    serial_init();
+    serial_puts("=== hda driver demo ===" as u64);
+    serial_putc(10);
+
+    let ok: bool = hda_init();
+
+    serial_puts("present=" as u64);
+    serial_putc(yn(g_hda_present));
+    serial_puts(" ready=" as u64);
+    serial_putc(yn(g_hda_ready));
+    serial_puts(" error=" as u64);
+    serial_hex8(g_hda_error as u8);
+    serial_putc(10);
+
+    serial_puts("mmio=" as u64);
+    serial_hex32((g_hda_mmio & 0xFFFFFFFF) as u32);
+    serial_puts(" vendor=" as u64);
+    serial_hex32(g_hda_vendor);
+    serial_putc(10);
+
+    serial_puts("codec=" as u64);
+    serial_hex8(g_hda_codec as u8);
+    serial_puts(" afg=" as u64);
+    serial_hex8(g_hda_afg as u8);
+    serial_puts(" dac=" as u64);
+    serial_hex8(g_hda_dac_nid as u8);
+    serial_puts(" pin=" as u64);
+    serial_hex8(g_hda_pin_nid as u8);
+    serial_putc(10);
+
+    if ok {
+        let played: bool = hda_play_tone();
+        serial_puts("play=" as u64);
+        serial_putc(yn(played));
+        serial_puts(" playing=" as u64);
+        serial_putc(yn(g_hda_playing));
+        serial_putc(10);
+
+        // Let the stream run so QEMU's audio backend captures the tone.
+        let t: u32 = 0;
+        while t < 40 {
+            hda_delay(100000);
+            t = t + 1;
+        }
+    }
+
+    serial_puts("demo done" as u64);
+    serial_putc(10);
+
+    outb(0xf4, 0x00);
+    let hang: u32 = 1;
+    while hang == 1 {
+        asm("hlt");
+    }
+}

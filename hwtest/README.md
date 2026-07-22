@@ -124,3 +124,57 @@ on the ATA-PIO disk driver; AHCI can become an alternative block backend.
 
 **Note:** `net/ahci.mx` reuses `pci_read32` / `pci_write32` (from
 `net/rtl8139.mx`); no other dependencies.
+
+## Intel HD Audio (codec discovery + PCM output) — `net/hda.mx`
+
+Verified working: PCI discovery (class 04/03) → BAR0 map → controller reset →
+codec enumeration (root → audio function group → widgets, finding an output DAC +
+output pin) → path config → an output stream that DMA-plays a tone.
+
+```
+python hwtest/build_hda_demo.py        # build hwtest/out/hda_demo.elf
+python hwtest/run_hda_demo.py          # intel-hda + hda-output + wav capture
+```
+
+`run_hda_demo.py` boots the demo with an intel-hda controller + hda-output codec
+and a `wav` audiodev, and checks the captured WAV is a non-silent tone. Expected:
+
+```
+present=y ready=y error=00
+vendor=1af40012  codec=00 afg=01 dac=02 pin=03
+play=y playing=y
+-> WAV: ~500k samples, ~99% loud, both polarities = the square-wave tone
+```
+
+Codec commands use the **immediate command interface** (ICOI/ICII/ICIS), not
+CORB/RIRB rings — simpler and what QEMU's intel-hda drives reliably. Two gotchas
+worth recording: amp gain 0 reads as silence (use full gain in SET_AMP_GAIN_MUTE),
+and the output pin needs a connection-select + output-enable + widget power-up or
+the codec emits silence even while the stream DMA runs.
+
+### Integration hooks for Codex (kmain.mx / net/settings.mx)
+
+**Boot hook (after PCI is up):**
+
+```
+hda_init();              // returns bool; sets the status globals below
+```
+
+**Status globals to surface in Settings** (all in `net/hda.mx`):
+
+| global           | type   | meaning                                            |
+|------------------|--------|----------------------------------------------------|
+| `g_hda_present`  | `bool` | an HDA controller was found on bus 0               |
+| `g_hda_ready`    | `bool` | codec enumerated, an output DAC + pin were found   |
+| `g_hda_playing`  | `bool` | an output stream is running                        |
+| `g_hda_vendor`   | `u32`  | codec vendor/device id                             |
+| `g_hda_codec`    | `u32`  | codec address; `g_hda_afg` / `g_hda_dac_nid` / `g_hda_pin_nid` = node ids |
+| `g_hda_error`    | `u32`  | 0 ok; 1 no controller; 2 no codec; 3 no AFG; 4 no path; 5 timeout |
+
+**Data path (available once ready):** `hda_play_tone() -> bool` fills the tone
+buffer and starts an output stream — a self-contained "make sound" proof. A
+`hda_play(buf, bytes)` that streams arbitrary PCM is the natural follow-up
+(the BDL/stream plumbing is already here).
+
+**Note:** `net/hda.mx` reuses `pci_read32` / `pci_write32` (from
+`net/rtl8139.mx`); no other dependencies.
