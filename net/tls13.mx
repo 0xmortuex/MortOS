@@ -27,6 +27,32 @@ let TLS13_SERVER_KEY1: [u8; 32] = [
     0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe, 0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1,
     0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1, 0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f
 ];
+let TLS13_CLIENT_PRIVATE1: [u8; 32] = [
+    0x49, 0xaf, 0x42, 0xba, 0x7f, 0x79, 0x94, 0x85, 0x2d, 0x71, 0x3e, 0xf2, 0x78, 0x4b, 0xcb, 0xca,
+    0xa7, 0x91, 0x1d, 0xe2, 0x6a, 0xdc, 0x56, 0x42, 0xcb, 0x63, 0x45, 0x40, 0xe7, 0xea, 0x50, 0x05
+];
+let TLS13_TRANSCRIPT_HASH1: [u8; 32] = [
+    0x86, 0x0c, 0x06, 0xed, 0xc0, 0x78, 0x58, 0xee, 0x8e, 0x78, 0xf0, 0xe7, 0x42, 0x8c, 0x58, 0xed,
+    0xd6, 0xb4, 0x3f, 0x2c, 0xa3, 0xe6, 0xe9, 0x5f, 0x02, 0xed, 0x06, 0x3c, 0xf0, 0xe1, 0xca, 0xd8
+];
+let TLS13_HANDSHAKE_SECRET1: [u8; 32] = [
+    0x1d, 0xc8, 0x26, 0xe9, 0x36, 0x06, 0xaa, 0x6f, 0xdc, 0x0a, 0xad, 0xc1, 0x2f, 0x74, 0x1b, 0x01,
+    0x04, 0x6a, 0xa6, 0xb9, 0x9f, 0x69, 0x1e, 0xd2, 0x21, 0xa9, 0xf0, 0xca, 0x04, 0x3f, 0xbe, 0xac
+];
+let TLS13_CLIENT_HS_TRAFFIC1: [u8; 32] = [
+    0xb3, 0xed, 0xdb, 0x12, 0x6e, 0x06, 0x7f, 0x35, 0xa7, 0x80, 0xb3, 0xab, 0xf4, 0x5e, 0x2d, 0x8f,
+    0x3b, 0x1a, 0x95, 0x07, 0x38, 0xf5, 0x2e, 0x96, 0x00, 0x74, 0x6a, 0x0e, 0x27, 0xa5, 0x5a, 0x21
+];
+let TLS13_SERVER_HS_TRAFFIC1: [u8; 32] = [
+    0xb6, 0x7b, 0x7d, 0x69, 0x0c, 0xc1, 0x6c, 0x4e, 0x75, 0xe5, 0x42, 0x13, 0xcb, 0x2d, 0x37, 0xb4,
+    0xe9, 0xc9, 0x12, 0xbc, 0xde, 0xd9, 0x10, 0x5d, 0x42, 0xbe, 0xfd, 0x59, 0xd3, 0x91, 0xad, 0x38
+];
+let TLS13_SERVER_WRITE_KEY1: [u8; 16] = [
+    0x3f, 0xce, 0x51, 0x60, 0x09, 0xc2, 0x17, 0x27, 0xd0, 0xf2, 0xe4, 0xe8, 0x6e, 0xe4, 0x03, 0xbc
+];
+let TLS13_SERVER_WRITE_IV1: [u8; 12] = [
+    0x5d, 0x31, 0x3e, 0xb2, 0x67, 0x12, 0x76, 0xee, 0x13, 0x00, 0x0b, 0x30
+];
 
 let g_tls13_key_schedule_ok: bool = false;
 let g_tls13_client_hello_ok: bool = false;
@@ -34,6 +60,11 @@ let g_tls13_client_hello_test: [u8; 512] = [0; 512];
 let g_tls13_client_hello_test_len: u32 = 0;
 let g_tls13_server_hello_ok: bool = false;
 let g_tls13_server_key_test: [u8; 32] = [0; 32];
+let g_tls13_handshake_keys_ok: bool = false;
+let g_tls13_handshake_secret_test: [u8; 32] = [0; 32];
+let g_tls13_server_traffic_test: [u8; 32] = [0; 32];
+let g_tls13_server_write_key_test: [u8; 16] = [0; 16];
+let g_tls13_server_write_iv_test: [u8; 12] = [0; 12];
 
 fn tls13_write_u16(output: u64, position: u32, value: u32) {
     *((output + (position as u64)) as *u8) = (value >> 8) as u8;
@@ -143,6 +174,34 @@ fn tls13_derive_secret(secret: u64, label: u64, label_length: u32,
     return tls13_expand_label(secret, label, label_length, &transcript_hash as u64, 32, output, 32);
 }
 
+// RFC 8446 section 7.1 through the handshake traffic-secret branch.  An
+// all-zero X25519 result is rejected as required by RFC 7748 section 6.1.
+fn tls13_handshake_secret(client_private: u64, server_public: u64, output: u64) -> bool {
+    let zeros: [u8; 32] = [0; 32]; let early: [u8; 32] = [0; 32];
+    let derived: [u8; 32] = [0; 32]; let shared: [u8; 32] = [0; 32];
+    if !tls_hkdf_extract(&zeros as u64, 32, &zeros as u64, 32, &early as u64)
+        || !tls13_expand_label(&early as u64, "derived" as u64, 7,
+                               &TLS_SHA256_EMPTY as u64, 32, &derived as u64, 32) { return false; }
+    tls_x25519(client_private, server_public, &shared as u64);
+    let nonzero: u8 = 0; for i: u32 in 0..32 { nonzero = nonzero | shared[i]; }
+    if nonzero == 0 { return false; }
+    return tls_hkdf_extract(&derived as u64, 32, &shared as u64, 32, output);
+}
+
+fn tls13_handshake_traffic(handshake_secret: u64, transcript_hash: u64,
+                           client_traffic: u64, server_traffic: u64) -> bool {
+    return tls13_expand_label(handshake_secret, "c hs traffic" as u64, 12,
+                              transcript_hash, 32, client_traffic, 32)
+        && tls13_expand_label(handshake_secret, "s hs traffic" as u64, 12,
+                              transcript_hash, 32, server_traffic, 32);
+}
+
+fn tls13_traffic_key(traffic_secret: u64, key: u64, key_length: u32, iv: u64) -> bool {
+    if key_length != 16 && key_length != 32 { return false; }
+    return tls13_expand_label(traffic_secret, "key" as u64, 3, "" as u64, 0, key, key_length)
+        && tls13_expand_label(traffic_secret, "iv" as u64, 2, "" as u64, 0, iv, 12);
+}
+
 fn tls13_self_test() {
     let derived: [u8; 32] = [0; 32];
     let ok: bool = tls13_derive_secret(&TLS13_DERIVED_PRK1 as u64, "derived" as u64, 7, "" as u64, 0, &derived as u64);
@@ -157,4 +216,18 @@ fn tls13_self_test() {
     g_tls13_server_hello_ok = tls13_parse_server_hello(
         &TLS13_SERVER_HELLO1 as u64, 95, 0x1301, &g_tls13_server_key_test as u64)
         && tls_bytes_equal(&g_tls13_server_key_test as u64, &TLS13_SERVER_KEY1 as u64, 32);
+    let client_traffic: [u8; 32] = [0; 32]; let client_key: [u8; 16] = [0; 16]; let client_iv: [u8; 12] = [0; 12];
+    let secrets_ok: bool = tls13_handshake_secret(
+        &TLS13_CLIENT_PRIVATE1 as u64, &TLS13_SERVER_KEY1 as u64, &g_tls13_handshake_secret_test as u64)
+        && tls13_handshake_traffic(&g_tls13_handshake_secret_test as u64, &TLS13_TRANSCRIPT_HASH1 as u64,
+                                   &client_traffic as u64, &g_tls13_server_traffic_test as u64)
+        && tls13_traffic_key(&client_traffic as u64, &client_key as u64, 16, &client_iv as u64)
+        && tls13_traffic_key(&g_tls13_server_traffic_test as u64, &g_tls13_server_write_key_test as u64,
+                             16, &g_tls13_server_write_iv_test as u64);
+    g_tls13_handshake_keys_ok = secrets_ok
+        && tls_bytes_equal(&g_tls13_handshake_secret_test as u64, &TLS13_HANDSHAKE_SECRET1 as u64, 32)
+        && tls_bytes_equal(&client_traffic as u64, &TLS13_CLIENT_HS_TRAFFIC1 as u64, 32)
+        && tls_bytes_equal(&g_tls13_server_traffic_test as u64, &TLS13_SERVER_HS_TRAFFIC1 as u64, 32)
+        && tls_bytes_equal(&g_tls13_server_write_key_test as u64, &TLS13_SERVER_WRITE_KEY1 as u64, 16)
+        && tls_bytes_equal(&g_tls13_server_write_iv_test as u64, &TLS13_SERVER_WRITE_IV1 as u64, 12);
 }

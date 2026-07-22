@@ -90,8 +90,12 @@ TLS_CHACHA20_POLY1305_SHA256 cipher suite; the guest-memory regression parses
 its record and handshake lengths plus each required extension. This does
 not stop at the outbound message: a strict ServerHello parser validates record
 and handshake lengths, the negotiated TLS version/cipher, and the X25519 server
-key share against RFC 8448's published trace. This does **not** enable HTTPS by
-itself: encrypted handshake records, authentication, X.509 parsing, trust
+key share against RFC 8448's published trace. The post-hello key schedule now
+computes the X25519 shared secret, rejects the forbidden all-zero result, and
+derives both handshake traffic secrets plus their write keys and IVs. Those
+outputs are checked byte-for-byte against the same published trace during boot.
+This does **not** enable HTTPS by itself: encrypted handshake records,
+authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
 
 Ephemeral TLS material is also fail-closed behind an x86 hardware-entropy gate.

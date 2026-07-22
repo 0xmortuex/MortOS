@@ -419,6 +419,11 @@ def smoke(disk_img=None):
     entropy_sample_addr = _elf32_symbol(ELF, "m_g_tls_entropy_sample")
     server_hello_ok_addr = _elf32_symbol(ELF, "m_g_tls13_server_hello_ok")
     server_key_addr = _elf32_symbol(ELF, "m_g_tls13_server_key_test")
+    handshake_keys_ok_addr = _elf32_symbol(ELF, "m_g_tls13_handshake_keys_ok")
+    handshake_secret_addr = _elf32_symbol(ELF, "m_g_tls13_handshake_secret_test")
+    server_traffic_addr = _elf32_symbol(ELF, "m_g_tls13_server_traffic_test")
+    server_write_key_addr = _elf32_symbol(ELF, "m_g_tls13_server_write_key_test")
+    server_write_iv_addr = _elf32_symbol(ELF, "m_g_tls13_server_write_iv_test")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -476,6 +481,16 @@ def smoke(disk_img=None):
               (_guest_u32(handle, server_hello_ok_addr) & 0xff) != 0
               and _guest_bytes(handle, server_key_addr, 32) == expected_server_key,
               handle)
+        check("Mort derives RFC 8448 TLS 1.3 handshake traffic keys",
+              (_guest_u32(handle, handshake_keys_ok_addr) & 0xff) != 0
+              and _guest_bytes(handle, handshake_secret_addr, 32) == bytes.fromhex(
+                  "1dc826e93606aa6fdc0aadc12f741b01046aa6b99f691ed221a9f0ca043fbeac")
+              and _guest_bytes(handle, server_traffic_addr, 32) == bytes.fromhex(
+                  "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38")
+              and _guest_bytes(handle, server_write_key_addr, 16) == bytes.fromhex(
+                  "3fce516009c21727d0f2e4e86ee403bc")
+              and _guest_bytes(handle, server_write_iv_addr, 12) == bytes.fromhex(
+                  "5d313eb2671276ee13000b30"), handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",
