@@ -10,6 +10,13 @@ let g_settings_section: u32 = 0;    // selected sidebar section
 let g_settings_accent: u32 = 0;
 let g_settings_wall: u32 = 0;
 let g_settings_ext: bool = false;
+let g_settings_search: bool = false;
+let g_settings_query: [u8; 24] = [0; 24];
+let g_settings_query_len: u32 = 0;
+let g_settings_result_sel: u32 = 0;
+let g_settings_result_count: u32 = 0;
+let g_settings_high_contrast: bool = false;
+let g_settings_show_hints: bool = true;
 
 fn settings_text(label: *u8, x: u32, y: u32, bright: bool) {
     let fg: u32 = 0x8fa1aa;
@@ -55,6 +62,82 @@ fn settings_title(title: *u8, subtitle: *u8) {
     draw_text_abs(title, 420, 204, 0xffffff, 0x0b0f14);
     draw_text_abs(subtitle, 420, 228, 0x7f929b, 0x0b0f14);
     fill_rect(420, 252, 390, 1, 0x243642);
+}
+
+fn settings_lower(ch: u8) -> u8 {
+    if ch >= 65 && ch <= 90 { return ch + 32; }
+    return ch;
+}
+
+// Small case-insensitive substring matcher used by the settings search index.
+fn settings_matches(label: *u8) -> bool {
+    if g_settings_query_len == 0 { return true; }
+    let ll: u32 = str_len(label);
+    if g_settings_query_len > ll { return false; }
+    let start: u32 = 0;
+    while start + g_settings_query_len <= ll {
+        let ok: bool = true;
+        let j: u32 = 0;
+        while j < g_settings_query_len {
+            let a: u8 = settings_lower(*((label as u64 + (start as u64) + (j as u64)) as *u8));
+            let b: u8 = settings_lower(*((&g_settings_query as u64 + (j as u64)) as *u8));
+            if a != b { ok = false; }
+            j = j + 1;
+        }
+        if ok { return true; }
+        start = start + 1;
+    }
+    return false;
+}
+
+fn settings_search_item(label: *u8, section: u32, y: u32, result: u32) {
+    let bg: u32 = 0x0b0f14;
+    let fg: u32 = 0xc8d0d4;
+    if result == g_settings_result_sel {
+        bg = 0x1d303a; fg = 0xffffff;
+        fill_rect(218, y - 5, 580, 27, bg);
+        fill_rect(218, y - 5, 4, 27, g_accent);
+    }
+    draw_text_abs(label, 234, y, fg, bg);
+    if section == 0 { draw_text_abs("Overview", 660, y, 0x71858e, bg); }
+    if section == 1 { draw_text_abs("Personalization", 660, y, 0x71858e, bg); }
+    if section == 2 { draw_text_abs("Display", 660, y, 0x71858e, bg); }
+    if section == 3 { draw_text_abs("Clock", 660, y, 0x71858e, bg); }
+    if section == 4 { draw_text_abs("Storage", 660, y, 0x71858e, bg); }
+    if section == 5 { draw_text_abs("Network", 660, y, 0x71858e, bg); }
+    if section == 6 { draw_text_abs("Accessibility", 660, y, 0x71858e, bg); }
+    if section == 7 { draw_text_abs("Diagnostics", 660, y, 0x71858e, bg); }
+}
+
+fn settings_search_candidate(label: *u8, section: u32, shown: u32) -> u32 {
+    if settings_matches(label) && shown < 8 {
+        settings_search_item(label, section, 282 + shown * 32, shown);
+        return shown + 1;
+    }
+    return shown;
+}
+
+fn settings_draw_search() {
+    draw_text_abs("Search settings", 208, 204, 0xffffff, 0x0b0f14);
+    fill_rect(208, 234, 590, 32, 0x121a20); fill_rect(208, 234, 3, 32, g_accent);
+    draw_text_abs(">", 220, 242, g_accent, 0x121a20);
+    if g_settings_query_len == 0 { draw_text_abs("type to search...", 242, 242, 0x61747d, 0x121a20); }
+    else { draw_text_abs(&g_settings_query as *u8, 242, 242, 0xffffff, 0x121a20); }
+    let n: u32 = 0;
+    n = settings_search_candidate("system overview", 0, n);
+    n = settings_search_candidate("accent color theme", 1, n);
+    n = settings_search_candidate("wallpaper background", 1, n);
+    n = settings_search_candidate("resolution display graphics", 2, n);
+    n = settings_search_candidate("24 hour time clock", 3, n);
+    n = settings_search_candidate("show seconds", 3, n);
+    n = settings_search_candidate("disk files storage", 4, n);
+    n = settings_search_candidate("ethernet dhcp ip network", 5, n);
+    n = settings_search_candidate("high contrast accessibility", 6, n);
+    n = settings_search_candidate("navigation hints accessibility", 6, n);
+    n = settings_search_candidate("system diagnostics health", 7, n);
+    g_settings_result_count = n;
+    if n == 0 { draw_text_abs("No settings found", 234, 294, 0x8fa1aa, 0x0b0f14); }
+    draw_text_abs("Up/Down: results   Enter: open   Esc: close search", 208, 580, 0x7f929b, 0x0b0f14);
 }
 
 fn settings_draw_ip(x: u32, y: u32) {
@@ -147,14 +230,40 @@ fn settings_network() {
     settings_text("Use 'net httpd' to start the web server.", 438, 450, false);
 }
 
+fn settings_accessibility() {
+    settings_title("Accessibility", "Make Settings easier to see and use");
+    settings_option_row("High contrast", settings_on_off(g_settings_high_contrast), 286, false);
+    settings_option_row("Navigation hints", settings_on_off(g_settings_show_hints), 334, false);
+    settings_text("Enter to customize accessibility.", 438, 394, false);
+    settings_text("High contrast changes the desktop immediately.", 438, 428, false);
+}
+
+fn settings_diagnostics() {
+    settings_title("Diagnostics", "Live kernel health and resource counters");
+    settings_text("Timer ticks", 438, 276, false); num_to_str(g_ticks, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 276, 0xffffff, 0x0b0f14);
+    settings_text("Heap capacity", 438, 312, false); num_to_str((g_heap_end - g_heap_base) / 1024, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 312, 0xffffff, 0x0b0f14); draw_text_abs(" KiB", 650 + g_numlen * 8, 312, 0x8fa1aa, 0x0b0f14);
+    settings_text("Heap allocated", 438, 348, false); num_to_str((g_heap_brk - g_heap_base) / 1024, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 348, 0xffffff, 0x0b0f14); draw_text_abs(" KiB", 650 + g_numlen * 8, 348, 0x8fa1aa, 0x0b0f14);
+    settings_text("Filesystem", 438, 384, false); settings_text(settings_yes_no(g_fs_ok), 650, 384, true);
+    settings_text("Graphics", 438, 420, false); settings_text(settings_yes_no(g_gfx), 650, 420, true);
+    settings_text("Network driver", 438, 456, false); settings_text(settings_yes_no(g_rtl_ok), 650, 456, true);
+    settings_text("All values are read directly from kernel state.", 438, 500, false);
+}
+
 fn settings_draw_sidebar() {
     settings_text("SETTINGS", 208, 202, false);
-    settings_sidebar_row("Overview", 238, g_settings_section == 0);
-    settings_sidebar_row("Personalization", 274, g_settings_section == 1);
-    settings_sidebar_row("Display", 310, g_settings_section == 2);
-    settings_sidebar_row("Clock", 346, g_settings_section == 3);
-    settings_sidebar_row("Storage", 382, g_settings_section == 4);
-    settings_sidebar_row("Network", 418, g_settings_section == 5);
+    settings_sidebar_row("Overview", 230, g_settings_section == 0);
+    settings_sidebar_row("Personalization", 262, g_settings_section == 1);
+    settings_sidebar_row("Display", 294, g_settings_section == 2);
+    settings_sidebar_row("Clock", 326, g_settings_section == 3);
+    settings_sidebar_row("Storage", 358, g_settings_section == 4);
+    settings_sidebar_row("Network", 390, g_settings_section == 5);
+    settings_sidebar_row("Accessibility", 422, g_settings_section == 6);
+    settings_sidebar_row("Diagnostics", 454, g_settings_section == 7);
+    fill_rect(208, 486, 180, 27, 0x121a20);
+    draw_text_abs("/  Search", 220, 492, 0x9fb0b7, 0x121a20);
     fill_rect(402, 198, 1, 352, 0x243642);
     if g_settings_section == 0 { settings_overview(); }
     if g_settings_section == 1 { settings_personalization_preview(); }
@@ -162,7 +271,9 @@ fn settings_draw_sidebar() {
     if g_settings_section == 3 { settings_clock_preview(); }
     if g_settings_section == 4 { settings_storage(); }
     if g_settings_section == 5 { settings_network(); }
-    settings_text("Up/Down: browse   Enter: open", 208, 580, false);
+    if g_settings_section == 6 { settings_accessibility(); }
+    if g_settings_section == 7 { settings_diagnostics(); }
+    if g_settings_show_hints { settings_text("Up/Down: browse   Enter: open   /: search", 208, 580, false); }
 }
 
 fn settings_accent_name() -> *u8 {
@@ -198,12 +309,22 @@ fn settings_draw_clock() {
     settings_text("Up/Down: select   Enter: toggle   Esc/Left: back", 420, 580, false);
 }
 
+fn settings_draw_accessibility() {
+    settings_title("Accessibility", "Visual clarity and guidance controls");
+    settings_option_row("High contrast", settings_on_off(g_settings_high_contrast), 286, g_settings_sel == 0);
+    settings_option_row("Navigation hints", settings_on_off(g_settings_show_hints), 334, g_settings_sel == 1);
+    settings_text("High contrast uses black and gold for stronger edges.", 438, 394, false);
+    if g_settings_show_hints { settings_text("Up/Down: select   Enter: toggle   Esc/Left: back", 420, 580, false); }
+}
+
 fn settings_draw() {
     if !g_gfx { return; }
     window_title("settings"); clear_window();
+    if g_settings_search { settings_draw_search(); return; }
     if g_settings_view == 0 { settings_draw_sidebar(); }
     if g_settings_view == 1 { settings_draw_personalization(); }
     if g_settings_view == 2 { settings_draw_clock(); }
+    if g_settings_view == 3 { settings_draw_accessibility(); }
 }
 
 fn settings_up() {
@@ -216,7 +337,7 @@ fn settings_up() {
 
 fn settings_down() {
     if g_settings_view == 0 {
-        if g_settings_section < 5 { g_settings_section = g_settings_section + 1; settings_draw(); }
+        if g_settings_section < 7 { g_settings_section = g_settings_section + 1; settings_draw(); }
         return;
     }
     if g_settings_sel < 1 { g_settings_sel = g_settings_sel + 1; settings_draw(); }
@@ -246,6 +367,7 @@ fn settings_enter() {
     if g_settings_view == 0 {
         if g_settings_section == 1 { g_settings_view = 1; g_settings_sel = 0; settings_draw(); }
         if g_settings_section == 3 { g_settings_view = 2; g_settings_sel = 0; settings_draw(); }
+        if g_settings_section == 6 { g_settings_view = 3; g_settings_sel = 0; settings_draw(); }
         return;
     }
     if g_settings_view == 1 {
@@ -257,6 +379,56 @@ fn settings_enter() {
         if g_settings_sel == 0 { g_clock_24h = !g_clock_24h; }
         if g_settings_sel == 1 { g_clock_seconds = !g_clock_seconds; }
         draw_topbar(); settings_draw();
+        return;
+    }
+    if g_settings_view == 3 {
+        if g_settings_sel == 0 {
+            g_settings_high_contrast = !g_settings_high_contrast;
+            if g_settings_high_contrast { g_accent = 0xffc928; g_wall_top = 0x000000; g_wall_bottom = 0x171717; }
+            else { g_accent = 0x2c5364; g_wall_top = 0x0a1830; g_wall_bottom = 0x2c5364; g_settings_accent = 0; g_settings_wall = 0; }
+            draw_desktop(); settings_draw();
+        }
+        if g_settings_sel == 1 { g_settings_show_hints = !g_settings_show_hints; settings_draw(); }
+    }
+}
+
+fn settings_open_search_result() {
+    let seen: u32 = 0;
+    if settings_matches("system overview") { if seen == g_settings_result_sel { g_settings_section = 0; } seen = seen + 1; }
+    if settings_matches("accent color theme") { if seen == g_settings_result_sel { g_settings_section = 1; } seen = seen + 1; }
+    if settings_matches("wallpaper background") { if seen == g_settings_result_sel { g_settings_section = 1; } seen = seen + 1; }
+    if settings_matches("resolution display graphics") { if seen == g_settings_result_sel { g_settings_section = 2; } seen = seen + 1; }
+    if settings_matches("24 hour time clock") { if seen == g_settings_result_sel { g_settings_section = 3; } seen = seen + 1; }
+    if settings_matches("show seconds") { if seen == g_settings_result_sel { g_settings_section = 3; } seen = seen + 1; }
+    if settings_matches("disk files storage") { if seen == g_settings_result_sel { g_settings_section = 4; } seen = seen + 1; }
+    if settings_matches("ethernet dhcp ip network") { if seen == g_settings_result_sel { g_settings_section = 5; } seen = seen + 1; }
+    if settings_matches("high contrast accessibility") { if seen == g_settings_result_sel { g_settings_section = 6; } seen = seen + 1; }
+    if settings_matches("navigation hints accessibility") { if seen == g_settings_result_sel { g_settings_section = 6; } seen = seen + 1; }
+    if settings_matches("system diagnostics health") { if seen == g_settings_result_sel { g_settings_section = 7; } seen = seen + 1; }
+    if g_settings_result_count == 0 { return; }
+    g_settings_search = false; g_settings_view = 0; settings_draw();
+}
+
+fn settings_search_key(sc: u8) {
+    if sc == 42 || sc == 54 { g_shift = true; return; }
+    if sc == 170 || sc == 182 { g_shift = false; return; }
+    if sc == 1 { g_settings_search = false; settings_draw(); return; }
+    if sc == 14 {
+        if g_settings_query_len > 0 {
+            g_settings_query_len = g_settings_query_len - 1;
+            *((&g_settings_query as u64 + (g_settings_query_len as u64)) as *u8) = 0;
+            g_settings_result_sel = 0; settings_draw();
+        }
+        return;
+    }
+    if sc == 28 { settings_open_search_result(); return; }
+    if sc >= 128 { return; }
+    let ch: u8 = scancode_to_ascii(sc, g_shift);
+    if ch >= 32 && ch < 127 && g_settings_query_len < 22 {
+        *((&g_settings_query as u64 + (g_settings_query_len as u64)) as *u8) = ch;
+        g_settings_query_len = g_settings_query_len + 1;
+        *((&g_settings_query as u64 + (g_settings_query_len as u64)) as *u8) = 0;
+        g_settings_result_sel = 0; settings_draw();
     }
 }
 
@@ -265,6 +437,16 @@ fn settings_back() {
 }
 
 fn settings_on_key(sc: u8) {
+    if g_settings_search {
+        if sc == 224 { g_settings_ext = true; return; }
+        if g_settings_ext {
+            g_settings_ext = false;
+            if sc == 72 && g_settings_result_sel > 0 { g_settings_result_sel = g_settings_result_sel - 1; settings_draw(); }
+            if sc == 80 && g_settings_result_sel + 1 < g_settings_result_count { g_settings_result_sel = g_settings_result_sel + 1; settings_draw(); }
+            return;
+        }
+        settings_search_key(sc); return;
+    }
     if sc == 224 { g_settings_ext = true; return; }
     if g_settings_ext {
         g_settings_ext = false;
@@ -274,6 +456,10 @@ fn settings_on_key(sc: u8) {
         return;
     }
     if sc >= 128 { return; }
+    if sc == 53 {
+        g_settings_search = true; g_settings_query_len = 0; g_settings_result_sel = 0;
+        *((&g_settings_query as u64) as *u8) = 0; settings_draw(); return;
+    }
     if sc == 28 { settings_enter(); return; }
     if sc == 1 { settings_back(); return; }
 }
