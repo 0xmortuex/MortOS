@@ -1,0 +1,328 @@
+// net/ahci.mx — a SATA AHCI controller / block-device foundation in Mort.
+//
+// Priority-B hardware driver for MORT OS (claude-hardware branch). AHCI is the
+// standard interface QEMU (and real chipsets) expose for SATA disks: a set of
+// memory-mapped registers plus per-port DMA command rings in RAM. This driver
+// finds the controller, brings up the first attached SATA disk's port, and reads
+// sectors with READ DMA EXT — the foundation a real block layer / filesystem
+// sits on. Proven by booting QEMU with an ich9-ahci controller + a test disk and
+// reading back a known on-disk pattern (see hwtest/).
+//
+// It reuses the PCI config accessors (pci_read32 / pci_write32) already in the
+// tree; in MORT OS every .mx file is one translation unit, so they are called
+// directly. (The standalone hwtest build supplies its own copies.)
+//
+// --- MMIO polling under -O2 ---
+// Mort has no `volatile`, and at -O2 clang hoists a plain MMIO poll-read out of
+// its loop (it becomes a single cached read -> the wait never observes
+// completion). AHCI *must* wait for command completion, so every poll loop here
+// contains an `asm("")` compiler barrier, which for the bundled clang forces a
+// fresh load of the register each iteration (verified by disassembly). Poll
+// loops are also counter-bounded so a wedged device can never spin forever.
+
+// ---- PCI class of an AHCI controller: class 0x01 / subclass 0x06 / prog-if 0x01
+let AHCI_CLASS: u32 = 0x01;
+let AHCI_SUBCLASS: u32 = 0x06;
+let AHCI_PROGIF: u32 = 0x01;
+
+// ---- global HBA registers (offsets from ABAR) ----
+// u64 so they combine with the u64 ABAR base without a cast at every use.
+let AHCI_CAP: u64 = 0x00;        // host capabilities
+let AHCI_GHC: u64 = 0x04;        // global host control (AE bit31, IE bit1, HR bit0)
+let AHCI_IS: u64 = 0x08;         // interrupt status
+let AHCI_PI: u64 = 0x0C;         // ports implemented (bitmask)
+let AHCI_VS: u64 = 0x10;         // version
+
+// ---- per-port registers (offsets from ABAR + 0x100 + port*0x80) ----
+let PX_CLB: u64 = 0x00;          // command list base low
+let PX_CLBU: u64 = 0x04;         // command list base high
+let PX_FB: u64 = 0x08;           // FIS base low
+let PX_FBU: u64 = 0x0C;          // FIS base high
+let PX_IS: u64 = 0x10;           // interrupt status
+let PX_IE: u64 = 0x14;           // interrupt enable
+let PX_CMD: u64 = 0x18;          // command/status (ST b0, FRE b4, FR b14, CR b15)
+let PX_TFD: u64 = 0x20;          // task file data (ERR b0, DRQ b3, BSY b7)
+let PX_SIG: u64 = 0x24;          // signature (0x00000101 = SATA disk)
+let PX_SSTS: u64 = 0x28;         // SATA status (DET in low nibble; 3 = present+comm)
+let PX_SCTL: u64 = 0x2C;
+let PX_SERR: u64 = 0x30;
+let PX_SACT: u64 = 0x34;
+let PX_CI: u64 = 0x38;           // command issue (bit per slot)
+
+// ---- driver state (Codex reads these for Settings hardware status) ----
+let g_ahci_present: bool = false;   // AHCI controller found on the bus
+let g_ahci_ready: bool = false;     // a SATA disk port is up and read-capable
+let g_ahci_abar: u64 = 0;           // MMIO register base (from BAR5)
+let g_ahci_pi: u32 = 0;             // ports-implemented bitmask
+let g_ahci_disk_port: u32 = 0xFF;   // port index of the chosen disk (0xFF = none)
+let g_ahci_sig: u32 = 0;            // that port's signature
+let g_ahci_error: u32 = 0;          // 0 = ok; else a diagnostic code (below)
+
+let AHCI_ERR_NONE: u32 = 0;
+let AHCI_ERR_NOPCI: u32 = 1;        // no AHCI controller on bus 0
+let AHCI_ERR_NODISK: u32 = 2;       // controller present but no SATA disk
+let AHCI_ERR_PORTUP: u32 = 3;       // the disk's port would not start
+let AHCI_ERR_TIMEOUT: u32 = 4;      // a command did not complete in time
+let AHCI_ERR_TFD: u32 = 5;          // task-file error flagged after a command
+
+// ---- DMA structures for one active port, one command slot ----
+// Command list: 32 headers * 32 bytes = 1 KB, 1 KB-aligned.
+// Received FIS: 256 bytes, 256-aligned.
+// Command table: command FIS (64) + ATAPI (16) + reserved (48) + PRDT, 128-aligned.
+// Each is over-allocated by its alignment and the base is rounded up by hand;
+// paging is off in MORT OS, so a global's address is its physical address.
+let g_ahci_clb: [u8; 2048] = [0; 2048];     // 1 KB list + 1 KB alignment pad
+let g_ahci_fis: [u8; 512] = [0; 512];       // 256 B FIS + pad
+let g_ahci_ctba: [u8; 512] = [0; 512];      // 128 B table + one PRDT + pad
+let g_ahci_clb_base: u64 = 0;               // aligned command-list base (cached)
+let g_ahci_ctba_base: u64 = 0;              // aligned command-table base (cached)
+
+// ---- MMIO accessors (32-bit aligned dwords) ----
+fn ahci_w(off: u64, val: u32) {
+    *((g_ahci_abar + off) as *u32) = val;
+}
+fn ahci_r(off: u64) -> u32 {
+    return *((g_ahci_abar + off) as *u32);
+}
+
+// Offset of a port's register block from ABAR (ports start at 0x100, 0x80 each).
+// Returns an OFFSET, not an absolute address: ahci_r/ahci_w add g_ahci_abar
+// themselves, so callers pass `ahci_port_base(p) + PX_xxx`.
+fn ahci_port_base(port: u32) -> u64 {
+    return (0x100 as u64) + (port as u64) * (0x80 as u64);
+}
+
+// Alignment helpers via shifts (no large literals, no `~`).
+fn align1k(a: u64) -> u64 {
+    return ((a + 1023) >> 10) << 10;
+}
+fn align256(a: u64) -> u64 {
+    return ((a + 255) >> 8) << 8;
+}
+fn align128(a: u64) -> u64 {
+    return ((a + 127) >> 7) << 7;
+}
+
+// Poll a register at `addr` until (value & mask) == 0, bounded by `limit`. The
+// asm("") is a compiler barrier that forces a fresh MMIO read each iteration
+// (Mort has no volatile; -O2 would otherwise hoist the read). Returns true if it
+// cleared, false on timeout.
+fn ahci_wait_clear(off: u64, mask: u32, limit: u32) -> bool {
+    let addr: u64 = g_ahci_abar + off;   // off is ABAR-relative, like ahci_r/ahci_w
+    let i: u32 = 0;
+    while i < limit {
+        let v: u32 = *(addr as *u32);
+        if (v & mask) == 0 {
+            return true;
+        }
+        asm("");                // barrier AFTER the read: forces a reload next iter
+        i = i + 1;
+    }
+    return false;
+}
+
+// Zero `n` bytes at `addr` (command structures must start clean).
+fn ahci_zero(addr: u64, n: u32) {
+    let i: u32 = 0;
+    while i < n {
+        *((addr + (i as u64)) as *u8) = 0;
+        i = i + 1;
+    }
+}
+
+// Stop a port, point it at our command list + FIS, and start it. Returns false
+// if the port will not idle or come ready.
+fn ahci_port_start(port: u32) -> bool {
+    let base: u64 = ahci_port_base(port);
+
+    // Stop: clear ST (bit0), wait for CR (bit15) to clear; clear FRE (bit4),
+    // wait for FR (bit14) to clear.
+    let c0: u32 = ahci_r(base + PX_CMD);
+    ahci_w(base + PX_CMD, c0 & 0xFFFFFFFE);
+    if !ahci_wait_clear(base + PX_CMD, 0x8000, 1000000) {
+        return false;
+    }
+    let c1: u32 = ahci_r(base + PX_CMD);
+    ahci_w(base + PX_CMD, c1 & 0xFFFFFFEF);
+    if !ahci_wait_clear(base + PX_CMD, 0x4000, 1000000) {
+        return false;
+    }
+
+    // Aligned command list + FIS, zeroed, handed to the port.
+    g_ahci_clb_base = align1k(&g_ahci_clb as u64);
+    let fis: u64 = align256(&g_ahci_fis as u64);
+    ahci_zero(g_ahci_clb_base, 1024);
+    ahci_zero(fis, 256);
+    ahci_w(base + PX_CLB, (g_ahci_clb_base & 0xFFFFFFFF) as u32);
+    ahci_w(base + PX_CLBU, 0);
+    ahci_w(base + PX_FB, (fis & 0xFFFFFFFF) as u32);
+    ahci_w(base + PX_FBU, 0);
+
+    // Clear any latched SATA errors, enable FIS receive, wait for the drive to
+    // go idle (BSY bit7 + DRQ bit3 clear), then start command processing.
+    ahci_w(base + PX_SERR, 0xFFFFFFFF);
+    let c2: u32 = ahci_r(base + PX_CMD);
+    ahci_w(base + PX_CMD, c2 | 0x0010);          // FRE
+    if !ahci_wait_clear(base + PX_TFD, 0x88, 1000000) {
+        return false;
+    }
+    let c3: u32 = ahci_r(base + PX_CMD);
+    ahci_w(base + PX_CMD, c3 | 0x0001);          // ST
+    return true;
+}
+
+// Find the AHCI controller, enable it, pick the first SATA disk, and start its
+// port. Returns true and sets g_ahci_ready on success.
+fn ahci_init() -> bool {
+    g_ahci_ready = false;
+    g_ahci_present = false;
+    g_ahci_error = AHCI_ERR_NONE;
+    g_ahci_disk_port = 0xFF;
+
+    // 1) Find a mass-storage / SATA / AHCI controller on bus 0.
+    let found: bool = false;
+    let slot: u32 = 0;
+    while slot < 32 {
+        let id: u32 = pci_read32(0, slot as u8, 0, 0x00);
+        let vendor: u16 = (id & 0xFFFF) as u16;
+        if vendor != 0xFFFF {
+            let cc: u32 = pci_read32(0, slot as u8, 0, 0x08);
+            let class: u32 = (cc >> 24) & 0xFF;
+            let sub: u32 = (cc >> 16) & 0xFF;
+            let pif: u32 = (cc >> 8) & 0xFF;
+            if class == AHCI_CLASS && sub == AHCI_SUBCLASS && pif == AHCI_PROGIF {
+                let bar5: u32 = pci_read32(0, slot as u8, 0, 0x24);
+                g_ahci_abar = (bar5 & 0xFFFFFFF0) as u64;
+                // enable memory space (bit1) + bus mastering (bit2).
+                let cmd: u32 = pci_read32(0, slot as u8, 0, 0x04);
+                pci_write32(0, slot as u8, 0, 0x04, cmd | 0x6);
+                found = true;
+                slot = 32;
+            }
+        }
+        if !found {
+            slot = slot + 1;
+        }
+    }
+    if !found {
+        g_ahci_error = AHCI_ERR_NOPCI;
+        return false;
+    }
+    g_ahci_present = true;
+
+    // 2) Enable AHCI mode (GHC.AE, bit31) and read the ports-implemented mask.
+    ahci_w(AHCI_GHC, ahci_r(AHCI_GHC) | 0x80000000);
+    g_ahci_pi = ahci_r(AHCI_PI);
+
+    // 3) Find the first implemented port with a SATA disk (DET==3, SIG==0x101).
+    let p: u32 = 0;
+    while p < 32 {
+        let bit: u32 = (1 as u32) << p;
+        if (g_ahci_pi & bit) != 0 {
+            let base: u64 = ahci_port_base(p);
+            let ssts: u32 = ahci_r(base + PX_SSTS);
+            let det: u32 = ssts & 0x0F;
+            let sig: u32 = ahci_r(base + PX_SIG);
+            if det == 3 && sig == 0x00000101 {
+                g_ahci_disk_port = p;
+                g_ahci_sig = sig;
+                p = 32;
+            }
+        }
+        if g_ahci_disk_port == 0xFF {
+            p = p + 1;
+        }
+    }
+    if g_ahci_disk_port == 0xFF {
+        g_ahci_error = AHCI_ERR_NODISK;
+        return false;
+    }
+
+    // 4) Bring the disk's port up.
+    if !ahci_port_start(g_ahci_disk_port) {
+        g_ahci_error = AHCI_ERR_PORTUP;
+        return false;
+    }
+
+    g_ahci_ready = true;
+    return true;
+}
+
+// Read `count` 512-byte sectors starting at `lba` into `buf` (physical =
+// virtual). Uses command slot 0 with a single-PRD READ DMA EXT. Returns false on
+// timeout or task-file error.
+fn ahci_read(lba: u64, count: u32, buf: u64) -> bool {
+    if !g_ahci_ready {
+        return false;
+    }
+    let base: u64 = ahci_port_base(g_ahci_disk_port);
+    let slot: u32 = 0;
+    let slotbit: u32 = (1 as u32) << slot;
+
+    ahci_w(base + PX_IS, 0xFFFFFFFF);            // clear pending interrupt causes
+
+    // Command header (slot 0) in the command list.
+    let hdr: u64 = g_ahci_clb_base + (slot as u64) * (32 as u64);
+    g_ahci_ctba_base = align128(&g_ahci_ctba as u64);
+    ahci_zero(g_ahci_ctba_base, 256);
+    // DW0: CFL = 5 dwords (Register H2D FIS), W = 0 (read), PRDTL = 1.
+    // = 0x00010005  (5 | (1 << 16))
+    *((hdr) as *u32) = 0x00010005;
+    *((hdr + 4) as *u32) = 0;                    // PRDBC (HBA fills this in)
+    *((hdr + 8) as *u32) = (g_ahci_ctba_base & 0xFFFFFFFF) as u32;   // CTBA
+    *((hdr + 12) as *u32) = 0;                   // CTBAU
+    *((hdr + 16) as *u32) = 0;
+    *((hdr + 20) as *u32) = 0;
+    *((hdr + 24) as *u32) = 0;
+    *((hdr + 28) as *u32) = 0;
+
+    // Command FIS: Register - Host to Device, command READ DMA EXT (0x25).
+    let cfis: u64 = g_ahci_ctba_base;
+    *((cfis) as *u8) = 0x27;                     // FIS type: Register H2D
+    *((cfis + 1) as *u8) = 0x80;                 // C = 1 (this is a command)
+    *((cfis + 2) as *u8) = 0x25;                 // command: READ DMA EXT
+    *((cfis + 3) as *u8) = 0;                    // features (7:0)
+    *((cfis + 4) as *u8) = (lba & 0xFF) as u8;         // LBA 7:0
+    *((cfis + 5) as *u8) = ((lba >> 8) & 0xFF) as u8;  // LBA 15:8
+    *((cfis + 6) as *u8) = ((lba >> 16) & 0xFF) as u8; // LBA 23:16
+    *((cfis + 7) as *u8) = 0x40;                 // device: LBA mode
+    *((cfis + 8) as *u8) = ((lba >> 24) & 0xFF) as u8; // LBA 31:24
+    *((cfis + 9) as *u8) = ((lba >> 32) & 0xFF) as u8; // LBA 39:32
+    *((cfis + 10) as *u8) = ((lba >> 40) & 0xFF) as u8;// LBA 47:40
+    *((cfis + 11) as *u8) = 0;                   // features (15:8)
+    *((cfis + 12) as *u8) = (count & 0xFF) as u8;      // sector count 7:0
+    *((cfis + 13) as *u8) = ((count >> 8) & 0xFF) as u8;// sector count 15:8
+    *((cfis + 14) as *u8) = 0;                   // ICC
+    *((cfis + 15) as *u8) = 0;                   // control
+
+    // PRDT entry 0 (at command table + 0x80): one region covering the buffer.
+    let prd: u64 = g_ahci_ctba_base + 0x80;
+    let bytes: u32 = count * 512;
+    *((prd) as *u32) = (buf & 0xFFFFFFFF) as u32;      // data base low
+    *((prd + 4) as *u32) = 0;                    // data base high
+    *((prd + 8) as *u32) = 0;                    // reserved
+    *((prd + 12) as *u32) = (bytes - 1) & 0x3FFFFF;    // byte count - 1 (I = 0)
+
+    asm("");                                     // structures written before issue
+
+    // Wait for the drive to be idle, then issue the command on slot 0.
+    if !ahci_wait_clear(base + PX_TFD, 0x88, 1000000) {
+        g_ahci_error = AHCI_ERR_TIMEOUT;
+        return false;
+    }
+    ahci_w(base + PX_CI, slotbit);
+
+    // Wait for the slot's CI bit to clear (command complete).
+    if !ahci_wait_clear(base + PX_CI, slotbit, 4000000) {
+        g_ahci_error = AHCI_ERR_TIMEOUT;
+        return false;
+    }
+
+    // A set ERR bit in the task file means the transfer faulted.
+    let tfd: u32 = ahci_r(base + PX_TFD);
+    if (tfd & 0x01) != 0 {
+        g_ahci_error = AHCI_ERR_TFD;
+        return false;
+    }
+    return true;
+}
