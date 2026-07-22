@@ -64,7 +64,8 @@ address bar
 
 The QEMU test route uses the guest's RTL8139 adapter, not a mocked browser API.
 `python test.py browser-ui` starts a host HTTP server and verifies this entire
-path in the booted ISO, including persistence across a reboot.
+path in the booted ISO, drives the toolbar through an enumerated USB mouse, and
+checks persistence across a reboot.
 
 ## Security and current engine boundary
 
@@ -91,5 +92,5 @@ python test.py smoke
 The browser regression covers real DHCP configuration, ARP, TCP and HTTP
 loading, HTML and literal plain-text rendering, binary-content rejection,
 script/style removal, links, redirects, chunked responses, local suggestions,
-tabs, private mode, bookmarks, downloads, screenshots, and bookmark persistence
-after a full reboot.
+keyboard and mouse tab controls, private mode, bookmarks, downloads,
+screenshots, and bookmark persistence after a full reboot.

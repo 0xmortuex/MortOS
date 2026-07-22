@@ -614,6 +614,9 @@ def browser_ui():
     downloaded_addr = _elf32_symbol(ELF, "m_g_browser_downloaded")
     links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
     tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
+    mouse_ready_addr = _elf32_symbol(ELF, "m_g_usb_mouse_ready")
+    mouse_x_addr = _elf32_symbol(ELF, "m_g_mouse_x")
+    mouse_y_addr = _elf32_symbol(ELF, "m_g_mouse_y")
     private_addr = _elf32_symbol(ELF, "m_g_browser_private")
     suggestions_addr = _elf32_symbol(ELF, "m_g_browser_suggestion_count")
     state_addr = _elf32_symbol(ELF, "m_g_browser_state")
@@ -689,7 +692,8 @@ def browser_ui():
         server_thread.start()
         handle = boot_iso(
             kernel_build.ISO, temp_disk,
-            ["-netdev", "user,id=vexnet", "-device", "rtl8139,netdev=vexnet"])
+            ["-netdev", "user,id=vexnet", "-device", "rtl8139,netdev=vexnet",
+             "-usb", "-device", "usb-mouse,id=vexmouse"])
         try:
             _wait_guest_u32(handle, ticks_addr, lambda value: value >= 100,
                             timeout_s=20)
@@ -697,6 +701,21 @@ def browser_ui():
             send_key(handle, "f3")
             app = _wait_guest_u32(handle, app_addr, lambda value: value == 2)
             check("F3 opens the native Vex browser", app == 2)
+
+            _wait_guest_u32(handle, mouse_ready_addr,
+                            lambda value: (value & 0xff) != 0)
+            for dx, dy in ((127, -127), (127, -57), (30, 0)):
+                _monitor(handle, f"mouse_move {dx} {dy}")
+                time.sleep(0.15)
+            _wait_guest_u32(handle, mouse_x_addr, lambda value: value >= 780)
+            _wait_guest_u32(handle, mouse_y_addr, lambda value: 188 <= value < 214)
+            _monitor(handle, "mouse_button 1")
+            time.sleep(0.2)
+            _monitor(handle, "mouse_button 0")
+            tabs = _wait_guest_u32(handle, tabs_addr, lambda value: value == 2)
+            check("Mouse click opens a Vex tab from the toolbar", tabs == 2)
+            send_key(handle, "x")
+            _wait_guest_u32(handle, tabs_addr, lambda value: value == 1)
 
             send_key(handle, "slash")
             address = f"http://10.0.2.2:{port}/"
