@@ -1610,6 +1610,43 @@ fn fs_ensure_layout() {
     fs_ensure_dir("var");
 }
 
+// Does `name` end in ".bin"? (our convention for a runnable flat binary)
+fn ends_with_bin(name: *u8) -> bool {
+    let n: u32 = str_len(name);
+    if n < 4 {
+        return false;
+    }
+    let b: u32 = name as u32 + n - 4;
+    return *(b as *u8) == 46 && *((b + 1) as *u8) == 98
+        && *((b + 2) as *u8) == 105 && *((b + 3) as *u8) == 110;   // ".bin"
+}
+
+// Move the seeded *.bin programs from the root into /bin and mark them
+// executable, so they can be launched by name via $PATH. Idempotent: after the
+// first boot they already live in /bin, so nothing is re-moved.
+fn fs_populate_bin() {
+    let bin: u32 = fs_resolve("/bin" as u64);
+    if bin == 64 || bin == 255 {
+        return;
+    }
+    let changed: bool = false;
+    let i: u32 = 0;
+    while i < 64 {
+        let base: u32 = fs_entry_addr(i);
+        if *((base + 24) as *u32) == 1 {
+            if (fs_parent(i) as u32) == 255 && fs_type(i) == 0 && ends_with_bin(base as *u8) {
+                *((base + 41) as *u8) = bin as u8;     // reparent into /bin
+                *((base + 44) as *u32) = 0x1ED;        // 0755 (executable)
+                changed = true;
+            }
+        }
+        i = i + 1;
+    }
+    if changed {
+        fs_sync();
+    }
+}
+
 // Read entry i's live sectors into FILEBUF; returns size_bytes (0 on error
 // or empty file).
 fn fs_read_file(i: u32) -> u32 {
@@ -1874,6 +1911,67 @@ fn exec_file(name: *u8) {
 
 // Run a command, printing any output on new (scrolling) lines. Returns true if
 // it cleared the screen (so the caller knows not to add another blank line).
+// Run `path` if it resolves to an executable file (any exec bit). A ".bin" is
+// loaded as a flat binary (exec_file); anything else runs as a script
+// (run_file). Returns true if it launched something.
+fn exec_if_program(path: *u8) -> bool {
+    let idx: u32 = fs_resolve(path as u64);
+    if idx == 64 || idx == 255 {
+        return false;
+    }
+    if fs_type(idx) == 1 {
+        return false;                                   // a directory
+    }
+    if (fs_mode(idx) & 0x49) == 0 {
+        return false;                                   // no execute bit
+    }
+    if ends_with_bin(path) {
+        exec_file(path);
+    } else {
+        run_file(path);
+    }
+    return true;
+}
+
+// $PATH resolution: an unknown command might be a program. Take its first token
+// and look for an executable as: <name>, /bin/<name>, <name>.bin, /bin/<name>.bin.
+fn try_exec_path(cmd: *u8) -> bool {
+    let name: [u8; 64] = [0; 64];
+    let len: u32 = 0;
+    let done: bool = false;
+    while !done && len < 60 {
+        let c: u8 = *((cmd as u32 + len) as *u8);
+        if c == 0 || c == 32 {
+            done = true;
+        } else {
+            *(((&name as u64) + (len as u64)) as *u8) = c;
+            len = len + 1;
+        }
+    }
+    *(((&name as u64) + (len as u64)) as *u8) = 0;
+    if len == 0 {
+        return false;
+    }
+
+    if exec_if_program((&name as u64) as *u8) { return true; }        // as typed
+
+    let p: [u8; 96] = [0; 96];
+    str_copy((&p as u64) as *u8, "/bin/");
+    str_copy(((&p as u64) + 5) as *u8, (&name as u64) as *u8);
+    if exec_if_program((&p as u64) as *u8) { return true; }           // /bin/<name>
+
+    let nb: [u8; 72] = [0; 72];
+    str_copy((&nb as u64) as *u8, (&name as u64) as *u8);
+    str_copy(((&nb as u64) + (len as u64)) as *u8, ".bin");
+    if exec_if_program((&nb as u64) as *u8) { return true; }          // <name>.bin
+
+    str_copy((&p as u64) as *u8, "/bin/");
+    str_copy(((&p as u64) + 5) as *u8, (&nb as u64) as *u8);
+    if exec_if_program((&p as u64) as *u8) { return true; }           // /bin/<name>.bin
+
+    return false;
+}
+
 fn run_command(cmd: *u8) -> bool {
     if streq(cmd, "") {
         return false;
@@ -2322,6 +2420,9 @@ fn run_command(cmd: *u8) -> bool {
     if starts_with(cmd, "echo ") {
         feed();
         print_string((cmd as u32 + 5) as *u8, g_row, 15);   // print past "echo "
+        return false;
+    }
+    if try_exec_path(cmd) {          // maybe it's a program on the $PATH
         return false;
     }
     feed();
@@ -3327,6 +3428,7 @@ fn kmain(mbinfo: u32) {
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);
     fs_init();                       // detect the disk + mount MortFS (safe without either)
     fs_ensure_layout();              // seed /bin /etc /home /var if this is a fresh disk (as root)
+    fs_populate_bin();               // move seeded *.bin programs into /bin, executable
     acct_init();                     // load the account table (root + a normal user)
     ensure_home();                   // create /home/mortuex, owned by the user
     login_default();                 // auto-login as the normal user (uid 1)
