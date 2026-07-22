@@ -59,6 +59,13 @@ fn settings_yes_no(on: bool) -> *u8 {
     return "Unavailable";
 }
 
+fn settings_bluetooth_state() -> *u8 {
+    if g_bt_hci_ready { return "Ready"; }
+    if g_bt_reset_sent { return "Reset sent"; }
+    if g_bt_transport_ready || g_hw_bluetooth { return "Detected"; }
+    return "Unavailable";
+}
+
 fn settings_title(title: *u8, subtitle: *u8) {
     draw_text_abs(title, 420, 204, 0xffffff, 0x0b0f14);
     draw_text_abs(subtitle, 420, 228, 0x7f929b, 0x0b0f14);
@@ -291,7 +298,8 @@ fn settings_hardware() {
     settings_text("USB class / protocol", 438, 526, false); num_to_str(g_usb_interface_class as u32, g_numbuf);
     draw_text_abs(g_numbuf, 650, 526, 0xffffff, 0x0b0f14); draw_text_abs(" / ", 690, 526, 0x8fa1aa, 0x0b0f14);
     num_to_str(g_usb_interface_protocol as u32, g_numbuf); draw_text_abs(g_numbuf, 714, 526, 0xffffff, 0x0b0f14);
-    settings_text("Audio controller", 438, 550, false); settings_text(settings_yes_no(g_hw_audio), 650, 550, true);
+    settings_text("Audio", 438, 550, false); settings_text(settings_yes_no(g_hw_audio), 500, 550, true);
+    settings_text("Bluetooth", 610, 550, false); settings_text(settings_bluetooth_state(), 700, 550, true);
 }
 
 fn settings_update() {
