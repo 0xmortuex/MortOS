@@ -1,74 +1,44 @@
-// MORT OS Settings. Values intentionally live in memory only for v1.
+// MORT OS Settings control center. Values are in-memory for v1.
 let g_accent: u32 = 0x2c5364;
 let g_wall_top: u32 = 0x0a1830;
 let g_wall_bottom: u32 = 0x2c5364;
 let g_clock_24h: bool = true;
 let g_clock_seconds: bool = true;
-let g_settings_view: u32 = 0;       // 0 sections, 1 appearance, 2 clock
-let g_settings_sel: u32 = 0;
+let g_settings_view: u32 = 0;       // 0 sidebar, 1 personalization, 2 clock
+let g_settings_sel: u32 = 0;        // selection within current view
+let g_settings_section: u32 = 0;    // selected sidebar section
+let g_settings_accent: u32 = 0;
+let g_settings_wall: u32 = 0;
 let g_settings_ext: bool = false;
 
-fn settings_row(label: *u8, y: u32, selected: bool) {
+fn settings_text(label: *u8, x: u32, y: u32, bright: bool) {
+    let fg: u32 = 0x8fa1aa;
+    if bright { fg = 0xe8f1f4; }
+    draw_text_abs(label, x, y, fg, 0x0b0f14);
+}
+
+fn settings_sidebar_row(label: *u8, y: u32, selected: bool) {
     let bg: u32 = 0x0b0f14;
-    let fg: u32 = 0xc8d0d4;
+    let fg: u32 = 0xa9b7bd;
     if selected {
         bg = g_accent;
         fg = 0xffffff;
-        fill_rect(204, y - 4, 594, 24, bg);
+        fill_rect(198, y - 4, 190, 25, bg);
     }
-    draw_text_abs(label, 218, y, fg, bg);
+    draw_text_abs(label, 212, y, fg, bg);
 }
 
-fn settings_about() {
-    draw_text_abs("About", 432, 208, 0xffffff, 0x0b0f14);
-    draw_text_abs("MORT OS", 432, 246, g_accent, 0x0b0f14);
-    draw_text_abs("Version: 1.0", 432, 276, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("Architecture: x86 (32-bit)", 432, 302, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("Display:", 432, 328, 0xc8d0d4, 0x0b0f14);
-    num_to_str(g_fb_w, g_numbuf);
-    draw_text_abs(g_numbuf, 504, 328, 0xffffff, 0x0b0f14);
-    let x: u32 = 504 + g_numlen * 8;
-    draw_text_abs(" x ", x, 328, 0xc8d0d4, 0x0b0f14);
-    num_to_str(g_fb_h, g_numbuf);
-    draw_text_abs(g_numbuf, x + 24, 328, 0xffffff, 0x0b0f14);
-    draw_text_abs("Uptime:", 432, 354, 0xc8d0d4, 0x0b0f14);
-    num_to_str(g_ticks / 100, g_numbuf);
-    draw_text_abs(g_numbuf, 496, 354, 0xffffff, 0x0b0f14);
-    draw_text_abs(" s", 496 + g_numlen * 8, 354, 0xc8d0d4, 0x0b0f14);
-}
-
-fn settings_draw_sections() {
-    draw_text_abs("Settings", 208, 208, 0xffffff, 0x0b0f14);
-    settings_row("About", 250, g_settings_sel == 0);
-    settings_row("Appearance", 282, g_settings_sel == 1);
-    settings_row("Clock", 314, g_settings_sel == 2);
-    fill_rect(404, 204, 1, 344, 0x243642);
-    if g_settings_sel == 0 { settings_about(); }
-    if g_settings_sel == 1 {
-        draw_text_abs("Appearance", 432, 208, 0xffffff, 0x0b0f14);
-        draw_text_abs("Choose the desktop accent color.", 432, 250, 0xc8d0d4, 0x0b0f14);
-        draw_text_abs("Enter to open", 432, 286, g_accent, 0x0b0f14);
+fn settings_option_row(label: *u8, value: *u8, y: u32, selected: bool) {
+    let bg: u32 = 0x0b0f14;
+    let fg: u32 = 0xc8d0d4;
+    if selected {
+        bg = 0x1d303a;
+        fg = 0xffffff;
+        fill_rect(420, y - 7, 390, 30, bg);
+        fill_rect(420, y - 7, 4, 30, g_accent);
     }
-    if g_settings_sel == 2 {
-        draw_text_abs("Clock", 432, 208, 0xffffff, 0x0b0f14);
-        draw_text_abs("Time format and seconds display.", 432, 250, 0xc8d0d4, 0x0b0f14);
-        draw_text_abs("Enter to open", 432, 286, g_accent, 0x0b0f14);
-    }
-    draw_text_abs("Up/Down: select   Enter: open", 208, 578, 0x7a8b93, 0x0b0f14);
-}
-
-fn settings_draw_appearance() {
-    draw_text_abs("Appearance", 208, 208, 0xffffff, 0x0b0f14);
-    draw_text_abs("Accent color", 208, 244, 0x9fd0d8, 0x0b0f14);
-    settings_row("Ocean", 286, g_settings_sel == 0);
-    settings_row("Violet", 318, g_settings_sel == 1);
-    settings_row("Forest", 350, g_settings_sel == 2);
-    settings_row("Coral", 382, g_settings_sel == 3);
-    fill_rect(690, 276, 52, 20, 0x2c5364);
-    fill_rect(690, 308, 52, 20, 0x654a91);
-    fill_rect(690, 340, 52, 20, 0x276749);
-    fill_rect(690, 372, 52, 20, 0xa94f55);
-    draw_text_abs("Enter: apply   Esc/Left: back", 208, 578, 0x7a8b93, 0x0b0f14);
+    draw_text_abs(label, 438, y, fg, bg);
+    draw_text_abs(value, 690, y, g_accent, bg);
 }
 
 fn settings_on_off(on: bool) -> *u8 {
@@ -76,64 +46,222 @@ fn settings_on_off(on: bool) -> *u8 {
     return "Off";
 }
 
+fn settings_yes_no(on: bool) -> *u8 {
+    if on { return "Ready"; }
+    return "Unavailable";
+}
+
+fn settings_title(title: *u8, subtitle: *u8) {
+    draw_text_abs(title, 420, 204, 0xffffff, 0x0b0f14);
+    draw_text_abs(subtitle, 420, 228, 0x7f929b, 0x0b0f14);
+    fill_rect(420, 252, 390, 1, 0x243642);
+}
+
+fn settings_draw_ip(x: u32, y: u32) {
+    let pos: u32 = x;
+    for i: u32 in 0..4 {
+        num_to_str(*((&g_our_ip as u64 + (i as u64)) as *u8) as u32, g_numbuf);
+        draw_text_abs(g_numbuf, pos, y, 0xe8f1f4, 0x0b0f14);
+        pos = pos + g_numlen * 8;
+        if i < 3 { draw_text_abs(".", pos, y, 0x8fa1aa, 0x0b0f14); pos = pos + 8; }
+    }
+}
+
+fn settings_file_count() -> u32 {
+    if !g_fs_ok { return 0; }
+    let count: u32 = 0;
+    for i: u32 in 0..64 {
+        if *((fs_entry_addr(i) + 24) as *u32) == 1 { count = count + 1; }
+    }
+    return count;
+}
+
+fn settings_overview() {
+    settings_title("Overview", "Your MORT OS at a glance");
+    draw_text_abs("MORT OS", 436, 278, g_accent, 0x0b0f14);
+    settings_text("Version 1.0  /  x86 32-bit", 436, 302, false);
+    fill_rect(428, 336, 174, 82, 0x121a20);
+    settings_text("DISPLAY", 442, 348, false);
+    num_to_str(g_fb_w, g_numbuf); draw_text_abs(g_numbuf, 442, 374, 0xffffff, 0x121a20);
+    let px: u32 = 442 + g_numlen * 8;
+    draw_text_abs(" x ", px, 374, 0x8fa1aa, 0x121a20);
+    num_to_str(g_fb_h, g_numbuf); draw_text_abs(g_numbuf, px + 24, 374, 0xffffff, 0x121a20);
+    fill_rect(620, 336, 174, 82, 0x121a20);
+    settings_text("UPTIME", 634, 348, false);
+    num_to_str(g_ticks / 100, g_numbuf); draw_text_abs(g_numbuf, 634, 374, 0xffffff, 0x121a20);
+    draw_text_abs(" seconds", 634 + g_numlen * 8, 374, 0x8fa1aa, 0x121a20);
+    settings_text("Tip: F1-F4 switches apps instantly.", 436, 452, false);
+}
+
+fn settings_personalization_preview() {
+    settings_title("Personalization", "Make the desktop feel like yours");
+    settings_option_row("Accent color", "Enter", 282, false);
+    settings_option_row("Wallpaper", "Enter", 326, false);
+    fill_rect(438, 370, 330, 92, g_wall_top);
+    fill_rect(438, 416, 330, 46, g_wall_bottom);
+    fill_rect(466, 390, 274, 48, 0x0b0f14);
+    fill_rect(466, 390, 274, 9, g_accent);
+    settings_text("Enter to customize", 438, 490, false);
+}
+
+fn settings_display() {
+    settings_title("Display", "Framebuffer and graphics details");
+    settings_text("Resolution", 438, 280, false);
+    num_to_str(g_fb_w, g_numbuf); draw_text_abs(g_numbuf, 650, 280, 0xffffff, 0x0b0f14);
+    let px: u32 = 650 + g_numlen * 8;
+    draw_text_abs(" x ", px, 280, 0x8fa1aa, 0x0b0f14);
+    num_to_str(g_fb_h, g_numbuf); draw_text_abs(g_numbuf, px + 24, 280, 0xffffff, 0x0b0f14);
+    settings_text("Color format", 438, 320, false); settings_text("32-bit RGB", 650, 320, true);
+    settings_text("Pitch", 438, 360, false); num_to_str(g_fb_pitch, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 360, 0xffffff, 0x0b0f14); draw_text_abs(" bytes", 650 + g_numlen * 8, 360, 0x8fa1aa, 0x0b0f14);
+    settings_text("Graphics mode", 438, 400, false); settings_text(settings_yes_no(g_gfx), 650, 400, true);
+    settings_text("Display modes are selected at boot.", 438, 460, false);
+}
+
+fn settings_clock_preview() {
+    settings_title("Clock", "Date and time presentation");
+    settings_option_row("24-hour time", settings_on_off(g_clock_24h), 290, false);
+    settings_option_row("Show seconds", settings_on_off(g_clock_seconds), 334, false);
+    settings_text("The clock uses the hardware real-time clock.", 438, 390, false);
+    settings_text("Enter to customize", 438, 438, false);
+}
+
+fn settings_storage() {
+    settings_title("Storage", "Disk and MortFS status");
+    settings_text("ATA disk", 438, 280, false); settings_text(settings_yes_no(g_disk_ok), 650, 280, true);
+    settings_text("MortFS", 438, 320, false); settings_text(settings_yes_no(g_fs_ok), 650, 320, true);
+    settings_text("Files", 438, 360, false); num_to_str(settings_file_count(), g_numbuf);
+    draw_text_abs(g_numbuf, 650, 360, 0xffffff, 0x0b0f14);
+    settings_text("Heap used", 438, 400, false); num_to_str((g_heap_brk - g_heap_base) / 1024, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 400, 0xffffff, 0x0b0f14); draw_text_abs(" KiB", 650 + g_numlen * 8, 400, 0x8fa1aa, 0x0b0f14);
+    settings_text("Manage files with F2 Files.", 438, 458, false);
+}
+
+fn settings_network() {
+    settings_title("Network", "Ethernet connection status");
+    settings_text("RTL8139 adapter", 438, 280, false); settings_text(settings_yes_no(g_rtl_ok), 650, 280, true);
+    settings_text("DHCP lease", 438, 320, false); settings_text(settings_yes_no(g_net_up), 650, 320, true);
+    settings_text("IPv4 address", 438, 360, false);
+    if g_net_up { settings_draw_ip(650, 360); } else { settings_text("Not assigned", 650, 360, true); }
+    settings_text("Use 'net dhcp' in Terminal to connect.", 438, 424, false);
+    settings_text("Use 'net httpd' to start the web server.", 438, 450, false);
+}
+
+fn settings_draw_sidebar() {
+    settings_text("SETTINGS", 208, 202, false);
+    settings_sidebar_row("Overview", 238, g_settings_section == 0);
+    settings_sidebar_row("Personalization", 274, g_settings_section == 1);
+    settings_sidebar_row("Display", 310, g_settings_section == 2);
+    settings_sidebar_row("Clock", 346, g_settings_section == 3);
+    settings_sidebar_row("Storage", 382, g_settings_section == 4);
+    settings_sidebar_row("Network", 418, g_settings_section == 5);
+    fill_rect(402, 198, 1, 352, 0x243642);
+    if g_settings_section == 0 { settings_overview(); }
+    if g_settings_section == 1 { settings_personalization_preview(); }
+    if g_settings_section == 2 { settings_display(); }
+    if g_settings_section == 3 { settings_clock_preview(); }
+    if g_settings_section == 4 { settings_storage(); }
+    if g_settings_section == 5 { settings_network(); }
+    settings_text("Up/Down: browse   Enter: open", 208, 580, false);
+}
+
+fn settings_accent_name() -> *u8 {
+    if g_settings_accent == 0 { return "Ocean"; }
+    if g_settings_accent == 1 { return "Violet"; }
+    if g_settings_accent == 2 { return "Forest"; }
+    if g_settings_accent == 3 { return "Coral"; }
+    if g_settings_accent == 4 { return "Amber"; }
+    return "Ice";
+}
+
+fn settings_wall_name() -> *u8 {
+    if g_settings_wall == 0 { return "Midnight"; }
+    if g_settings_wall == 1 { return "Aurora"; }
+    if g_settings_wall == 2 { return "Sunset"; }
+    return "Graphite";
+}
+
+fn settings_draw_personalization() {
+    settings_title("Personalization", "Enter cycles each live desktop style");
+    settings_option_row("Accent color", settings_accent_name(), 286, g_settings_sel == 0);
+    settings_option_row("Wallpaper", settings_wall_name(), 334, g_settings_sel == 1);
+    fill_rect(438, 382, 330, 82, g_wall_top); fill_rect(438, 423, 330, 41, g_wall_bottom);
+    fill_rect(466, 399, 274, 44, 0x0b0f14); fill_rect(466, 399, 274, 8, g_accent);
+    settings_text("Up/Down: select   Enter: change   Esc/Left: back", 420, 580, false);
+}
+
 fn settings_draw_clock() {
-    draw_text_abs("Clock", 208, 208, 0xffffff, 0x0b0f14);
-    settings_row("24-hour time", 270, g_settings_sel == 0);
-    settings_row("Show seconds", 310, g_settings_sel == 1);
-    draw_text_abs(settings_on_off(g_clock_24h), 684, 270, 0x9fd0d8, 0x0b0f14);
-    draw_text_abs(settings_on_off(g_clock_seconds), 684, 310, 0x9fd0d8, 0x0b0f14);
-    draw_text_abs("Enter: toggle   Esc/Left: back", 208, 578, 0x7a8b93, 0x0b0f14);
+    settings_title("Clock", "Choose how time appears in the top bar");
+    settings_option_row("24-hour time", settings_on_off(g_clock_24h), 286, g_settings_sel == 0);
+    settings_option_row("Show seconds", settings_on_off(g_clock_seconds), 334, g_settings_sel == 1);
+    settings_text("Changes appear immediately in the top-right clock.", 438, 394, false);
+    settings_text("Up/Down: select   Enter: toggle   Esc/Left: back", 420, 580, false);
 }
 
 fn settings_draw() {
     if !g_gfx { return; }
-    window_title("settings");
-    clear_window();
-    if g_settings_view == 0 { settings_draw_sections(); }
-    if g_settings_view == 1 { settings_draw_appearance(); }
+    window_title("settings"); clear_window();
+    if g_settings_view == 0 { settings_draw_sidebar(); }
+    if g_settings_view == 1 { settings_draw_personalization(); }
     if g_settings_view == 2 { settings_draw_clock(); }
 }
 
 fn settings_up() {
+    if g_settings_view == 0 {
+        if g_settings_section > 0 { g_settings_section = g_settings_section - 1; settings_draw(); }
+        return;
+    }
     if g_settings_sel > 0 { g_settings_sel = g_settings_sel - 1; settings_draw(); }
 }
 
 fn settings_down() {
-    let last: u32 = 2;
-    if g_settings_view == 1 { last = 3; }
-    if g_settings_view == 2 { last = 1; }
-    if g_settings_sel < last { g_settings_sel = g_settings_sel + 1; settings_draw(); }
+    if g_settings_view == 0 {
+        if g_settings_section < 5 { g_settings_section = g_settings_section + 1; settings_draw(); }
+        return;
+    }
+    if g_settings_sel < 1 { g_settings_sel = g_settings_sel + 1; settings_draw(); }
 }
 
-fn settings_back() {
-    if g_settings_view != 0 {
-        g_settings_view = 0;
-        g_settings_sel = 0;
-        settings_draw();
-    }
+fn settings_apply_accent() {
+    g_settings_accent = (g_settings_accent + 1) % 6;
+    if g_settings_accent == 0 { g_accent = 0x2c5364; }
+    if g_settings_accent == 1 { g_accent = 0x654a91; }
+    if g_settings_accent == 2 { g_accent = 0x276749; }
+    if g_settings_accent == 3 { g_accent = 0xa94f55; }
+    if g_settings_accent == 4 { g_accent = 0xb06d18; }
+    if g_settings_accent == 5 { g_accent = 0x397d96; }
+    draw_desktop(); settings_draw();
+}
+
+fn settings_apply_wallpaper() {
+    g_settings_wall = (g_settings_wall + 1) % 4;
+    if g_settings_wall == 0 { g_wall_top = 0x0a1830; g_wall_bottom = 0x2c5364; }
+    if g_settings_wall == 1 { g_wall_top = 0x102a2b; g_wall_bottom = 0x315f58; }
+    if g_settings_wall == 2 { g_wall_top = 0x2b1735; g_wall_bottom = 0x7b3f48; }
+    if g_settings_wall == 3 { g_wall_top = 0x11151a; g_wall_bottom = 0x303942; }
+    draw_desktop(); settings_draw();
 }
 
 fn settings_enter() {
     if g_settings_view == 0 {
-        if g_settings_sel == 1 { g_settings_view = 1; g_settings_sel = 0; settings_draw(); }
-        if g_settings_sel == 2 { g_settings_view = 2; g_settings_sel = 0; settings_draw(); }
+        if g_settings_section == 1 { g_settings_view = 1; g_settings_sel = 0; settings_draw(); }
+        if g_settings_section == 3 { g_settings_view = 2; g_settings_sel = 0; settings_draw(); }
         return;
     }
     if g_settings_view == 1 {
-        if g_settings_sel == 0 { g_accent = 0x2c5364; g_wall_bottom = 0x2c5364; }
-        if g_settings_sel == 1 { g_accent = 0x654a91; g_wall_bottom = 0x392852; }
-        if g_settings_sel == 2 { g_accent = 0x276749; g_wall_bottom = 0x183d2c; }
-        if g_settings_sel == 3 { g_accent = 0xa94f55; g_wall_bottom = 0x532a35; }
-        draw_desktop();
-        settings_draw();
+        if g_settings_sel == 0 { settings_apply_accent(); }
+        if g_settings_sel == 1 { settings_apply_wallpaper(); }
         return;
     }
     if g_settings_view == 2 {
         if g_settings_sel == 0 { g_clock_24h = !g_clock_24h; }
         if g_settings_sel == 1 { g_clock_seconds = !g_clock_seconds; }
-        draw_topbar();
-        settings_draw();
+        draw_topbar(); settings_draw();
     }
+}
+
+fn settings_back() {
+    if g_settings_view != 0 { g_settings_view = 0; settings_draw(); }
 }
 
 fn settings_on_key(sc: u8) {
