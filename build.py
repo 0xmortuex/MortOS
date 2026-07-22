@@ -127,16 +127,19 @@ def build():
     # -mno-sse/-mmx: the kernel runs with SSE disabled (CR4.OSFXSR=0). At -O2 the
     # compiler can vectorize a memset/zero-init to xorps, which would #UD; forbid
     # vector codegen so the network buffers stay scalar. (See mortnet notes.)
-    c_flags = ["-target", TARGET, "-ffreestanding", "-fno-stack-protector",
+    c_flags = ["-target", TARGET, "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
                "-fno-pie", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
                "-mno-sse", "-mno-sse2", "-mno-mmx", "-O2"]
     asm_flags = ["-target", TARGET, "-fno-pie"]  # assembling needs no C flags
     kmain_o = os.path.join(BUILD, "kmain.o")
+    runtime_o = os.path.join(BUILD, "runtime.o")
     boot_o = os.path.join(BUILD, "boot.o")
     idt_o = os.path.join(BUILD, "idt.o")
 
     # 2. Compile the kernel C and assemble the boot + interrupt stubs.
     subprocess.run([*cc, *c_flags, "-c", kmain_c, "-o", kmain_o], check=True)
+    subprocess.run([*cc, *c_flags, "-c", os.path.join(HERE, "runtime.c"),
+                    "-o", runtime_o], check=True)
     subprocess.run([*cc, *asm_flags, "-c", os.path.join(HERE, "boot.s"), "-o", boot_o],
                    check=True)
     subprocess.run([*cc, *asm_flags, "-c", os.path.join(HERE, "idt.s"), "-o", idt_o],
@@ -147,7 +150,7 @@ def build():
         *cc, "-target", TARGET, "-nostdlib", "-static", "-no-pie",
         "-Wl,-T," + os.path.join(HERE, "linker.ld"),
         "-Wl,--build-id=none",
-        "-o", ELF, boot_o, kmain_o, idt_o,
+        "-o", ELF, boot_o, kmain_o, runtime_o, idt_o,
     ], check=True)
     print(f"built {os.path.relpath(ELF, ROOT)}")
 
@@ -287,16 +290,19 @@ def build_program(mx_path, out_bin):
     with open(prog_c, "w", encoding="utf-8") as fh:
         fh.write(c_source)
 
-    c_flags = ["-target", TARGET, "-ffreestanding", "-fno-stack-protector",
+    c_flags = ["-target", TARGET, "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
                "-fno-pie", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
                "-O2"]
     asm_flags = ["-target", TARGET, "-fno-pie"]  # assembling needs no C flags
     prog_o = os.path.join(BUILD, name + ".o")
+    runtime_o = os.path.join(BUILD, "runtime.o")
     pstart_o = os.path.join(BUILD, name + ".pstart.o")
     prog_elf = os.path.join(BUILD, name + ".elf")
 
     # 2. Compile the program C and assemble the entry stub.
     subprocess.run([*cc, *c_flags, "-c", prog_c, "-o", prog_o], check=True)
+    subprocess.run([*cc, *c_flags, "-c", os.path.join(HERE, "runtime.c"),
+                    "-o", runtime_o], check=True)
     subprocess.run([*cc, *asm_flags, "-c", os.path.join(PROGRAMS, "pstart.s"),
                     "-o", pstart_o], check=True)
 
@@ -305,7 +311,7 @@ def build_program(mx_path, out_bin):
         *cc, "-target", TARGET, "-nostdlib", "-static", "-no-pie",
         "-Wl,-T," + os.path.join(PROGRAMS, "prog.ld"),
         "-Wl,--build-id=none", "-Wl,-e,_pstart",   # entry stub, silences _start warning
-        "-o", prog_elf, pstart_o, prog_o,
+        "-o", prog_elf, pstart_o, prog_o, runtime_o,
     ], check=True)
 
     # 4. Strip ELF headers down to a raw flat binary the kernel loads verbatim.
