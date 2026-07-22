@@ -28,6 +28,9 @@ let g_usb_hid_previous: [u8; 8] = [0; 8];
 let g_usb_hid_toggle: u32 = 0;
 let g_usb_hid_shift: bool = false;
 let g_usb_hid_extended: bool = false;
+let g_usb_mouse_dx: i32 = 0;
+let g_usb_mouse_dy: i32 = 0;
+let g_usb_mouse_buttons: u8 = 0;
 let g_usb_frame_mem: [u32; 2048] = [0; 2048];
 let g_usb_sched_mem: [u32; 96] = [0; 96];
 let g_usb_setup: [u8; 8] = [0; 8];
@@ -172,14 +175,13 @@ fn usb_hid_usage_to_scancode(usage: u8) -> u8 {
     return 0;
 }
 
-// Poll one HID boot-keyboard interrupt report. Returns a set-1 make code for
-// the first newly pressed key, or zero when there is no completed/new report.
-fn usb_hid_poll_scancode() -> u8 {
-    g_usb_hid_shift = false; g_usb_hid_extended = false;
-    if !g_usb_hid_boot_ready || g_usb_interface_protocol != 1 || g_usb_interrupt_in == 0 { return 0; }
+// Poll the configured HID boot interface's interrupt-IN endpoint into the
+// shared 8-byte report buffer. Keyboard and mouse decoders consume it below.
+fn usb_hid_poll_report() -> bool {
+    if !g_usb_hid_boot_ready || g_usb_interrupt_in == 0 { return false; }
     for clear: u32 in 0..8 { g_usb_hid_report[clear] = 0; }
     let packet: u32 = g_usb_interrupt_max_packet as u32;
-    if packet == 0 || packet > 8 { return 0; }
+    if packet == 0 || packet > 8 { return false; }
     let low: u32 = 0; if g_usb_low_speed { low = 0x04000000; }
     let td: u64 = usb_td(0);
     *(td as *u32) = 1; *((td + 4) as *u32) = 0x18800000 | low;
@@ -188,9 +190,17 @@ fn usb_hid_poll_scancode() -> u8 {
     let qh: u64 = usb_qh(); *((qh + 4) as *u32) = td as u32;
     usb_delay(4000); *((qh + 4) as *u32) = 1;
     let status: u32 = *((td + 4) as *u32);
-    if (status & 0x00800000) != 0 { return 0; } // still active means NAK/no report
-    if (status & 0x007e0000) != 0 { return 0; }
+    if (status & 0x00800000) != 0 { return false; } // still active means NAK/no report
+    if (status & 0x007e0000) != 0 { return false; }
     g_usb_hid_toggle = g_usb_hid_toggle ^ 1;
+    return true;
+}
+
+// Poll one HID boot-keyboard interrupt report. Returns a set-1 make code for
+// the first newly pressed key, or zero when there is no completed/new report.
+fn usb_hid_poll_scancode() -> u8 {
+    g_usb_hid_shift = false; g_usb_hid_extended = false;
+    if g_usb_interface_protocol != 1 || !usb_hid_poll_report() { return 0; }
     let usage: u8 = 0;
     let found: bool = false;
     for i: u32 in 2..8 {
@@ -205,6 +215,19 @@ fn usb_hid_poll_scancode() -> u8 {
     if !found { return 0; }
     g_usb_hid_shift = (g_usb_hid_report[0] & 0x22) != 0;
     return usb_hid_usage_to_scancode(usage);
+}
+
+// Poll a HID boot-mouse report. The caller consumes signed relative movement
+// and the standard left/right/middle button bits from the exported globals.
+fn usb_hid_poll_mouse() -> bool {
+    g_usb_mouse_dx = 0; g_usb_mouse_dy = 0;
+    if g_usb_interface_protocol != 2 || !usb_hid_poll_report() { return false; }
+    g_usb_mouse_buttons = g_usb_hid_report[0];
+    if g_usb_hid_report[1] < 128 { g_usb_mouse_dx = g_usb_hid_report[1] as i32; }
+    else { g_usb_mouse_dx = (g_usb_hid_report[1] as i32) - 256; }
+    if g_usb_hid_report[2] < 128 { g_usb_mouse_dy = g_usb_hid_report[2] as i32; }
+    else { g_usb_mouse_dy = (g_usb_hid_report[2] as i32) - 256; }
+    return true;
 }
 
 // Submit a standard or class-specific control request with no data stage.
@@ -340,6 +363,7 @@ fn usb_boot_init() {
     g_usb_interface_class = 0; g_usb_interface_subclass = 0; g_usb_interface_protocol = 0;
     g_usb_interrupt_in = 0; g_usb_bulk_in = 0; g_usb_bulk_out = 0;
     g_usb_hid_toggle = 0;
+    g_usb_mouse_dx = 0; g_usb_mouse_dy = 0; g_usb_mouse_buttons = 0;
     for old: u32 in 0..8 { g_usb_hid_previous[old] = 0; }
     if !usb_find_uhci() { return; }
     outw(g_usb_io + 0x00, 0x0004);     // global reset

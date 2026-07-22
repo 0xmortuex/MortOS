@@ -46,6 +46,12 @@ let g_fb_w: u32 = 0;                                           // width in pixel
 let g_fb_h: u32 = 0;                                           // height in pixels
 let g_cur_r: u32 = 0;                                          // last drawn cursor cell (graphics)
 let g_cur_c: u32 = 0;
+let g_mouse_x: u32 = 512;                                      // USB HID pointer position
+let g_mouse_y: u32 = 384;
+let g_mouse_buttons: u8 = 0;
+let g_mouse_present: bool = false;
+let g_mouse_visible: bool = false;
+let g_mouse_save: [u32; 216] = [0; 216];                       // 12x18 pixels under cursor
 let g_app: u32 = 0;                                            // active app: 0 terminal, 1 files, 2 vex
 let g_files_sel: u32 = 0;                                      // Files: selected row
 let g_files_view: u32 = 0;                                     // Files: 0 = list, 1 = file contents
@@ -370,6 +376,68 @@ fn fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) {
         }
         yy = yy + 1;
     }
+}
+
+fn mouse_hide() {
+    if !g_gfx || !g_mouse_visible { return; }
+    for yy: u32 in 0..18 {
+        for xx: u32 in 0..12 {
+            *((g_fb + (g_mouse_y + yy) * g_fb_pitch + (g_mouse_x + xx) * 4) as *u32) = g_mouse_save[yy * 12 + xx];
+        }
+    }
+    g_mouse_visible = false;
+}
+
+fn mouse_show() {
+    if !g_gfx || !g_mouse_present || g_mouse_visible { return; }
+    for yy: u32 in 0..18 {
+        for xx: u32 in 0..12 {
+            let addr: u32 = g_fb + (g_mouse_y + yy) * g_fb_pitch + (g_mouse_x + xx) * 4;
+            g_mouse_save[yy * 12 + xx] = *(addr as *u32);
+            let arrow: bool = false;
+            let edge: bool = false;
+            if yy < 12 && xx <= yy / 2 {
+                arrow = true;
+                edge = xx == 0 || xx == yy / 2 || yy == 11;
+            }
+            if yy >= 9 && yy < 17 && xx >= 3 && xx <= 5 { arrow = true; if xx == 3 || xx == 5 || yy == 16 { edge = true; } }
+            if arrow { *(addr as *u32) = 0xffffff; if edge { *(addr as *u32) = 0x101820; } }
+        }
+    }
+    g_mouse_visible = true;
+}
+
+fn mouse_click() {
+    if g_overlay == 4 {
+        let startx: u32 = (g_fb_w - 730) / 2;
+        if g_mouse_y >= 297 && g_mouse_y < 463 && g_mouse_x >= startx - 3 {
+            let tile: u32 = (g_mouse_x - (startx - 3)) / 150;
+            if tile < 5 && g_mouse_x < startx + tile * 150 + 136 {
+                g_launch_sel = tile;
+                launcher_on_key(28);
+            }
+        }
+        return;
+    }
+    if g_overlay == 0 && g_app == 3 && g_mouse_x >= 198 && g_mouse_x < 390 && g_mouse_y >= 230 && g_mouse_y < 486 {
+        let row: u32 = (g_mouse_y - 230) / 32;
+        let section: u32 = g_settings_scroll + row;
+        if section < 13 { g_settings_section = section; settings_draw(); }
+    }
+}
+
+fn mouse_apply_report() {
+    if !g_gfx { return; }
+    mouse_hide();
+    g_mouse_present = true;
+    let nx: i32 = (g_mouse_x as i32) + g_usb_mouse_dx;
+    let ny: i32 = (g_mouse_y as i32) + g_usb_mouse_dy;
+    if nx < 0 { g_mouse_x = 0; } else if nx > (g_fb_w as i32) - 12 { g_mouse_x = g_fb_w - 12; } else { g_mouse_x = nx as u32; }
+    if ny < 0 { g_mouse_y = 0; } else if ny > (g_fb_h as i32) - 18 { g_mouse_y = g_fb_h - 18; } else { g_mouse_y = ny as u32; }
+    let clicked: bool = (g_usb_mouse_buttons & 1) != 0 && (g_mouse_buttons & 1) == 0;
+    g_mouse_buttons = g_usb_mouse_buttons;
+    if clicked { mouse_click(); }
+    mouse_show();
 }
 
 // A vertical gradient background from `top` to `bottom` (per-channel lerp).
@@ -2619,9 +2687,12 @@ fn on_tick() {
         on_scancode(usb_sc);
         g_shift = false;
     }
+    if usb_hid_poll_mouse() { mouse_apply_report(); }
     if g_gfx {
         if (g_ticks % 100) == 0 {        // once a second: refresh the top-bar clock
+            mouse_hide();
             draw_clock();
+            mouse_show();
         }
     }
 }
@@ -3496,6 +3567,7 @@ fn overlay_on_key(sc: u8) {
 }
 
 fn on_scancode(sc: u8) {
+    mouse_hide();
     if g_overlay != 0 {              // an overlay owns the keyboard while it's up
         overlay_on_key(sc);
         return;
