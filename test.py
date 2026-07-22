@@ -381,6 +381,22 @@ def _wait_guest_u32(handle, address, predicate, timeout_s=10):
     return value
 
 
+def _guest_bytes(handle, address, length):
+    text = _monitor(handle, f"xp /{length}bx 0x{address:x}", timeout_s=20)
+    values = []
+    for token in text.replace(":", " ").split():
+        if token.startswith("0x"):
+            try:
+                value = int(token.rstrip(","), 16)
+                if value <= 0xff:
+                    values.append(value)
+            except ValueError:
+                pass
+    if len(values) < length:
+        raise RuntimeError(f"expected {length} guest bytes, got {len(values)}: {text!r}")
+    return bytes(values[:length])
+
+
 # ----- smoke test -----
 
 def smoke(disk_img=None):
@@ -578,6 +594,176 @@ def settings_ui():
     return 0 if not failed else 1
 
 
+def browser_ui():
+    """Load a host-served HTTP page and verify browser state and persistence."""
+    sys.path.insert(0, HERE)
+    import build as kernel_build
+    kernel_build.iso()
+    kernel_build.ensure_disk()
+    ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
+    app_addr = _elf32_symbol(ELF, "m_g_app")
+    remote_addr = _elf32_symbol(ELF, "m_g_browser_remote")
+    content_addr = _elf32_symbol(ELF, "m_g_browser_content")
+    content_len_addr = _elf32_symbol(ELF, "m_g_browser_content_len")
+    downloaded_addr = _elf32_symbol(ELF, "m_g_browser_downloaded")
+    links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
+    tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
+    private_addr = _elf32_symbol(ELF, "m_g_browser_private")
+    state_addr = _elf32_symbol(ELF, "m_g_browser_state")
+    temp_disk = os.path.join(tempfile.gettempdir(),
+                             f"mort_browser_{os.getpid()}.img")
+    shutil.copyfile(kernel_build.DISK, temp_disk)
+    results = []
+
+    def check(name, ok):
+        results.append((name, ok))
+        print(f"{'PASS' if ok else 'FAIL'}: {name}")
+
+    with tempfile.TemporaryDirectory(prefix="mort_web_") as webroot:
+        marker = "MORT-VEX-HTTP-OK"
+        second_marker = "MORT-VEX-LINK-OK"
+        redirect_marker = "MORT-VEX-REDIRECT-OK"
+        with open(os.path.join(webroot, "index.html"), "w", encoding="ascii") as fh:
+            fh.write("<!doctype html><html><head><title>Vex Network Test</title>"
+                     "<style>hidden-style{color:red}</style></head><body>"
+                     f"<h1>{marker}</h1><p>Rendered safely from HTTP.</p>"
+                     "<a href=\"/second.html\">Open second page</a>"
+                     "<script>hidden-script()</script></body></html>")
+        with open(os.path.join(webroot, "second.html"), "w", encoding="ascii") as fh:
+            fh.write(f"<!doctype html><title>Second Vex Page</title><h1>{second_marker}</h1>")
+        os.mkdir(os.path.join(webroot, "redirected"))
+        with open(os.path.join(webroot, "redirected", "index.html"), "w", encoding="ascii") as fh:
+            fh.write(f"<!doctype html><title>Redirected</title><h1>{redirect_marker}</h1>")
+        port = 18080
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        server = subprocess.Popen(
+            [sys.executable, "-m", "http.server", str(port),
+             "--bind", "127.0.0.1", "--directory", webroot],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags)
+        time.sleep(0.5)
+        handle = boot_iso(
+            kernel_build.ISO, temp_disk,
+            ["-netdev", "user,id=vexnet", "-device", "rtl8139,netdev=vexnet"])
+        try:
+            _wait_guest_u32(handle, ticks_addr, lambda value: value >= 100,
+                            timeout_s=20)
+            send_key(handle, "esc")
+            send_key(handle, "f3")
+            app = _wait_guest_u32(handle, app_addr, lambda value: value == 2)
+            check("F3 opens the native Vex browser", app == 2)
+
+            send_key(handle, "slash")
+            address = f"http://10.0.2.2:{port}/"
+            for char in address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            remote = _wait_guest_u32(
+                handle, remote_addr, lambda value: (value & 0xff) != 0,
+                timeout_s=25)
+            check("Vex completes DHCP, ARP, TCP, and HTTP loading",
+                  (remote & 0xff) != 0)
+            content_len = _guest_u32(handle, content_len_addr)
+            content = _guest_bytes(handle, content_addr, min(content_len, 512))
+            text_content = content.decode("ascii", "replace")
+            check("HTTP HTML is converted into rendered text", marker in text_content)
+            check("script and style bodies are removed",
+                  "hidden-script" not in text_content and "hidden-style" not in text_content)
+            links = _wait_guest_u32(handle, links_addr, lambda value: value >= 1)
+            check("HTTP anchor is extracted as a navigable link", links >= 1)
+
+            send_key(handle, "l")
+            send_key(handle, "ret")
+            deadline = time.monotonic() + 25
+            linked_text = ""
+            while time.monotonic() < deadline and second_marker not in linked_text:
+                length = _guest_u32(handle, content_len_addr)
+                linked_text = _guest_bytes(
+                    handle, content_addr, min(max(length, 1), 512)).decode("ascii", "replace")
+                if second_marker not in linked_text:
+                    time.sleep(0.25)
+            check("Relative link navigation loads the second HTTP page",
+                  second_marker in linked_text)
+
+            send_key(handle, "left")
+            deadline = time.monotonic() + 25
+            back_text = ""
+            while time.monotonic() < deadline and marker not in back_text:
+                length = _guest_u32(handle, content_len_addr)
+                back_text = _guest_bytes(
+                    handle, content_addr, min(max(length, 1), 512)).decode("ascii", "replace")
+                if marker not in back_text:
+                    time.sleep(0.25)
+            check("Back navigation restores the previous HTTP page", marker in back_text)
+
+            send_key(handle, "t")
+            tabs = _wait_guest_u32(handle, tabs_addr, lambda value: value == 2)
+            check("New-tab command creates a second tab", tabs == 2)
+            send_key(handle, "tab")
+            send_key(handle, "p")
+            private = _wait_guest_u32(
+                handle, private_addr, lambda value: (value & 0xff) != 0)
+            check("Private browsing mode toggles on", (private & 0xff) != 0)
+
+            send_key(handle, "slash")
+            redirect_address = f"http://10.0.2.2:{port}/redirected"
+            for char in redirect_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            deadline = time.monotonic() + 25
+            redirect_text = ""
+            while time.monotonic() < deadline and redirect_marker not in redirect_text:
+                length = _guest_u32(handle, content_len_addr)
+                redirect_text = _guest_bytes(
+                    handle, content_addr, min(max(length, 1), 512)).decode("ascii", "replace")
+                if redirect_marker not in redirect_text:
+                    time.sleep(0.25)
+            check("HTTP redirect is followed to its final page",
+                  redirect_marker in redirect_text)
+
+            send_key(handle, "b")
+            state_word = _wait_guest_u32(
+                handle, state_addr + 4,
+                lambda value: ((value >> 16) & 0xff) >= 1)
+            check("Bookmark command updates local browser state",
+                  ((state_word >> 16) & 0xff) >= 1)
+            send_key(handle, "d")
+            downloaded = _wait_guest_u32(
+                handle, downloaded_addr, lambda value: (value & 0xff) != 0)
+            check("Download command saves the rendered page to MortFS",
+                  (downloaded & 0xff) != 0)
+            shot = os.path.join(BUILD, "browser-http.ppm").replace(os.sep, "/")
+            _monitor(handle, f"screendump {shot}")
+            check("Browser HTTP screenshot was captured",
+                  os.path.exists(os.path.join(BUILD, "browser-http.ppm")))
+        finally:
+            shutdown(handle)
+            server.terminate()
+            try:
+                server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server.kill()
+
+    handle = boot_iso(kernel_build.ISO, temp_disk)
+    try:
+        _wait_guest_u32(handle, ticks_addr, lambda value: value >= 100,
+                        timeout_s=20)
+        send_key(handle, "esc")
+        send_key(handle, "f3")
+        state = _guest_bytes(handle, state_addr, 8)
+        check("Browser bookmarks survive a full reboot", state[6] >= 1)
+    finally:
+        shutdown(handle)
+        try:
+            os.remove(temp_disk)
+        except OSError:
+            pass
+
+    failed = [name for name, ok in results if not ok]
+    print(f"\n{len(results) - len(failed)}/{len(results)} passed")
+    return 0 if not failed else 1
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -586,6 +772,7 @@ def main(argv):
                          help="optional disk image to attach as -hda")
     sub.add_parser("usb-hotplug", help="test live UHCI detach and reattach")
     sub.add_parser("settings-ui", help="test Settings UI and persistence")
+    sub.add_parser("browser-ui", help="test Vex browser HTTP and persistence")
     args = parser.parse_args(argv)
     if args.cmd == "smoke":
         return smoke(disk_img=args.disk)
@@ -593,6 +780,8 @@ def main(argv):
         return usb_hotplug()
     if args.cmd == "settings-ui":
         return settings_ui()
+    if args.cmd == "browser-ui":
+        return browser_ui()
     return 2
 
 

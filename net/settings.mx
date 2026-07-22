@@ -325,7 +325,7 @@ fn settings_apps() {
     settings_title("Apps", "Built-in applications and launch shortcuts");
     settings_text("Terminal", 438, 276, true); settings_text("F1  command shell", 600, 276, false);
     settings_text("Files", 438, 312, true); settings_text("F2  MortFS browser", 600, 312, false);
-    settings_text("Vex", 438, 348, true); settings_text("F3  local pages", 600, 348, false);
+    settings_text("Vex", 438, 348, true); settings_text("F3  HTTP browser", 600, 348, false);
     settings_text("Settings", 438, 384, true); settings_text("F4  control center", 600, 384, false);
     settings_text("Startup apps", 438, 432, false); settings_text("ISO startup script", 600, 432, true);
     settings_text("Install/uninstall", 438, 468, false); settings_text("Not supported yet", 600, 468, true);

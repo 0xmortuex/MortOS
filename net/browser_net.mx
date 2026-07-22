@@ -1,0 +1,400 @@
+// Synchronous HTTP/1.x client for the Vex browser. It uses the existing
+// RTL8139, ARP, IPv4, UDP/DNS and TCP format layers. QEMU user networking uses
+// 10.0.2.2 as the gateway and 10.0.2.3 as DNS; DHCP still supplies our address.
+
+let g_browser_net_host: [u8; 64] = [0; 64];
+let g_browser_net_path: [u8; 96] = [0; 96];
+let g_browser_net_ip: [u8; 4] = [0; 4];
+let g_browser_net_mac: [u8; 6] = [0; 6];
+let g_browser_http_request: [u8; 384] = [0; 384];
+let g_browser_http_raw: [u8; 12288] = [0; 12288];
+let g_browser_http_redirect: [u8; 80] = [0; 80];
+let g_browser_http_raw_len: u32 = 0;
+let g_browser_net_port: u16 = 80;
+let g_browser_tcp_source_port: u16 = 49152;
+let g_browser_tcp_seq: u32 = 0;
+let g_browser_tcp_ack: u32 = 0;
+let g_browser_tcp_ipid: u16 = 0x4400;
+let g_browser_tcp_nonce: u32 = 0;
+
+fn browser_net_lower(ch: u8) -> u8 { if ch >= 65 && ch <= 90 { return ch + 32; } return ch; }
+
+fn browser_match_ci(buf: u64, pos: u32, limit: u32, text: u64) -> bool {
+    let i: u32 = 0;
+    while *((text + (i as u64)) as *u8) != 0 {
+        if pos + i >= limit { return false; }
+        if browser_net_lower(*((buf + ((pos + i) as u64)) as *u8))
+            != browser_net_lower(*((text + (i as u64)) as *u8)) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn browser_request_append(pos: u32, text: u64) -> u32 {
+    let out: u32 = pos; let i: u32 = 0;
+    while out < 382 && *((text + (i as u64)) as *u8) != 0 {
+        g_browser_http_request[out] = *((text + (i as u64)) as *u8);
+        out = out + 1; i = i + 1;
+    }
+    g_browser_http_request[out] = 0;
+    return out;
+}
+
+fn browser_parse_url(url: u64) -> bool {
+    browser_zero(&g_browser_net_host as u64, 64); browser_zero(&g_browser_net_path as u64, 96);
+    if !browser_prefix(url, "http://" as u64) { return false; }
+    let pos: u32 = 7; let hlen: u32 = 0; g_browser_net_port = 80;
+    while *((url + (pos as u64)) as *u8) != 0 && *((url + (pos as u64)) as *u8) != 47
+        && *((url + (pos as u64)) as *u8) != 58 {
+        if hlen + 1 >= 64 { return false; }
+        g_browser_net_host[hlen] = *((url + (pos as u64)) as *u8); hlen = hlen + 1; pos = pos + 1;
+    }
+    if hlen == 0 { return false; }
+    g_browser_net_host[hlen] = 0;
+    if *((url + (pos as u64)) as *u8) == 58 {
+        pos = pos + 1; let port: u32 = 0; let digits: u32 = 0;
+        while *((url + (pos as u64)) as *u8) >= 48 && *((url + (pos as u64)) as *u8) <= 57 {
+            port = port * 10 + ((*((url + (pos as u64)) as *u8) as u32) - 48);
+            digits = digits + 1; pos = pos + 1;
+        }
+        if digits == 0 || port == 0 || port > 65535 { return false; }
+        g_browser_net_port = port as u16;
+    }
+    if *((url + (pos as u64)) as *u8) == 0 {
+        g_browser_net_path[0] = 47; g_browser_net_path[1] = 0;
+    } else if *((url + (pos as u64)) as *u8) == 47 {
+        browser_copy(&g_browser_net_path as u64, url + (pos as u64), 96);
+    } else { return false; }
+    return true;
+}
+
+fn browser_parse_ipv4(text: u64, out: u64) -> bool {
+    let pos: u32 = 0;
+    for part: u32 in 0..4 {
+        let value: u32 = 0; let digits: u32 = 0;
+        while *((text + (pos as u64)) as *u8) >= 48 && *((text + (pos as u64)) as *u8) <= 57 {
+            value = value * 10 + ((*((text + (pos as u64)) as *u8) as u32) - 48);
+            digits = digits + 1; pos = pos + 1;
+        }
+        if digits == 0 || value > 255 { return false; }
+        *((out + (part as u64)) as *u8) = value as u8;
+        if part < 3 {
+            if *((text + (pos as u64)) as *u8) != 46 { return false; }
+            pos = pos + 1;
+        }
+    }
+    return *((text + (pos as u64)) as *u8) == 0;
+}
+
+fn browser_net_aux(rx: u64, length: u32) {
+    let reply: u32 = net_handle_frame(rx, length, &g_net_tx as u64);
+    if reply > 0 { net_send(&g_net_tx as u64, reply); }
+}
+
+fn browser_arp_resolve(target_ip: u64, out_mac: u64) -> bool {
+    let base: u64 = &g_net_tx as u64; let broadcast: [u8; 6] = [0; 6]; mac_broadcast(&broadcast as u64);
+    eth_build_header(base, &broadcast as u64, net_our_mac(), ETH_ARP);
+    arp_build_request(eth_payload(base), net_our_mac(), net_our_ip(), target_ip);
+    net_send(base, 14 + ARP_LEN);
+    for spin: u32 in 0..8000000 {
+        let n: u32 = rtl_poll_rx(&g_net_rx as u64);
+        if n >= 42 {
+            let rx: u64 = &g_net_rx as u64; browser_net_aux(rx, n);
+            if eth_type(rx) == ETH_ARP {
+                let arp: u64 = eth_payload(rx);
+                if arp_oper(arp) == ARP_REPLY && ip4_eq(arp_spa(arp), target_ip) {
+                    mac_copy(out_mac, arp_sha(arp)); return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn browser_dns_resolve(host: u64, out_ip: u64) -> bool {
+    if browser_parse_ipv4(host, out_ip) { return true; }
+    let dns_ip: [u8; 4] = [10, 0, 2, 3]; let dns_mac: [u8; 6] = [0; 6];
+    if !browser_arp_resolve(&dns_ip as u64, &dns_mac as u64) { browser_set_status("DNS gateway ARP failed"); return false; }
+    let base: u64 = &g_net_tx as u64; let ip: u64 = eth_payload(base); let udp: u64 = ip + 20;
+    let query: u64 = udp + 8; let id: u16 = (0x5600 | ((g_ticks as u16) & 0xff));
+    let qlen: u32 = dns_build_query(query, id, host);
+    eth_build_header(base, &dns_mac as u64, net_our_mac(), ETH_IP);
+    let ulen: u32 = udp_build(udp, 53000, DNS_PORT, net_our_ip(), &dns_ip as u64, qlen);
+    ip_build_header(ip, net_our_ip(), &dns_ip as u64, IP_PROTO_UDP, 0x5500, ulen as u16);
+    net_send(base, 14 + 20 + ulen);
+    for spin: u32 in 0..12000000 {
+        let n: u32 = rtl_poll_rx(&g_net_rx as u64);
+        if n >= 42 {
+            let rx: u64 = &g_net_rx as u64; browser_net_aux(rx, n);
+            if eth_type(rx) == ETH_IP {
+                let rip: u64 = eth_payload(rx);
+                if ip_proto(rip) == IP_PROTO_UDP {
+                    let rudp: u64 = rip + (ip_ihl_bytes(rip) as u64);
+                    if udp_dst_port(rudp) == 53000 && udp_src_port(rudp) == DNS_PORT {
+                        let msg: u64 = udp_payload(rudp); let mlen: u32 = (udp_length(rudp) as u32) - 8;
+                        if dns_id(msg) == id && dns_first_a(msg, mlen, out_ip) { return true; }
+                    }
+                }
+            }
+        }
+    }
+    browser_set_status("DNS lookup timed out"); return false;
+}
+
+fn browser_tcp_send(flags: u8, data: u64, data_len: u32) {
+    let base: u64 = &g_net_tx as u64; eth_build_header(base, &g_browser_net_mac as u64, net_our_mac(), ETH_IP);
+    let ip: u64 = eth_payload(base); let tcp: u64 = ip + 20;
+    for i: u32 in 0..data_len { *((tcp + 20 + (i as u64)) as *u8) = *((data + (i as u64)) as *u8); }
+    let total: u32 = tcp_build(tcp, g_browser_tcp_source_port, g_browser_net_port,
+        g_browser_tcp_seq, g_browser_tcp_ack, flags, 8192, net_our_ip(), &g_browser_net_ip as u64, data_len);
+    ip_build_header(ip, net_our_ip(), &g_browser_net_ip as u64, IP_PROTO_TCP, g_browser_tcp_ipid, total as u16);
+    g_browser_tcp_ipid = g_browser_tcp_ipid + 1; net_send(base, 14 + 20 + total);
+    let advance: u32 = data_len;
+    if (flags & TCP_SYN) != 0 { advance = advance + 1; }
+    if (flags & TCP_FIN) != 0 { advance = advance + 1; }
+    g_browser_tcp_seq = g_browser_tcp_seq + advance;
+}
+
+fn browser_tcp_segment(rx: u64, length: u32) -> u64 {
+    if length < 54 || eth_type(rx) != ETH_IP { return 0; }
+    let ip: u64 = eth_payload(rx);
+    if ip_proto(ip) != IP_PROTO_TCP || !ip4_eq(ip_src(ip), &g_browser_net_ip as u64) { return 0; }
+    let tcp: u64 = ip + (ip_ihl_bytes(ip) as u64);
+    if tcp_dst_port(tcp) != g_browser_tcp_source_port || tcp_src_port(tcp) != g_browser_net_port { return 0; }
+    return tcp;
+}
+
+fn browser_tcp_connect() -> bool {
+    g_browser_tcp_nonce = g_browser_tcp_nonce + 1;
+    g_browser_tcp_source_port = (49152 + ((g_ticks + g_browser_tcp_nonce) % 4096)) as u16;
+    g_browser_tcp_seq = 0x76000000 + g_ticks + g_browser_tcp_nonce * 4099; g_browser_tcp_ack = 0;
+    browser_tcp_send(TCP_SYN, 0, 0);
+    for spin: u32 in 0..16000000 {
+        let n: u32 = rtl_poll_rx(&g_net_rx as u64);
+        if n > 0 {
+            let rx: u64 = &g_net_rx as u64; browser_net_aux(rx, n);
+            let tcp: u64 = browser_tcp_segment(rx, n);
+            if tcp != 0 {
+                let flags: u8 = tcp_flags(tcp);
+                if (flags & TCP_RST) != 0 { browser_set_status("Connection refused"); return false; }
+                if (flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK) && tcp_ack(tcp) == g_browser_tcp_seq {
+                    g_browser_tcp_ack = tcp_seq(tcp) + 1; browser_tcp_send(TCP_ACK, 0, 0); return true;
+                }
+            }
+        }
+    }
+    browser_set_status("TCP connection timed out"); return false;
+}
+
+fn browser_tcp_receive() -> bool {
+    g_browser_http_raw_len = 0; let received: bool = false; let idle: u32 = 0;
+    while idle < 10000000 {
+        let n: u32 = rtl_poll_rx(&g_net_rx as u64);
+        if n == 0 {
+            idle = idle + 1;
+            if received && idle > 1500000 { return true; }
+        } else {
+            idle = 0; let rx: u64 = &g_net_rx as u64; browser_net_aux(rx, n);
+            let tcp: u64 = browser_tcp_segment(rx, n);
+            if tcp != 0 {
+                let flags: u8 = tcp_flags(tcp); if (flags & TCP_RST) != 0 { return false; }
+                let ip: u64 = eth_payload(rx); let header: u32 = tcp_header_len(tcp);
+                let payload_len: u32 = (ip_total_len(ip) as u32) - ip_ihl_bytes(ip) - header;
+                let their_seq: u32 = tcp_seq(tcp);
+                if payload_len > 0 && their_seq == g_browser_tcp_ack {
+                    let take: u32 = payload_len;
+                    if g_browser_http_raw_len + take > 12287 { take = 12287 - g_browser_http_raw_len; }
+                    for i: u32 in 0..take {
+                        g_browser_http_raw[g_browser_http_raw_len + i] = *((tcp + (header as u64) + (i as u64)) as *u8);
+                    }
+                    g_browser_http_raw_len = g_browser_http_raw_len + take;
+                    g_browser_tcp_ack = g_browser_tcp_ack + payload_len; received = true;
+                    browser_tcp_send(TCP_ACK, 0, 0);
+                } else if payload_len > 0 && their_seq < g_browser_tcp_ack { browser_tcp_send(TCP_ACK, 0, 0); }
+                if (flags & TCP_FIN) != 0 {
+                    let fin_seq: u32 = their_seq + payload_len;
+                    if fin_seq == g_browser_tcp_ack { g_browser_tcp_ack = g_browser_tcp_ack + 1; }
+                    browser_tcp_send(TCP_ACK, 0, 0); return received;
+                }
+            }
+        }
+    }
+    return received;
+}
+
+fn browser_text_newline() {
+    if g_browser_content_len == 0 || g_browser_content[g_browser_content_len - 1] != 10 {
+        if g_browser_content_len < 8191 { g_browser_content[g_browser_content_len] = 10; g_browser_content_len = g_browser_content_len + 1; }
+    }
+}
+
+fn browser_text_char(ch: u8, col: u32) -> u32 {
+    let next: u32 = col;
+    if ch == 10 { browser_text_newline(); return 0; }
+    if ch == 32 || ch == 9 || ch == 13 {
+        if g_browser_content_len > 0 && g_browser_content[g_browser_content_len - 1] != 32
+            && g_browser_content[g_browser_content_len - 1] != 10 {
+            if g_browser_content_len < 8191 { g_browser_content[g_browser_content_len] = 32; g_browser_content_len = g_browser_content_len + 1; next = next + 1; }
+        }
+        return next;
+    }
+    if next >= 72 { browser_text_newline(); next = 0; }
+    if g_browser_content_len < 8191 { g_browser_content[g_browser_content_len] = ch; g_browser_content_len = g_browser_content_len + 1; next = next + 1; }
+    return next;
+}
+
+fn browser_extract_title(body: u32) {
+    browser_set_title("HTTP document"); let pos: u32 = body;
+    while pos + 7 < g_browser_http_raw_len {
+        if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<title>" as u64) {
+            pos = pos + 7; let out: u32 = 0; browser_zero(&g_browser_title as u64, 40);
+            while pos < g_browser_http_raw_len && g_browser_http_raw[pos] != 60 && out < 38 {
+                let ch: u8 = g_browser_http_raw[pos]; if ch >= 32 { g_browser_title[out] = ch; out = out + 1; }
+                pos = pos + 1;
+            }
+            g_browser_title[out] = 0; return;
+        }
+        pos = pos + 1;
+    }
+}
+
+fn browser_extract_link(tag: u32) {
+    let pos: u32 = tag; let end: u32 = tag;
+    while end < g_browser_http_raw_len && g_browser_http_raw[end] != 62 { end = end + 1; }
+    while pos + 4 < end {
+        if browser_match_ci(&g_browser_http_raw as u64, pos, end, "href" as u64) {
+            pos = pos + 4;
+            while pos < end && (g_browser_http_raw[pos] == 32 || g_browser_http_raw[pos] == 9) { pos = pos + 1; }
+            if pos < end && g_browser_http_raw[pos] == 61 { pos = pos + 1; }
+            while pos < end && (g_browser_http_raw[pos] == 32 || g_browser_http_raw[pos] == 9) { pos = pos + 1; }
+            let quote: u8 = 0;
+            if pos < end && (g_browser_http_raw[pos] == 34 || g_browser_http_raw[pos] == 39) { quote = g_browser_http_raw[pos]; pos = pos + 1; }
+            let start: u32 = pos;
+            while pos < end && ((quote != 0 && g_browser_http_raw[pos] != quote)
+                || (quote == 0 && g_browser_http_raw[pos] != 32 && g_browser_http_raw[pos] != 9)) { pos = pos + 1; }
+            browser_link_add(&g_browser_http_raw as u64 + (start as u64), pos - start); return;
+        }
+        pos = pos + 1;
+    }
+}
+
+fn browser_http_to_text(body: u32) {
+    browser_zero(&g_browser_content as u64, 8192); g_browser_content_len = 0;
+    browser_links_reset(); browser_extract_title(body); let pos: u32 = body; let col: u32 = 0;
+    while pos < g_browser_http_raw_len && g_browser_content_len < 8190 {
+        if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<script" as u64) {
+            while pos < g_browser_http_raw_len && !browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "</script>" as u64) { pos = pos + 1; }
+            if pos < g_browser_http_raw_len { pos = pos + 9; }
+        } else if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<style" as u64) {
+            while pos < g_browser_http_raw_len && !browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "</style>" as u64) { pos = pos + 1; }
+            if pos < g_browser_http_raw_len { pos = pos + 8; }
+        } else if g_browser_http_raw[pos] == 60 {
+            if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<a " as u64) {
+                browser_extract_link(pos);
+                if g_browser_link_count > 0 {
+                    col = browser_text_char(91, col); // [n]
+                    let digit: u8 = (48 + g_browser_link_count) as u8; col = browser_text_char(digit, col);
+                    col = browser_text_char(93, col); col = browser_text_char(32, col);
+                }
+            }
+            if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<p" as u64)
+                || browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "</p" as u64)
+                || browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<br" as u64)
+                || browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<div" as u64)
+                || browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<h" as u64)
+                || browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "<li" as u64) {
+                browser_text_newline(); col = 0;
+            }
+            while pos < g_browser_http_raw_len && g_browser_http_raw[pos] != 62 { pos = pos + 1; }
+            if pos < g_browser_http_raw_len { pos = pos + 1; }
+        } else if g_browser_http_raw[pos] == 38 {
+            if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "&amp;" as u64) { col = browser_text_char(38, col); pos = pos + 5; }
+            else if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "&lt;" as u64) { col = browser_text_char(60, col); pos = pos + 4; }
+            else if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "&gt;" as u64) { col = browser_text_char(62, col); pos = pos + 4; }
+            else if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "&nbsp;" as u64) { col = browser_text_char(32, col); pos = pos + 6; }
+            else if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "&quot;" as u64) { col = browser_text_char(34, col); pos = pos + 6; }
+            else { col = browser_text_char(38, col); pos = pos + 1; }
+        } else { col = browser_text_char(g_browser_http_raw[pos], col); pos = pos + 1; }
+    }
+    if g_browser_content_len < 8192 { g_browser_content[g_browser_content_len] = 0; }
+}
+
+fn browser_http_parse() -> bool {
+    if g_browser_http_raw_len < 12 || !browser_match_ci(&g_browser_http_raw as u64, 0, g_browser_http_raw_len, "HTTP/" as u64) {
+        browser_set_status("Invalid HTTP response"); return false;
+    }
+    let code: u32 = ((g_browser_http_raw[9] as u32) - 48) * 100
+        + ((g_browser_http_raw[10] as u32) - 48) * 10 + ((g_browser_http_raw[11] as u32) - 48);
+    let body: u32 = 0; let pos: u32 = 0;
+    while pos + 3 < g_browser_http_raw_len && body == 0 {
+        if g_browser_http_raw[pos] == 13 && g_browser_http_raw[pos + 1] == 10
+            && g_browser_http_raw[pos + 2] == 13 && g_browser_http_raw[pos + 3] == 10 { body = pos + 4; }
+        pos = pos + 1;
+    }
+    if body == 0 { browser_set_status("HTTP headers incomplete"); return false; }
+    if code < 200 || code >= 300 {
+        browser_set_status("HTTP server returned a non-success status"); return false;
+    }
+    browser_http_to_text(body); return g_browser_content_len > 0;
+}
+
+fn browser_http_redirect_location() -> bool {
+    browser_zero(&g_browser_http_redirect as u64, 80);
+    if g_browser_http_raw_len < 12 { return false; }
+    let code: u32 = ((g_browser_http_raw[9] as u32) - 48) * 100
+        + ((g_browser_http_raw[10] as u32) - 48) * 10 + ((g_browser_http_raw[11] as u32) - 48);
+    if code < 300 || code >= 400 { return false; }
+    let pos: u32 = 12;
+    while pos + 9 < g_browser_http_raw_len {
+        if g_browser_http_raw[pos] == 13 && g_browser_http_raw[pos + 1] == 10
+            && g_browser_http_raw[pos + 2] == 13 && g_browser_http_raw[pos + 3] == 10 { return false; }
+        if browser_match_ci(&g_browser_http_raw as u64, pos, g_browser_http_raw_len, "location:" as u64) {
+            pos = pos + 9; while pos < g_browser_http_raw_len && (g_browser_http_raw[pos] == 32 || g_browser_http_raw[pos] == 9) { pos = pos + 1; }
+            let start: u32 = pos;
+            while pos < g_browser_http_raw_len && g_browser_http_raw[pos] != 13 && g_browser_http_raw[pos] != 10 { pos = pos + 1; }
+            let take: u32 = pos - start; if take == 0 { return false; }
+            let copy: u32 = take; if copy > 78 { copy = 78; }
+            for i: u32 in 0..copy { g_browser_http_redirect[i] = g_browser_http_raw[start + i]; }
+            g_browser_http_redirect[copy] = 0; return true;
+        }
+        while pos < g_browser_http_raw_len && g_browser_http_raw[pos] != 10 { pos = pos + 1; }
+        if pos < g_browser_http_raw_len { pos = pos + 1; }
+    }
+    return false;
+}
+
+fn browser_http_fetch_inner(url: u64, redirects: u32) -> bool {
+    if !browser_parse_url(url) { browser_set_status("Invalid HTTP address"); return false; }
+    if !g_net_up {
+        browser_set_status("Requesting a DHCP lease"); browser_draw();
+        g_net_quiet = true; let up: bool = net_dhcp(); g_net_quiet = false;
+        if !up { browser_set_status("Network unavailable: DHCP failed"); return false; }
+    }
+    browser_set_status("Resolving host name"); browser_draw();
+    if !browser_dns_resolve(&g_browser_net_host as u64, &g_browser_net_ip as u64) { return false; }
+    let route_ip: [u8; 4] = [10, 0, 2, 2];
+    let local: bool = g_browser_net_ip[0] == g_our_ip[0] && g_browser_net_ip[1] == g_our_ip[1]
+        && g_browser_net_ip[2] == g_our_ip[2];
+    let arp_ip: u64 = &route_ip as u64; if local { arp_ip = &g_browser_net_ip as u64; }
+    browser_set_status("Resolving Ethernet route"); browser_draw();
+    if !browser_arp_resolve(arp_ip, &g_browser_net_mac as u64) { browser_set_status("Gateway ARP timed out"); return false; }
+    browser_set_status("Opening TCP connection"); browser_draw();
+    if !browser_tcp_connect() { return false; }
+    browser_zero(&g_browser_http_request as u64, 384); let req: u32 = 0;
+    req = browser_request_append(req, "GET " as u64); req = browser_request_append(req, &g_browser_net_path as u64);
+    req = browser_request_append(req, " HTTP/1.0\r\nHost: " as u64); req = browser_request_append(req, &g_browser_net_host as u64);
+    req = browser_request_append(req, "\r\nUser-Agent: MortOS-Vex/1.0\r\nAccept: text/html,text/plain\r\nConnection: close\r\n\r\n" as u64);
+    browser_set_status("Downloading HTTP response"); browser_draw();
+    browser_tcp_send(TCP_PSH | TCP_ACK, &g_browser_http_request as u64, req);
+    if !browser_tcp_receive() { browser_set_status("No HTTP response data"); return false; }
+    if browser_http_redirect_location() {
+        if redirects >= 3 { browser_set_status("Too many HTTP redirects"); return false; }
+        let next: [u8; 80] = [0; 80];
+        if !browser_resolve_link(&g_browser_http_redirect as u64, &next as u64) { browser_set_status("Invalid redirect address"); return false; }
+        browser_set_url(&next as u64); browser_set_status("Following HTTP redirect"); browser_draw();
+        return browser_http_fetch_inner(&next as u64, redirects + 1);
+    }
+    return browser_http_parse();
+}
+
+fn browser_http_fetch(url: u64) -> bool { return browser_http_fetch_inner(url, 0); }

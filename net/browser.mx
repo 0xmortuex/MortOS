@@ -1,0 +1,645 @@
+// Vex for MORT OS: a keyboard-first browser shell and text-page renderer.
+// Local browser data is kept in .vex-state in the current user's MortFS home.
+
+let BROWSER_URL_CAP: u32 = 80;
+let BROWSER_HISTORY_MAX: u32 = 6;
+let BROWSER_BOOKMARK_MAX: u32 = 4;
+let BROWSER_HISTORY_BASE: u32 = 16;
+let BROWSER_BOOKMARK_BASE: u32 = 496;
+let BROWSER_STATE_MAGIC: u32 = 0x31535856; // "VXS1"
+
+let g_browser_state: [u8; 1024] = [0; 1024];
+let g_browser_url: [u8; 80] = [0; 80];
+let g_browser_input: [u8; 80] = [0; 80];
+let g_browser_find: [u8; 32] = [0; 32];
+let g_browser_title: [u8; 40] = [0; 40];
+let g_browser_status: [u8; 64] = [0; 64];
+let g_browser_content: [u8; 8192] = [0; 8192];
+let g_browser_content_len: u32 = 0;
+let g_browser_input_len: u32 = 0;
+let g_browser_find_len: u32 = 0;
+let g_browser_mode: u32 = 0;       // 0 page, 1 address, 2 find
+let g_browser_page: u32 = 0;       // local page identifier
+let g_browser_scroll: u32 = 0;
+let g_browser_remote: bool = false;
+let g_browser_loading: bool = false;
+let g_browser_ext: bool = false;
+let g_browser_shift: bool = false;
+let g_browser_replace_address: bool = false;
+let g_browser_loaded_dir: u32 = 256;
+let g_browser_state_saved: bool = false;
+let g_browser_downloaded: bool = false;
+let g_browser_private: bool = false;
+let g_browser_tabs: [u8; 320] = [0; 320];
+let g_browser_tab_titles: [u8; 96] = [0; 96];
+let g_browser_tab_count: u32 = 0;
+let g_browser_active_tab: u32 = 0;
+let g_browser_links: [u8; 480] = [0; 480];
+let g_browser_link_count: u32 = 0;
+let g_browser_link_sel: u32 = 0;
+let g_browser_links_open: bool = false;
+let g_browser_list_sel: u32 = 0;
+
+fn browser_zero(dst: u64, count: u32) {
+    for i: u32 in 0..count { *((dst + (i as u64)) as *u8) = 0; }
+}
+
+fn browser_copy(dst: u64, src: u64, cap: u32) -> u32 {
+    let i: u32 = 0;
+    while i + 1 < cap && *((src + (i as u64)) as *u8) != 0 {
+        *((dst + (i as u64)) as *u8) = *((src + (i as u64)) as *u8);
+        i = i + 1;
+    }
+    if cap > 0 { *((dst + (i as u64)) as *u8) = 0; }
+    return i;
+}
+
+fn browser_streq(a: u64, b: u64) -> bool {
+    let i: u32 = 0;
+    while *((a + (i as u64)) as *u8) == *((b + (i as u64)) as *u8) {
+        if *((a + (i as u64)) as *u8) == 0 { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn browser_prefix(s: u64, prefix: u64) -> bool {
+    let i: u32 = 0;
+    while *((prefix + (i as u64)) as *u8) != 0 {
+        if *((s + (i as u64)) as *u8) != *((prefix + (i as u64)) as *u8) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn browser_slot(base: u32, index: u32) -> u64 {
+    return &g_browser_state as u64 + (base as u64) + ((index * BROWSER_URL_CAP) as u64);
+}
+
+fn browser_tab_slot(index: u32) -> u64 { return &g_browser_tabs as u64 + ((index * 80) as u64); }
+fn browser_tab_title(index: u32) -> u64 { return &g_browser_tab_titles as u64 + ((index * 24) as u64); }
+fn browser_link_slot(index: u32) -> u64 { return &g_browser_links as u64 + ((index * 80) as u64); }
+
+fn browser_links_reset() {
+    browser_zero(&g_browser_links as u64, 480); g_browser_link_count = 0; g_browser_link_sel = 0; g_browser_links_open = false;
+}
+
+fn browser_link_add(text: u64, length: u32) {
+    if g_browser_link_count >= 6 || length == 0 { return; }
+    let slot: u64 = browser_link_slot(g_browser_link_count); browser_zero(slot, 80);
+    let take: u32 = length; if take > 78 { take = 78; }
+    for i: u32 in 0..take { *((slot + (i as u64)) as *u8) = *((text + (i as u64)) as *u8); }
+    *((slot + (take as u64)) as *u8) = 0; g_browser_link_count = g_browser_link_count + 1;
+}
+
+fn browser_history_count() -> u32 { return *((&g_browser_state as u64 + 4) as *u8) as u32; }
+fn browser_history_index() -> u32 { return *((&g_browser_state as u64 + 5) as *u8) as u32; }
+fn browser_bookmark_count() -> u32 { return *((&g_browser_state as u64 + 6) as *u8) as u32; }
+
+fn browser_set_history_count(value: u32) { *((&g_browser_state as u64 + 4) as *u8) = value as u8; }
+fn browser_set_history_index(value: u32) { *((&g_browser_state as u64 + 5) as *u8) = value as u8; }
+fn browser_set_bookmark_count(value: u32) { *((&g_browser_state as u64 + 6) as *u8) = value as u8; }
+
+fn browser_state_reset() {
+    browser_zero(&g_browser_state as u64, 1024);
+    *(&g_browser_state as *u32) = BROWSER_STATE_MAGIC;
+    browser_set_history_count(0); browser_set_history_index(0); browser_set_bookmark_count(0);
+    g_browser_state_saved = false;
+}
+
+fn browser_state_save() -> bool {
+    g_browser_state_saved = false;
+    if !g_fs_ok || g_cwd > 255 { return false; }
+    let idx: u32 = fs_find_in(".vex-state", g_cwd);
+    if idx == 64 { idx = fs_create_full(".vex-state", g_cwd, 0); }
+    if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) { return false; }
+    let base: u32 = fs_entry_addr(idx); let start: u32 = *((base + 32) as *u32);
+    if start == 0 { return false; }
+    if !ata_write(start, &g_browser_state as *u8) { return false; }
+    if !ata_write(start + 1, (&g_browser_state as u64 + 512) as *u8) { return false; }
+    *((base + 28) as *u32) = 1024; *((base + 48) as *u32) = fs_now();
+    g_browser_state_saved = fs_sync();
+    return g_browser_state_saved;
+}
+
+fn browser_state_load() {
+    g_browser_loaded_dir = g_cwd; browser_state_reset();
+    if !g_fs_ok || g_cwd > 255 { return; }
+    let idx: u32 = fs_find_in(".vex-state", g_cwd);
+    if idx == 64 { browser_state_save(); return; }
+    let base: u32 = fs_entry_addr(idx);
+    if fs_type(idx) != 0 || *((base + 28) as *u32) < 1024 { return; }
+    let start: u32 = *((base + 32) as *u32);
+    if !ata_read(start, &g_browser_state as *u8) { browser_state_reset(); return; }
+    if !ata_read(start + 1, (&g_browser_state as u64 + 512) as *u8) { browser_state_reset(); return; }
+    if *(&g_browser_state as *u32) != BROWSER_STATE_MAGIC { browser_state_reset(); return; }
+    if browser_history_count() > BROWSER_HISTORY_MAX || browser_bookmark_count() > BROWSER_BOOKMARK_MAX {
+        browser_state_reset(); return;
+    }
+    g_browser_state_saved = true;
+}
+
+fn browser_set_status(text: *u8) { browser_zero(&g_browser_status as u64, 64); browser_copy(&g_browser_status as u64, text as u64, 64); }
+fn browser_set_title(text: *u8) { browser_zero(&g_browser_title as u64, 40); browser_copy(&g_browser_title as u64, text as u64, 40); }
+fn browser_set_url(text: u64) { browser_zero(&g_browser_url as u64, 80); browser_copy(&g_browser_url as u64, text, 80); }
+
+fn browser_history_add(url: u64) {
+    if g_browser_private { return; }
+    let count: u32 = browser_history_count(); let index: u32 = browser_history_index();
+    if count > 0 && browser_streq(browser_slot(BROWSER_HISTORY_BASE, index), url) { return; }
+    if count > 0 && index + 1 < count { count = index + 1; }
+    if count < BROWSER_HISTORY_MAX {
+        browser_zero(browser_slot(BROWSER_HISTORY_BASE, count), BROWSER_URL_CAP);
+        browser_copy(browser_slot(BROWSER_HISTORY_BASE, count), url, BROWSER_URL_CAP);
+        count = count + 1; index = count - 1;
+    } else {
+        for move: u32 in 0..5 {
+            browser_zero(browser_slot(BROWSER_HISTORY_BASE, move), BROWSER_URL_CAP);
+            browser_copy(browser_slot(BROWSER_HISTORY_BASE, move), browser_slot(BROWSER_HISTORY_BASE, move + 1), BROWSER_URL_CAP);
+        }
+        browser_zero(browser_slot(BROWSER_HISTORY_BASE, 5), BROWSER_URL_CAP);
+        browser_copy(browser_slot(BROWSER_HISTORY_BASE, 5), url, BROWSER_URL_CAP);
+        index = 5;
+    }
+    browser_set_history_count(count); browser_set_history_index(index); browser_state_save();
+}
+
+fn browser_clear_history() {
+    for i: u32 in 0..BROWSER_HISTORY_MAX { browser_zero(browser_slot(BROWSER_HISTORY_BASE, i), BROWSER_URL_CAP); }
+    browser_set_history_count(0); browser_set_history_index(0); browser_state_save();
+    browser_set_status("Browsing history cleared"); browser_draw();
+}
+
+fn browser_bookmark_add() {
+    let count: u32 = browser_bookmark_count();
+    for i: u32 in 0..count {
+        if browser_streq(browser_slot(BROWSER_BOOKMARK_BASE, i), &g_browser_url as u64) {
+            browser_set_status("Already bookmarked"); browser_draw(); return;
+        }
+    }
+    if count < BROWSER_BOOKMARK_MAX {
+        browser_zero(browser_slot(BROWSER_BOOKMARK_BASE, count), BROWSER_URL_CAP);
+        browser_copy(browser_slot(BROWSER_BOOKMARK_BASE, count), &g_browser_url as u64, BROWSER_URL_CAP);
+        count = count + 1;
+    } else {
+        for move: u32 in 0..3 {
+            browser_zero(browser_slot(BROWSER_BOOKMARK_BASE, move), BROWSER_URL_CAP);
+            browser_copy(browser_slot(BROWSER_BOOKMARK_BASE, move), browser_slot(BROWSER_BOOKMARK_BASE, move + 1), BROWSER_URL_CAP);
+        }
+        browser_zero(browser_slot(BROWSER_BOOKMARK_BASE, 3), BROWSER_URL_CAP);
+        browser_copy(browser_slot(BROWSER_BOOKMARK_BASE, 3), &g_browser_url as u64, BROWSER_URL_CAP);
+    }
+    browser_set_bookmark_count(count); browser_state_save(); browser_set_status("Bookmark saved locally"); browser_draw();
+}
+
+fn browser_bookmark_remove() {
+    let count: u32 = browser_bookmark_count();
+    if count == 0 || g_browser_list_sel >= count { return; }
+    for i: u32 in 0..3 {
+        if i >= g_browser_list_sel && i + 1 < count {
+            browser_zero(browser_slot(BROWSER_BOOKMARK_BASE, i), BROWSER_URL_CAP);
+            browser_copy(browser_slot(BROWSER_BOOKMARK_BASE, i), browser_slot(BROWSER_BOOKMARK_BASE, i + 1), BROWSER_URL_CAP);
+        }
+    }
+    browser_zero(browser_slot(BROWSER_BOOKMARK_BASE, count - 1), BROWSER_URL_CAP);
+    browser_set_bookmark_count(count - 1);
+    if g_browser_list_sel > 0 && g_browser_list_sel >= count - 1 { g_browser_list_sel = g_browser_list_sel - 1; }
+    browser_state_save(); browser_set_status("Bookmark removed"); browser_draw();
+}
+
+fn browser_local_page(url: u64) -> u32 {
+    if browser_streq(url, "vex://home" as u64) { return 0; }
+    if browser_streq(url, "vex://about" as u64) { return 1; }
+    if browser_streq(url, "vex://history" as u64) { return 2; }
+    if browser_streq(url, "vex://bookmarks" as u64) { return 3; }
+    if browser_streq(url, "vex://downloads" as u64) { return 4; }
+    if browser_streq(url, "vex://settings" as u64) { return 5; }
+    if browser_streq(url, "vex://network" as u64) { return 6; }
+    return 7;
+}
+
+fn browser_load(url: u64, add_history: bool) {
+    browser_set_url(url); g_browser_scroll = 0; g_browser_remote = false; g_browser_content_len = 0;
+    if browser_prefix(url, "vex://" as u64) {
+        g_browser_page = browser_local_page(url);
+        if g_browser_page == 0 { browser_set_title("Home"); browser_set_status("Local start page"); }
+        if g_browser_page == 1 { browser_set_title("About Vex"); browser_set_status("Local browser information"); }
+        if g_browser_page == 2 { browser_set_title("History"); browser_set_status("Stored only on this disk"); }
+        if g_browser_page == 3 { browser_set_title("Bookmarks"); browser_set_status("Stored only on this disk"); }
+        if g_browser_page == 4 { browser_set_title("Downloads"); browser_set_status("Saved into your home folder"); }
+        if g_browser_page == 5 { browser_set_title("Browser Settings"); browser_set_status("Privacy-first defaults"); }
+        if g_browser_page == 6 { browser_set_title("Network"); browser_set_status("Live Mort networking state"); }
+        if g_browser_page == 7 { browser_set_title("Page not found"); browser_set_status("Unknown local address"); }
+        if g_browser_page == 2 {
+            g_browser_list_sel = 0; if browser_history_count() > 0 { g_browser_list_sel = browser_history_count() - 1; }
+        }
+        if g_browser_page == 3 { g_browser_list_sel = 0; }
+    } else if browser_prefix(url, "https://" as u64) {
+        g_browser_page = 7; browser_set_title("Secure connection unavailable");
+        browser_set_status("Blocked: TLS is not implemented yet");
+    } else if browser_prefix(url, "http://" as u64) {
+        g_browser_loading = true; browser_set_title("Loading..."); browser_set_status("Connecting over HTTP"); browser_draw();
+        if browser_http_fetch(url) {
+            g_browser_remote = true; g_browser_page = 8; browser_set_status("HTTP text document");
+        } else {
+            g_browser_page = 7; browser_set_title("Connection failed");
+        }
+        g_browser_loading = false;
+    } else {
+        g_browser_page = 7; browser_set_title("Address not understood");
+        browser_set_status("Use vex:// or http:// addresses");
+    }
+    if g_browser_tab_count > 0 {
+        browser_zero(browser_tab_slot(g_browser_active_tab), 80);
+        browser_copy(browser_tab_slot(g_browser_active_tab), &g_browser_url as u64, 80);
+        browser_zero(browser_tab_title(g_browser_active_tab), 24);
+        browser_copy(browser_tab_title(g_browser_active_tab), &g_browser_title as u64, 24);
+    }
+    if add_history { browser_history_add(&g_browser_url as u64); }
+    browser_draw();
+}
+
+fn browser_home() { browser_load("vex://home" as u64, true); }
+
+fn browser_back() {
+    let index: u32 = browser_history_index();
+    if browser_history_count() > 0 && index > 0 {
+        browser_set_history_index(index - 1); browser_state_save();
+        browser_load(browser_slot(BROWSER_HISTORY_BASE, index - 1), false);
+    } else { browser_set_status("No earlier page"); browser_draw(); }
+}
+
+fn browser_forward() {
+    let count: u32 = browser_history_count(); let index: u32 = browser_history_index();
+    if index + 1 < count {
+        browser_set_history_index(index + 1); browser_state_save();
+        browser_load(browser_slot(BROWSER_HISTORY_BASE, index + 1), false);
+    } else { browser_set_status("No later page"); browser_draw(); }
+}
+
+fn browser_reload() { browser_load(&g_browser_url as u64, false); }
+
+fn browser_new_tab() {
+    if g_browser_tab_count >= 4 { browser_set_status("Four-tab limit reached"); browser_draw(); return; }
+    g_browser_active_tab = g_browser_tab_count; g_browser_tab_count = g_browser_tab_count + 1;
+    browser_zero(browser_tab_slot(g_browser_active_tab), 80);
+    browser_copy(browser_tab_slot(g_browser_active_tab), "vex://home" as u64, 80);
+    browser_load(browser_tab_slot(g_browser_active_tab), true);
+}
+
+fn browser_switch_tab() {
+    if g_browser_tab_count < 2 { browser_set_status("Only one tab is open"); browser_draw(); return; }
+    g_browser_active_tab = (g_browser_active_tab + 1) % g_browser_tab_count;
+    browser_load(browser_tab_slot(g_browser_active_tab), false);
+}
+
+fn browser_close_tab() {
+    if g_browser_tab_count <= 1 { browser_home(); return; }
+    for i: u32 in 0..3 {
+        if i >= g_browser_active_tab && i + 1 < g_browser_tab_count {
+            browser_zero(browser_tab_slot(i), 80); browser_copy(browser_tab_slot(i), browser_tab_slot(i + 1), 80);
+            browser_zero(browser_tab_title(i), 24); browser_copy(browser_tab_title(i), browser_tab_title(i + 1), 24);
+        }
+    }
+    g_browser_tab_count = g_browser_tab_count - 1;
+    if g_browser_active_tab >= g_browser_tab_count { g_browser_active_tab = g_browser_tab_count - 1; }
+    browser_load(browser_tab_slot(g_browser_active_tab), false);
+}
+
+fn browser_toggle_private() {
+    g_browser_private = !g_browser_private;
+    if g_browser_private { browser_set_status("Private mode: new visits are not recorded"); }
+    else { browser_set_status("Private mode off"); }
+    browser_draw();
+}
+
+fn browser_open_link(index: u32) {
+    if index >= g_browser_link_count { return; }
+    let link: u64 = browser_link_slot(index); g_browser_links_open = false;
+    let target: [u8; 80] = [0; 80]; let pos: u32 = 0;
+    if browser_resolve_link(link, &target as u64) { browser_load(&target as u64, true); }
+}
+
+fn browser_resolve_link(link: u64, target: u64) -> bool {
+    browser_zero(target, 80);
+    if browser_prefix(link, "http://" as u64) || browser_prefix(link, "https://" as u64)
+        || browser_prefix(link, "vex://" as u64) { browser_copy(target, link, 80); return true; }
+    let pos: u32 = 0;
+    pos = browser_copy(target, "http://" as u64, 80);
+    pos = pos + browser_copy(target + (pos as u64), &g_browser_net_host as u64, 80 - pos);
+    if g_browser_net_port != 80 {
+        if pos + 1 < 80 { *((target + (pos as u64)) as *u8) = 58; pos = pos + 1; }
+        pos = pos + u32_to_dec(target + (pos as u64), g_browser_net_port as u32);
+    }
+    if *(link as *u8) != 47 && pos + 1 < 80 { *((target + (pos as u64)) as *u8) = 47; pos = pos + 1; }
+    browser_copy(target + (pos as u64), link, 80 - pos);
+    return true;
+}
+
+fn browser_links_key(sc: u8) {
+    if sc == 224 { g_browser_ext = true; return; }
+    if g_browser_ext {
+        g_browser_ext = false;
+        if sc == 72 && g_browser_link_sel > 0 { g_browser_link_sel = g_browser_link_sel - 1; browser_draw(); }
+        if sc == 80 && g_browser_link_sel + 1 < g_browser_link_count { g_browser_link_sel = g_browser_link_sel + 1; browser_draw(); }
+        return;
+    }
+    if sc >= 128 { return; }
+    if sc == 1 { g_browser_links_open = false; browser_draw(); return; }
+    if sc == 28 { browser_open_link(g_browser_link_sel); return; }
+}
+
+fn browser_draw_toolbar() {
+    fill_rect(184, 188, 656, 27, 0x161b22);
+    for tab: u32 in 0..g_browser_tab_count {
+        let x: u32 = 196 + tab * 148; let bg: u32 = 0x11161d; let fg: u32 = 0x82949c;
+        if tab == g_browser_active_tab { bg = 0x0b0f14; fg = 0x4fd1c5; }
+        fill_rect(x, 192, 140, 19, bg); draw_text_abs(browser_tab_title(tab) as *u8, x + 8, 194, fg, bg);
+    }
+    draw_text_abs("+", 796, 194, 0x7a8b93, 0x161b22);
+    fill_rect(184, 216, 656, 32, 0x11161d);
+    draw_text_abs("<", 196, 224, 0x9fd0d8, 0x11161d);
+    draw_text_abs(">", 220, 224, 0x9fd0d8, 0x11161d);
+    draw_text_abs("H", 244, 224, 0x4fd1c5, 0x11161d);
+    draw_text_abs("R", 268, 224, 0x9fd0d8, 0x11161d);
+    fill_rect(292, 220, 514, 22, 0x0b0f14);
+    if g_browser_mode == 1 {
+        fill_rect(292, 220, 3, 22, g_accent);
+        draw_text_abs(&g_browser_input as *u8, 302, 224, 0xffffff, 0x0b0f14);
+    } else {
+        if g_browser_private { draw_text_abs("PRIVATE", 302, 224, 0xc18cff, 0x0b0f14); }
+        else if g_browser_remote { draw_text_abs("HTTP", 302, 224, 0xffb454, 0x0b0f14); }
+        else { draw_text_abs("LOCAL", 302, 224, 0x4fd1c5, 0x0b0f14); }
+        let url_x: u32 = 350; if g_browser_private { url_x = 366; }
+        draw_text_abs(&g_browser_url as *u8, url_x, 224, 0xc8d0d4, 0x0b0f14);
+    }
+}
+
+fn browser_draw_home() {
+    draw_text_abs("Vex", 208, 272, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("Browse the small web, from a kernel written in Mort.", 248, 272, 0xffffff, 0x0b0f14);
+    fill_rect(208, 310, 586, 38, 0x121a20);
+    draw_text_abs("/  Type a vex:// or http:// address", 224, 322, 0x9fb0b7, 0x121a20);
+    draw_text_abs("1 Home", 216, 382, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("5 Bookmarks", 344, 382, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("6 History", 504, 382, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("7 Downloads", 632, 382, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("HTTP pages render as safe text. HTTPS is blocked until TLS exists.", 208, 430, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("No telemetry, remote suggestions, cookies, scripts, or trackers.", 208, 454, 0x7a8b93, 0x0b0f14);
+}
+
+fn browser_draw_about() {
+    draw_text_abs("About Vex", 208, 272, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("A native MortOS browser shell, text renderer, and HTTP client.", 208, 310, 0xffffff, 0x0b0f14);
+    draw_text_abs("Navigation, local history, bookmarks, find, and downloads are", 208, 338, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("implemented without libc, a heap-backed GUI toolkit, or telemetry.", 208, 362, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("Engine limits: HTTP/1.x text only; no TLS, CSS layout, JS, or media.", 208, 410, 0xffb454, 0x0b0f14);
+}
+
+fn browser_draw_list(base: u32, count: u32, empty: *u8) {
+    if count == 0 { draw_text_abs(empty, 208, 300, 0x8fa1aa, 0x0b0f14); return; }
+    for i: u32 in 0..count {
+        let y: u32 = 282 + i * 42; let bg: u32 = 0x121a20; let fg: u32 = 0xc8d0d4;
+        if i == g_browser_list_sel { bg = 0x1d303a; fg = 0xffffff; fill_rect(204, y - 7, 600, 30, bg); fill_rect(204, y - 7, 3, 30, g_accent); }
+        else { fill_rect(204, y - 7, 600, 30, bg); }
+        num_to_str(i + 1, g_numbuf); draw_text_abs(g_numbuf, 216, y, 0x4fd1c5, bg);
+        draw_text_abs(browser_slot(base, i) as *u8, 240, y, fg, bg);
+    }
+    if base == BROWSER_BOOKMARK_BASE { draw_text_abs("Enter: open   Delete: remove", 208, 542, 0x7a8b93, 0x0b0f14); }
+    else { draw_text_abs("Enter: reopen", 208, 542, 0x7a8b93, 0x0b0f14); }
+}
+
+fn browser_draw_downloads() {
+    draw_text_abs("Downloads", 208, 272, 0x4fd1c5, 0x0b0f14);
+    let have_download: bool = g_browser_downloaded;
+    if !have_download && g_fs_ok && g_cwd <= 255 { have_download = fs_find_in("vex-page.txt", g_cwd) != 64; }
+    if have_download {
+        draw_text_abs("vex-page.txt", 208, 316, 0xffffff, 0x0b0f14);
+        draw_text_abs("Saved into the current MortFS home directory.", 208, 344, 0x8fa1aa, 0x0b0f14);
+    } else {
+        draw_text_abs("No page has been saved in this session.", 208, 316, 0x8fa1aa, 0x0b0f14);
+    }
+    draw_text_abs("Press D on an HTTP text page to save its rendered content.", 208, 394, 0xc8d0d4, 0x0b0f14);
+}
+
+fn browser_draw_settings_page() {
+    draw_text_abs("Browser Settings", 208, 272, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("Home page", 208, 310, 0x8fa1aa, 0x0b0f14); draw_text_abs("vex://home", 400, 310, 0xffffff, 0x0b0f14);
+    draw_text_abs("History", 208, 342, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local only / 6 entries", 400, 342, 0xffffff, 0x0b0f14);
+    draw_text_abs("Bookmarks", 208, 374, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local only / 4 entries", 400, 374, 0xffffff, 0x0b0f14);
+    draw_text_abs("Search suggestions", 208, 406, 0x8fa1aa, 0x0b0f14); draw_text_abs("Off", 400, 406, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("Cookies / scripts", 208, 438, 0x8fa1aa, 0x0b0f14); draw_text_abs("Not implemented", 400, 438, 0xffb454, 0x0b0f14);
+    draw_text_abs("State", 208, 470, 0x8fa1aa, 0x0b0f14);
+    if g_browser_state_saved { draw_text_abs("Saved to MortFS", 400, 470, 0xffffff, 0x0b0f14); }
+    else { draw_text_abs("Session only", 400, 470, 0xffffff, 0x0b0f14); }
+    draw_text_abs("P toggles private mode; C clears local history.", 208, 510, 0x7a8b93, 0x0b0f14);
+}
+
+fn browser_draw_links() {
+    draw_text_abs("Links on this page", 208, 272, 0x4fd1c5, 0x0b0f14);
+    if g_browser_link_count == 0 { draw_text_abs("No navigable links were found.", 208, 310, 0x8fa1aa, 0x0b0f14); return; }
+    for i: u32 in 0..g_browser_link_count {
+        let y: u32 = 306 + i * 40; let bg: u32 = 0x121a20; let fg: u32 = 0xc8d0d4;
+        if i == g_browser_link_sel { bg = 0x1d303a; fg = 0xffffff; fill_rect(204, y - 7, 600, 30, bg); fill_rect(204, y - 7, 3, 30, g_accent); }
+        draw_text_abs(browser_link_slot(i) as *u8, 220, y, fg, bg);
+    }
+    draw_text_abs("Up/Down: select   Enter: open   Esc: return", 208, 542, 0x7a8b93, 0x0b0f14);
+}
+
+fn browser_draw_network() {
+    draw_text_abs("Network", 208, 272, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("RTL8139", 208, 310, 0x8fa1aa, 0x0b0f14); draw_text_abs(settings_yes_no(g_rtl_ok), 400, 310, 0xffffff, 0x0b0f14);
+    draw_text_abs("DHCP lease", 208, 342, 0x8fa1aa, 0x0b0f14); draw_text_abs(settings_yes_no(g_net_up), 400, 342, 0xffffff, 0x0b0f14);
+    draw_text_abs("Transport", 208, 374, 0x8fa1aa, 0x0b0f14); draw_text_abs("Ethernet / IPv4 / TCP", 400, 374, 0xffffff, 0x0b0f14);
+    draw_text_abs("Secure transport", 208, 406, 0x8fa1aa, 0x0b0f14); draw_text_abs("TLS unavailable", 400, 406, 0xffb454, 0x0b0f14);
+    draw_text_abs("Open Settings > Network to connect with DHCP.", 208, 454, 0xc8d0d4, 0x0b0f14);
+}
+
+fn browser_draw_error() {
+    draw_text_abs(&g_browser_title as *u8, 208, 286, 0xff8b8b, 0x0b0f14);
+    draw_text_abs(&g_browser_status as *u8, 208, 326, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("Press / to enter another address, or 1 to return home.", 208, 382, 0x8fa1aa, 0x0b0f14);
+}
+
+fn browser_draw_remote_text() {
+    let line: u32 = 0; let pos: u32 = 0; let shown: u32 = 0;
+    while pos < g_browser_content_len && shown < 13 {
+        let start: u32 = pos;
+        while pos < g_browser_content_len && g_browser_content[pos] != 10 { pos = pos + 1; }
+        if line >= g_browser_scroll {
+            let saved: u8 = g_browser_content[pos]; g_browser_content[pos] = 0;
+            draw_text_abs((&g_browser_content as u64 + (start as u64)) as *u8, 204, 266 + shown * 22, 0xc8d0d4, 0x0b0f14);
+            g_browser_content[pos] = saved; shown = shown + 1;
+        }
+        if pos < g_browser_content_len { pos = pos + 1; }
+        line = line + 1;
+    }
+}
+
+fn browser_draw() {
+    if !g_gfx { return; }
+    if g_browser_loaded_dir != g_cwd { browser_state_load(); }
+    if g_browser_tab_count == 0 {
+        g_browser_tab_count = 1; g_browser_active_tab = 0;
+        browser_copy(browser_tab_slot(0), "vex://home" as u64, 80);
+    }
+    if g_browser_url[0] == 0 {
+        browser_set_url("vex://home" as u64); browser_set_title("Home"); browser_set_status("Local start page");
+        browser_copy(browser_tab_title(0), "Home" as u64, 24); browser_history_add(&g_browser_url as u64);
+    }
+    window_title("vex browser"); clear_window(); browser_draw_toolbar();
+    if g_browser_links_open { browser_draw_links(); }
+    else if g_browser_remote { browser_draw_remote_text(); }
+    else if g_browser_page == 0 { browser_draw_home(); }
+    else if g_browser_page == 1 { browser_draw_about(); }
+    else if g_browser_page == 2 { browser_draw_list(BROWSER_HISTORY_BASE, browser_history_count(), "History is empty."); }
+    else if g_browser_page == 3 { browser_draw_list(BROWSER_BOOKMARK_BASE, browser_bookmark_count(), "No bookmarks yet. Press B on any page."); }
+    else if g_browser_page == 4 { browser_draw_downloads(); }
+    else if g_browser_page == 5 { browser_draw_settings_page(); }
+    else if g_browser_page == 6 { browser_draw_network(); }
+    else { browser_draw_error(); }
+    fill_rect(196, 562, 620, 22, 0x11161d);
+    if g_browser_mode == 2 {
+        draw_text_abs("Find: ", 204, 568, 0x4fd1c5, 0x11161d); draw_text_abs(&g_browser_find as *u8, 252, 568, 0xffffff, 0x11161d);
+    } else { draw_text_abs(&g_browser_status as *u8, 204, 568, 0x7f929b, 0x11161d); }
+    draw_text_abs("/:address arrows:nav B:mark F:find L:links D:save T:new Tab:switch", 196, 590, 0x6f828b, 0x0b0f14);
+}
+
+fn browser_begin_address() {
+    browser_zero(&g_browser_input as u64, 80);
+    g_browser_input_len = browser_copy(&g_browser_input as u64, &g_browser_url as u64, 80);
+    g_browser_mode = 1; g_browser_replace_address = true; browser_draw();
+}
+
+fn browser_submit_address() {
+    if g_browser_input_len == 0 { g_browser_mode = 0; browser_draw(); return; }
+    g_browser_mode = 0;
+    if browser_prefix(&g_browser_input as u64, "vex://" as u64)
+        || browser_prefix(&g_browser_input as u64, "http://" as u64)
+        || browser_prefix(&g_browser_input as u64, "https://" as u64) {
+        browser_load(&g_browser_input as u64, true); return;
+    }
+    let normalized: [u8; 80] = [0; 80]; let out: u32 = browser_copy(&normalized as u64, "http://" as u64, 80);
+    browser_copy(&normalized as u64 + (out as u64), &g_browser_input as u64, 80 - out);
+    browser_load(&normalized as u64, true);
+}
+
+fn browser_find_run() {
+    if g_browser_find_len == 0 || !g_browser_remote { browser_set_status("Find works on loaded HTTP text"); return; }
+    let pos: u32 = 0;
+    while pos + g_browser_find_len <= g_browser_content_len {
+        let ok: bool = true;
+        for i: u32 in 0..g_browser_find_len {
+            if settings_lower(g_browser_content[pos + i]) != settings_lower(g_browser_find[i]) { ok = false; }
+        }
+        if ok {
+            let lines: u32 = 0; for k: u32 in 0..pos { if g_browser_content[k] == 10 { lines = lines + 1; } }
+            g_browser_scroll = lines; browser_set_status("Match found"); return;
+        }
+        pos = pos + 1;
+    }
+    browser_set_status("No match on this page");
+}
+
+fn browser_save_page() {
+    if !g_browser_remote || g_browser_content_len == 0 { browser_set_status("Nothing downloadable on this page"); browser_draw(); return; }
+    if !g_fs_ok || g_cwd > 255 { browser_set_status("Download needs a writable MortFS home"); browser_draw(); return; }
+    let idx: u32 = fs_find_in("vex-page.txt", g_cwd);
+    if idx == 64 { idx = fs_create_full("vex-page.txt", g_cwd, 0); }
+    if idx == 64 || !can_write(fs_uid(idx), fs_mode(idx)) { browser_set_status("Download permission denied"); browser_draw(); return; }
+    let base: u32 = fs_entry_addr(idx); let start: u32 = *((base + 32) as *u32);
+    let sectors: u32 = (g_browser_content_len + 511) / 512; let ok: bool = true;
+    for s: u32 in 0..sectors {
+        if !ata_write(start + s, (&g_browser_content as u64 + ((s * 512) as u64)) as *u8) { ok = false; }
+    }
+    if ok {
+        *((base + 28) as *u32) = g_browser_content_len; *((base + 48) as *u32) = fs_now();
+        ok = fs_sync();
+    }
+    if ok { g_browser_downloaded = true; browser_set_status("Saved as vex-page.txt"); }
+    else { browser_set_status("Download write failed"); }
+    browser_draw();
+}
+
+fn browser_edit_key(sc: u8) {
+    if sc == 42 || sc == 54 { g_browser_shift = true; return; }
+    if sc == 170 || sc == 182 { g_browser_shift = false; return; }
+    if sc == 1 { g_browser_mode = 0; browser_draw(); return; }
+    if sc == 14 {
+        if g_browser_replace_address { browser_zero(&g_browser_input as u64, 80); g_browser_input_len = 0; g_browser_replace_address = false; browser_draw(); return; }
+        if g_browser_input_len > 0 { g_browser_input_len = g_browser_input_len - 1; g_browser_input[g_browser_input_len] = 0; browser_draw(); }
+        return;
+    }
+    if sc == 28 { browser_submit_address(); return; }
+    if sc >= 128 { return; }
+    let ch: u8 = scancode_to_ascii(sc, g_browser_shift);
+    if ch >= 32 && ch < 127 && g_browser_input_len < 78 {
+        if g_browser_replace_address { browser_zero(&g_browser_input as u64, 80); g_browser_input_len = 0; g_browser_replace_address = false; }
+        g_browser_input[g_browser_input_len] = ch; g_browser_input_len = g_browser_input_len + 1;
+        g_browser_input[g_browser_input_len] = 0; browser_draw();
+    }
+}
+
+fn browser_find_key(sc: u8) {
+    if sc == 42 || sc == 54 { g_browser_shift = true; return; }
+    if sc == 170 || sc == 182 { g_browser_shift = false; return; }
+    if sc == 1 { g_browser_mode = 0; browser_draw(); return; }
+    if sc == 14 {
+        if g_browser_find_len > 0 { g_browser_find_len = g_browser_find_len - 1; g_browser_find[g_browser_find_len] = 0; browser_draw(); }
+        return;
+    }
+    if sc == 28 { g_browser_mode = 0; browser_find_run(); browser_draw(); return; }
+    if sc >= 128 { return; }
+    let ch: u8 = scancode_to_ascii(sc, g_browser_shift);
+    if ch >= 32 && ch < 127 && g_browser_find_len < 30 {
+        g_browser_find[g_browser_find_len] = ch; g_browser_find_len = g_browser_find_len + 1;
+        g_browser_find[g_browser_find_len] = 0; browser_draw();
+    }
+}
+
+fn browser_on_key(sc: u8) {
+    if g_browser_links_open { browser_links_key(sc); return; }
+    if g_browser_mode == 1 { browser_edit_key(sc); return; }
+    if g_browser_mode == 2 { browser_find_key(sc); return; }
+    if sc == 224 { g_browser_ext = true; return; }
+    if g_browser_ext {
+        g_browser_ext = false;
+        if (g_browser_page == 2 || g_browser_page == 3) && !g_browser_remote {
+            let count: u32 = browser_history_count(); if g_browser_page == 3 { count = browser_bookmark_count(); }
+            if sc == 72 && g_browser_list_sel > 0 { g_browser_list_sel = g_browser_list_sel - 1; browser_draw(); return; }
+            if sc == 80 && g_browser_list_sel + 1 < count { g_browser_list_sel = g_browser_list_sel + 1; browser_draw(); return; }
+            if sc == 83 && g_browser_page == 3 { browser_bookmark_remove(); return; }
+        }
+        if sc == 75 { browser_back(); return; }
+        if sc == 77 { browser_forward(); return; }
+        if sc == 72 { if g_browser_scroll > 0 { g_browser_scroll = g_browser_scroll - 1; browser_draw(); } return; }
+        if sc == 80 { g_browser_scroll = g_browser_scroll + 1; browser_draw(); return; }
+        return;
+    }
+    if sc >= 128 { return; }
+    if sc == 28 && !g_browser_remote && g_browser_page == 2 && browser_history_count() > 0 {
+        browser_load(browser_slot(BROWSER_HISTORY_BASE, g_browser_list_sel), true); return;
+    }
+    if sc == 28 && !g_browser_remote && g_browser_page == 3 && browser_bookmark_count() > 0 {
+        browser_load(browser_slot(BROWSER_BOOKMARK_BASE, g_browser_list_sel), true); return;
+    }
+    if sc == 53 { browser_begin_address(); return; }
+    if sc == 2 { browser_home(); return; }
+    if sc == 3 { browser_back(); return; }
+    if sc == 4 { browser_forward(); return; }
+    if sc == 5 { browser_reload(); return; }
+    if sc == 6 { browser_load("vex://bookmarks" as u64, true); return; }
+    if sc == 7 { browser_load("vex://history" as u64, true); return; }
+    if sc == 8 { browser_load("vex://downloads" as u64, true); return; }
+    if sc == 9 { browser_load("vex://settings" as u64, true); return; }
+    if sc == 48 { browser_bookmark_add(); return; } // B
+    if sc == 33 { g_browser_mode = 2; g_browser_find_len = 0; browser_zero(&g_browser_find as u64, 32); browser_draw(); return; } // F
+    if sc == 32 { browser_save_page(); return; } // D
+    if sc == 38 { g_browser_links_open = true; g_browser_link_sel = 0; browser_draw(); return; } // L
+    if sc == 20 { browser_new_tab(); return; } // T
+    if sc == 45 { browser_close_tab(); return; } // X
+    if sc == 15 { browser_switch_tab(); return; } // Tab
+    if sc == 25 { browser_toggle_private(); return; } // P
+    if sc == 46 && g_browser_page == 5 { browser_clear_history(); return; } // C in settings
+    if sc == 1 { browser_home(); return; }
+}
