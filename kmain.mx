@@ -3638,6 +3638,7 @@ fn kmain(mbinfo: u32) {
     ensure_home();                   // create /home/mortuex, owned by the user
     login_default();                 // auto-login as the normal user (uid 1)
     cwd_init();                      // start in the user's home directory
+    tls_crypto_self_test();          // publish-gated TLS primitive test vectors
 
     run_script(1);                   // run the startup script loaded from disk
 

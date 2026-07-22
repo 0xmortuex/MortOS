@@ -452,6 +452,11 @@ fn browser_draw_about() {
     draw_text_abs("Navigation, local history, bookmarks, find, and downloads are", 208, 338, 0xc8d0d4, 0x0b0f14);
     draw_text_abs("implemented without libc, a heap-backed GUI toolkit, or telemetry.", 208, 362, 0xc8d0d4, 0x0b0f14);
     draw_text_abs("Engine limits: HTTP/1.x text only; no TLS, CSS layout, JS, or media.", 208, 410, 0xffb454, 0x0b0f14);
+    draw_text_abs("TLS foundation / SHA-256 vectors", 208, 446, 0x8fa1aa, 0x0b0f14);
+    draw_text_abs(settings_yes_no(g_tls_crypto_sha256_ok), 512, 446, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("HMAC-SHA256 / HKDF vectors", 208, 474, 0x8fa1aa, 0x0b0f14);
+    let kdf_ok: bool = g_tls_crypto_hmac_ok && g_tls_crypto_hkdf_ok;
+    draw_text_abs(settings_yes_no(kdf_ok), 512, 474, 0x4fd1c5, 0x0b0f14);
 }
 
 fn browser_draw_list(base: u32, count: u32, empty: *u8) {

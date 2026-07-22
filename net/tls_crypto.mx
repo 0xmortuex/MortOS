@@ -1,0 +1,209 @@
+// Cryptographic primitives for the native TLS client. These routines are
+// freestanding Mort: no libc, heap allocation, compiler intrinsics, or host
+// crypto. Every primitive is gated by boot-time published test vectors before
+// Vex is allowed to rely on it.
+
+let TLS_SHA256_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+];
+
+let TLS_SHA256_EMPTY: [u8; 32] = [
+    0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
+    0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+    0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
+    0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55
+];
+
+let TLS_SHA256_ABC: [u8; 32] = [
+    0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+    0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+    0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+    0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+];
+
+let TLS_HMAC_CASE1: [u8; 32] = [
+    0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53,
+    0x5c, 0xa8, 0xaf, 0xce, 0xaf, 0x0b, 0xf1, 0x2b,
+    0x88, 0x1d, 0xc2, 0x00, 0xc9, 0x83, 0x3d, 0xa7,
+    0x26, 0xe9, 0x37, 0x6c, 0x2e, 0x32, 0xcf, 0xf7
+];
+
+let TLS_HKDF_SALT1: [u8; 13] = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+    0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c
+];
+let TLS_HKDF_INFO1: [u8; 10] = [0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
+let TLS_HKDF_PRK1: [u8; 32] = [
+    0x07, 0x77, 0x09, 0x36, 0x2c, 0x2e, 0x32, 0xdf,
+    0x0d, 0xdc, 0x3f, 0x0d, 0xc4, 0x7b, 0xba, 0x63,
+    0x90, 0xb6, 0xc7, 0x3b, 0xb5, 0x0f, 0x9c, 0x31,
+    0x22, 0xec, 0x84, 0x4a, 0xd7, 0xc2, 0xb3, 0xe5
+];
+let TLS_HKDF_OKM1: [u8; 42] = [
+    0x3c, 0xb2, 0x5f, 0x25, 0xfa, 0xac, 0xd5, 0x7a,
+    0x90, 0x43, 0x4f, 0x64, 0xd0, 0x36, 0x2f, 0x2a,
+    0x2d, 0x2d, 0x0a, 0x90, 0xcf, 0x1a, 0x5a, 0x4c,
+    0x5d, 0xb0, 0x2d, 0x56, 0xec, 0xc4, 0xc5, 0xbf,
+    0x34, 0x00, 0x72, 0x08, 0xd5, 0xb8, 0x87, 0x18,
+    0x58, 0x65
+];
+
+let g_tls_crypto_sha256_ok: bool = false;
+let g_tls_crypto_hmac_ok: bool = false;
+let g_tls_crypto_hkdf_ok: bool = false;
+
+fn tls_rotr32(value: u32, amount: u32) -> u32 {
+    return (value >> amount) | (value << (32 - amount));
+}
+
+fn tls_load_be32(src: u64) -> u32 {
+    return ((*((src + 0) as *u8) as u32) << 24)
+        | ((*((src + 1) as *u8) as u32) << 16)
+        | ((*((src + 2) as *u8) as u32) << 8)
+        | (*((src + 3) as *u8) as u32);
+}
+
+fn tls_store_be32(dst: u64, value: u32) {
+    *((dst + 0) as *u8) = (value >> 24) as u8;
+    *((dst + 1) as *u8) = (value >> 16) as u8;
+    *((dst + 2) as *u8) = (value >> 8) as u8;
+    *((dst + 3) as *u8) = value as u8;
+}
+
+fn tls_store_be64(dst: u64, value: u64) {
+    for i: u32 in 0..8 {
+        *((dst + (i as u64)) as *u8) = (value >> ((7 - i) * 8)) as u8;
+    }
+}
+
+fn tls_bytes_equal(a: u64, b: u64, length: u32) -> bool {
+    let diff: u8 = 0;
+    for i: u32 in 0..length { diff = diff | (*((a + (i as u64)) as *u8) ^ *((b + (i as u64)) as *u8)); }
+    return diff == 0;
+}
+
+fn tls_sha256(input: u64, length: u32, output: u64) {
+    let state: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ];
+    let block: [u8; 64] = [0; 64];
+    let words: [u32; 64] = [0; 64];
+    let blocks: u32 = (length + 9 + 63) / 64;
+    let bit_length: u64 = (length as u64) * 8;
+
+    for block_index: u32 in 0..blocks {
+        for i: u32 in 0..64 { block[i] = 0; }
+        let base: u32 = block_index * 64;
+        for i: u32 in 0..64 {
+            let absolute: u32 = base + i;
+            if absolute < length { block[i] = *((input + (absolute as u64)) as *u8); }
+            else if absolute == length { block[i] = 0x80; }
+        }
+        if block_index + 1 == blocks { tls_store_be64(&block as u64 + 56, bit_length); }
+
+        for i: u32 in 0..16 { words[i] = tls_load_be32(&block as u64 + ((i * 4) as u64)); }
+        for i: u32 in 16..64 {
+            let x: u32 = words[i - 15]; let y: u32 = words[i - 2];
+            let s0: u32 = tls_rotr32(x, 7) ^ tls_rotr32(x, 18) ^ (x >> 3);
+            let s1: u32 = tls_rotr32(y, 17) ^ tls_rotr32(y, 19) ^ (y >> 10);
+            words[i] = words[i - 16] + s0 + words[i - 7] + s1;
+        }
+
+        let a: u32 = state[0]; let b: u32 = state[1]; let c: u32 = state[2]; let d: u32 = state[3];
+        let e: u32 = state[4]; let f: u32 = state[5]; let g: u32 = state[6]; let h: u32 = state[7];
+        for i: u32 in 0..64 {
+            let big1: u32 = tls_rotr32(e, 6) ^ tls_rotr32(e, 11) ^ tls_rotr32(e, 25);
+            let choose: u32 = (e & f) ^ ((0xffffffff ^ e) & g);
+            let t1: u32 = h + big1 + choose + TLS_SHA256_K[i] + words[i];
+            let big0: u32 = tls_rotr32(a, 2) ^ tls_rotr32(a, 13) ^ tls_rotr32(a, 22);
+            let majority: u32 = (a & b) ^ (a & c) ^ (b & c);
+            let t2: u32 = big0 + majority;
+            h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+        }
+        state[0] = state[0] + a; state[1] = state[1] + b;
+        state[2] = state[2] + c; state[3] = state[3] + d;
+        state[4] = state[4] + e; state[5] = state[5] + f;
+        state[6] = state[6] + g; state[7] = state[7] + h;
+    }
+
+    for i: u32 in 0..8 { tls_store_be32(output + ((i * 4) as u64), state[i]); }
+}
+
+fn tls_hmac_sha256(key: u64, key_length: u32, message: u64, message_length: u32, output: u64) -> bool {
+    if message_length > 448 { return false; }
+    let key_block: [u8; 64] = [0; 64]; let key_digest: [u8; 32] = [0; 32];
+    if key_length > 64 {
+        tls_sha256(key, key_length, &key_digest as u64);
+        for i: u32 in 0..32 { key_block[i] = key_digest[i]; }
+    } else {
+        for i: u32 in 0..key_length { key_block[i] = *((key + (i as u64)) as *u8); }
+    }
+    let inner: [u8; 512] = [0; 512]; let outer: [u8; 96] = [0; 96];
+    for i: u32 in 0..64 {
+        inner[i] = key_block[i] ^ 0x36;
+        outer[i] = key_block[i] ^ 0x5c;
+    }
+    for i: u32 in 0..message_length { inner[64 + i] = *((message + (i as u64)) as *u8); }
+    tls_sha256(&inner as u64, 64 + message_length, &key_digest as u64);
+    for i: u32 in 0..32 { outer[64 + i] = key_digest[i]; }
+    tls_sha256(&outer as u64, 96, output); return true;
+}
+
+fn tls_hkdf_extract(salt: u64, salt_length: u32, ikm: u64, ikm_length: u32, prk: u64) -> bool {
+    let zero_salt: [u8; 32] = [0; 32];
+    if salt_length == 0 { return tls_hmac_sha256(&zero_salt as u64, 32, ikm, ikm_length, prk); }
+    return tls_hmac_sha256(salt, salt_length, ikm, ikm_length, prk);
+}
+
+fn tls_hkdf_expand(prk: u64, info: u64, info_length: u32, output: u64, output_length: u32) -> bool {
+    if info_length > 415 || output_length > 8160 { return false; }
+    let previous: [u8; 32] = [0; 32]; let message: [u8; 512] = [0; 512];
+    let previous_length: u32 = 0; let written: u32 = 0; let counter: u32 = 1;
+    while written < output_length {
+        for i: u32 in 0..previous_length { message[i] = previous[i]; }
+        for i: u32 in 0..info_length { message[previous_length + i] = *((info + (i as u64)) as *u8); }
+        message[previous_length + info_length] = counter as u8;
+        if !tls_hmac_sha256(prk, 32, &message as u64, previous_length + info_length + 1, &previous as u64) { return false; }
+        previous_length = 32; let take: u32 = output_length - written; if take > 32 { take = 32; }
+        for i: u32 in 0..take { *((output + ((written + i) as u64)) as *u8) = previous[i]; }
+        written = written + take; counter = counter + 1;
+    }
+    return true;
+}
+
+fn tls_crypto_self_test() {
+    let digest: [u8; 32] = [0; 32];
+    tls_sha256("" as u64, 0, &digest as u64);
+    let empty_ok: bool = tls_bytes_equal(&digest as u64, &TLS_SHA256_EMPTY as u64, 32);
+    tls_sha256("abc" as u64, 3, &digest as u64);
+    let abc_ok: bool = tls_bytes_equal(&digest as u64, &TLS_SHA256_ABC as u64, 32);
+    g_tls_crypto_sha256_ok = empty_ok && abc_ok;
+
+    let hmac_key: [u8; 20] = [0; 20]; for i: u32 in 0..20 { hmac_key[i] = 0x0b; }
+    let hmac_ok: bool = tls_hmac_sha256(&hmac_key as u64, 20, "Hi There" as u64, 8, &digest as u64);
+    g_tls_crypto_hmac_ok = hmac_ok && tls_bytes_equal(&digest as u64, &TLS_HMAC_CASE1 as u64, 32);
+
+    let ikm: [u8; 22] = [0; 22]; for i: u32 in 0..22 { ikm[i] = 0x0b; }
+    let prk: [u8; 32] = [0; 32]; let okm: [u8; 42] = [0; 42];
+    let extract_ok: bool = tls_hkdf_extract(&TLS_HKDF_SALT1 as u64, 13, &ikm as u64, 22, &prk as u64);
+    let expand_ok: bool = tls_hkdf_expand(&prk as u64, &TLS_HKDF_INFO1 as u64, 10, &okm as u64, 42);
+    g_tls_crypto_hkdf_ok = extract_ok && expand_ok
+        && tls_bytes_equal(&prk as u64, &TLS_HKDF_PRK1 as u64, 32)
+        && tls_bytes_equal(&okm as u64, &TLS_HKDF_OKM1 as u64, 42);
+}

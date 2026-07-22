@@ -404,6 +404,9 @@ def smoke(disk_img=None):
     sys.path.insert(0, HERE)
     import build as kernel_build
     kernel_build.build()
+    sha256_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_sha256_ok")
+    hmac_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_hmac_ok")
+    hkdf_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_hkdf_ok")
 
     results = []
 
@@ -419,6 +422,13 @@ def smoke(disk_img=None):
     try:
         check("boot banner shows 'MORT OS'",
               wait_for(handle, "MORT OS", timeout_s=15), handle)
+
+        check("Mort SHA-256 passes empty and abc standard vectors",
+              (_guest_u32(handle, sha256_ok_addr) & 0xff) != 0, handle)
+        check("Mort HMAC-SHA256 passes RFC 4231 case 1",
+              (_guest_u32(handle, hmac_ok_addr) & 0xff) != 0, handle)
+        check("Mort HKDF-SHA256 passes RFC 5869 case 1",
+              (_guest_u32(handle, hkdf_ok_addr) & 0xff) != 0, handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",
