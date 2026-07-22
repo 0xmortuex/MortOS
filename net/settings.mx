@@ -17,6 +17,7 @@ let g_settings_result_sel: u32 = 0;
 let g_settings_result_count: u32 = 0;
 let g_settings_high_contrast: bool = false;
 let g_settings_show_hints: bool = true;
+let g_settings_scroll: u32 = 0;
 
 fn settings_text(label: *u8, x: u32, y: u32, bright: bool) {
     let fg: u32 = 0x8fa1aa;
@@ -102,11 +103,16 @@ fn settings_search_item(label: *u8, section: u32, y: u32, result: u32) {
     if section == 0 { draw_text_abs("Overview", 660, y, 0x71858e, bg); }
     if section == 1 { draw_text_abs("Personalization", 660, y, 0x71858e, bg); }
     if section == 2 { draw_text_abs("Display", 660, y, 0x71858e, bg); }
-    if section == 3 { draw_text_abs("Clock", 660, y, 0x71858e, bg); }
-    if section == 4 { draw_text_abs("Storage", 660, y, 0x71858e, bg); }
-    if section == 5 { draw_text_abs("Network", 660, y, 0x71858e, bg); }
+    if section == 3 { draw_text_abs("Network", 660, y, 0x71858e, bg); }
+    if section == 4 { draw_text_abs("Apps", 660, y, 0x71858e, bg); }
+    if section == 5 { draw_text_abs("Time", 660, y, 0x71858e, bg); }
     if section == 6 { draw_text_abs("Accessibility", 660, y, 0x71858e, bg); }
-    if section == 7 { draw_text_abs("Diagnostics", 660, y, 0x71858e, bg); }
+    if section == 7 { draw_text_abs("Privacy", 660, y, 0x71858e, bg); }
+    if section == 8 { draw_text_abs("Power", 660, y, 0x71858e, bg); }
+    if section == 9 { draw_text_abs("Storage", 660, y, 0x71858e, bg); }
+    if section == 10 { draw_text_abs("Hardware", 660, y, 0x71858e, bg); }
+    if section == 11 { draw_text_abs("Update", 660, y, 0x71858e, bg); }
+    if section == 12 { draw_text_abs("Diagnostics", 660, y, 0x71858e, bg); }
 }
 
 fn settings_search_candidate(label: *u8, section: u32, shown: u32) -> u32 {
@@ -128,13 +134,18 @@ fn settings_draw_search() {
     n = settings_search_candidate("accent color theme", 1, n);
     n = settings_search_candidate("wallpaper background", 1, n);
     n = settings_search_candidate("resolution display graphics", 2, n);
-    n = settings_search_candidate("24 hour time clock", 3, n);
-    n = settings_search_candidate("show seconds", 3, n);
-    n = settings_search_candidate("disk files storage", 4, n);
-    n = settings_search_candidate("ethernet dhcp ip network", 5, n);
+    n = settings_search_candidate("ethernet dhcp ip network", 3, n);
+    n = settings_search_candidate("installed apps defaults terminal files vex", 4, n);
+    n = settings_search_candidate("24 hour time clock language", 5, n);
+    n = settings_search_candidate("show seconds", 5, n);
     n = settings_search_candidate("high contrast accessibility", 6, n);
     n = settings_search_candidate("navigation hints accessibility", 6, n);
-    n = settings_search_candidate("system diagnostics health", 7, n);
+    n = settings_search_candidate("privacy security lock permissions", 7, n);
+    n = settings_search_candidate("power sleep restart shutdown", 8, n);
+    n = settings_search_candidate("disk files storage memory", 9, n);
+    n = settings_search_candidate("hardware keyboard audio bluetooth devices", 10, n);
+    n = settings_search_candidate("update version build about", 11, n);
+    n = settings_search_candidate("system diagnostics health", 12, n);
     g_settings_result_count = n;
     if n == 0 { draw_text_abs("No settings found", 234, 294, 0x8fa1aa, 0x0b0f14); }
     draw_text_abs("Up/Down: results   Enter: open   Esc: close search", 208, 580, 0x7f929b, 0x0b0f14);
@@ -230,6 +241,60 @@ fn settings_network() {
     settings_text("Use 'net httpd' to start the web server.", 438, 450, false);
 }
 
+fn settings_apps() {
+    settings_title("Apps", "Built-in applications and launch shortcuts");
+    settings_text("Terminal", 438, 276, true); settings_text("F1  command shell", 600, 276, false);
+    settings_text("Files", 438, 312, true); settings_text("F2  MortFS browser", 600, 312, false);
+    settings_text("Vex", 438, 348, true); settings_text("F3  local pages", 600, 348, false);
+    settings_text("Settings", 438, 384, true); settings_text("F4  control center", 600, 384, false);
+    settings_text("Startup apps", 438, 432, false); settings_text("ISO startup script", 600, 432, true);
+    settings_text("Install/uninstall", 438, 468, false); settings_text("Not supported yet", 600, 468, true);
+}
+
+fn settings_privacy() {
+    settings_title("Privacy & Security", "Protection features and device access");
+    settings_text("Screen lock", 438, 276, false); settings_text("Available via F12", 610, 276, true);
+    settings_text("File permissions", 438, 312, false); settings_text(settings_yes_no(g_fs_ok), 650, 312, true);
+    settings_text("Camera access", 438, 348, false); settings_text("No camera device", 610, 348, true);
+    settings_text("Microphone access", 438, 384, false); settings_text("No audio device", 610, 384, true);
+    settings_text("Location services", 438, 420, false); settings_text("Not present", 650, 420, true);
+    settings_text("Telemetry", 438, 456, false); settings_text("None", 650, 456, true);
+    settings_text("MORT OS sends no analytics or usage data.", 438, 500, false);
+}
+
+fn settings_power() {
+    settings_title("Power", "Session and machine power controls");
+    settings_text("Lock", 438, 276, true); settings_text("Protect the current session", 560, 276, false);
+    settings_text("Sleep", 438, 312, true); settings_text("Blank display until a key", 560, 312, false);
+    settings_text("Restart", 438, 348, true); settings_text("Reboot the machine", 560, 348, false);
+    settings_text("Shut down", 438, 384, true); settings_text("Power off with ACPI", 560, 384, false);
+    fill_rect(438, 430, 330, 34, 0x121a20);
+    draw_text_abs("Press F12 to open Power", 466, 439, g_accent, 0x121a20);
+    settings_text("Battery and power profiles need hardware support.", 438, 492, false);
+}
+
+fn settings_hardware() {
+    settings_title("Hardware & Devices", "Detected drivers and capabilities");
+    settings_text("PS/2 keyboard", 438, 276, false); settings_text("Ready", 674, 276, true);
+    settings_text("Framebuffer", 438, 310, false); settings_text(settings_yes_no(g_gfx), 650, 310, true);
+    settings_text("ATA storage", 438, 344, false); settings_text(settings_yes_no(g_disk_ok), 650, 344, true);
+    settings_text("RTL8139 Ethernet", 438, 378, false); settings_text(settings_yes_no(g_rtl_ok), 650, 378, true);
+    settings_text("Pointer / touch", 438, 412, false); settings_text("Not detected", 650, 412, true);
+    settings_text("Audio", 438, 446, false); settings_text("Not supported yet", 610, 446, true);
+    settings_text("Bluetooth / Wi-Fi", 438, 480, false); settings_text("Not supported yet", 610, 480, true);
+}
+
+fn settings_update() {
+    settings_title("Update & About", "Version and maintenance information");
+    draw_text_abs("MORT OS", 438, 276, g_accent, 0x0b0f14);
+    settings_text("Version", 438, 312, false); settings_text("1.0 development", 610, 312, true);
+    settings_text("Architecture", 438, 348, false); settings_text("x86 32-bit", 610, 348, true);
+    settings_text("Kernel source", 438, 384, false); settings_text("Mort language", 610, 384, true);
+    settings_text("Update service", 438, 420, false); settings_text("Manual builds", 610, 420, true);
+    settings_text("Recovery", 438, 456, false); settings_text("Boot ISO required", 610, 456, true);
+    settings_text("Hobby OS - transparent, local, and yours.", 438, 500, false);
+}
+
 fn settings_accessibility() {
     settings_title("Accessibility", "Make Settings easier to see and use");
     settings_option_row("High contrast", settings_on_off(g_settings_high_contrast), 286, false);
@@ -252,27 +317,43 @@ fn settings_diagnostics() {
     settings_text("All values are read directly from kernel state.", 438, 500, false);
 }
 
+fn settings_sidebar_named(id: u32, y: u32) {
+    if id == 0 { settings_sidebar_row("Overview", y, g_settings_section == id); }
+    if id == 1 { settings_sidebar_row("Personalization", y, g_settings_section == id); }
+    if id == 2 { settings_sidebar_row("Display", y, g_settings_section == id); }
+    if id == 3 { settings_sidebar_row("Network", y, g_settings_section == id); }
+    if id == 4 { settings_sidebar_row("Apps", y, g_settings_section == id); }
+    if id == 5 { settings_sidebar_row("Time & language", y, g_settings_section == id); }
+    if id == 6 { settings_sidebar_row("Accessibility", y, g_settings_section == id); }
+    if id == 7 { settings_sidebar_row("Privacy & security", y, g_settings_section == id); }
+    if id == 8 { settings_sidebar_row("Power", y, g_settings_section == id); }
+    if id == 9 { settings_sidebar_row("Storage", y, g_settings_section == id); }
+    if id == 10 { settings_sidebar_row("Hardware", y, g_settings_section == id); }
+    if id == 11 { settings_sidebar_row("Update & About", y, g_settings_section == id); }
+    if id == 12 { settings_sidebar_row("Diagnostics", y, g_settings_section == id); }
+}
+
 fn settings_draw_sidebar() {
     settings_text("SETTINGS", 208, 202, false);
-    settings_sidebar_row("Overview", 230, g_settings_section == 0);
-    settings_sidebar_row("Personalization", 262, g_settings_section == 1);
-    settings_sidebar_row("Display", 294, g_settings_section == 2);
-    settings_sidebar_row("Clock", 326, g_settings_section == 3);
-    settings_sidebar_row("Storage", 358, g_settings_section == 4);
-    settings_sidebar_row("Network", 390, g_settings_section == 5);
-    settings_sidebar_row("Accessibility", 422, g_settings_section == 6);
-    settings_sidebar_row("Diagnostics", 454, g_settings_section == 7);
+    for row: u32 in 0..8 { settings_sidebar_named(g_settings_scroll + row, 230 + row * 32); }
+    if g_settings_scroll > 0 { draw_text_abs("^ more", 316, 204, 0x61747d, 0x0b0f14); }
+    if g_settings_scroll + 8 < 13 { draw_text_abs("v more", 316, 474, 0x61747d, 0x0b0f14); }
     fill_rect(208, 486, 180, 27, 0x121a20);
     draw_text_abs("/  Search", 220, 492, 0x9fb0b7, 0x121a20);
     fill_rect(402, 198, 1, 352, 0x243642);
     if g_settings_section == 0 { settings_overview(); }
     if g_settings_section == 1 { settings_personalization_preview(); }
     if g_settings_section == 2 { settings_display(); }
-    if g_settings_section == 3 { settings_clock_preview(); }
-    if g_settings_section == 4 { settings_storage(); }
-    if g_settings_section == 5 { settings_network(); }
+    if g_settings_section == 3 { settings_network(); }
+    if g_settings_section == 4 { settings_apps(); }
+    if g_settings_section == 5 { settings_clock_preview(); }
     if g_settings_section == 6 { settings_accessibility(); }
-    if g_settings_section == 7 { settings_diagnostics(); }
+    if g_settings_section == 7 { settings_privacy(); }
+    if g_settings_section == 8 { settings_power(); }
+    if g_settings_section == 9 { settings_storage(); }
+    if g_settings_section == 10 { settings_hardware(); }
+    if g_settings_section == 11 { settings_update(); }
+    if g_settings_section == 12 { settings_diagnostics(); }
     if g_settings_show_hints { settings_text("Up/Down: browse   Enter: open   /: search", 208, 580, false); }
 }
 
@@ -329,7 +410,11 @@ fn settings_draw() {
 
 fn settings_up() {
     if g_settings_view == 0 {
-        if g_settings_section > 0 { g_settings_section = g_settings_section - 1; settings_draw(); }
+        if g_settings_section > 0 {
+            g_settings_section = g_settings_section - 1;
+            if g_settings_section < g_settings_scroll { g_settings_scroll = g_settings_section; }
+            settings_draw();
+        }
         return;
     }
     if g_settings_sel > 0 { g_settings_sel = g_settings_sel - 1; settings_draw(); }
@@ -337,7 +422,11 @@ fn settings_up() {
 
 fn settings_down() {
     if g_settings_view == 0 {
-        if g_settings_section < 7 { g_settings_section = g_settings_section + 1; settings_draw(); }
+        if g_settings_section < 12 {
+            g_settings_section = g_settings_section + 1;
+            if g_settings_section >= g_settings_scroll + 8 { g_settings_scroll = g_settings_section - 7; }
+            settings_draw();
+        }
         return;
     }
     if g_settings_sel < 1 { g_settings_sel = g_settings_sel + 1; settings_draw(); }
@@ -366,7 +455,7 @@ fn settings_apply_wallpaper() {
 fn settings_enter() {
     if g_settings_view == 0 {
         if g_settings_section == 1 { g_settings_view = 1; g_settings_sel = 0; settings_draw(); }
-        if g_settings_section == 3 { g_settings_view = 2; g_settings_sel = 0; settings_draw(); }
+        if g_settings_section == 5 { g_settings_view = 2; g_settings_sel = 0; settings_draw(); }
         if g_settings_section == 6 { g_settings_view = 3; g_settings_sel = 0; settings_draw(); }
         return;
     }
@@ -398,14 +487,20 @@ fn settings_open_search_result() {
     if settings_matches("accent color theme") { if seen == g_settings_result_sel { g_settings_section = 1; } seen = seen + 1; }
     if settings_matches("wallpaper background") { if seen == g_settings_result_sel { g_settings_section = 1; } seen = seen + 1; }
     if settings_matches("resolution display graphics") { if seen == g_settings_result_sel { g_settings_section = 2; } seen = seen + 1; }
-    if settings_matches("24 hour time clock") { if seen == g_settings_result_sel { g_settings_section = 3; } seen = seen + 1; }
-    if settings_matches("show seconds") { if seen == g_settings_result_sel { g_settings_section = 3; } seen = seen + 1; }
-    if settings_matches("disk files storage") { if seen == g_settings_result_sel { g_settings_section = 4; } seen = seen + 1; }
-    if settings_matches("ethernet dhcp ip network") { if seen == g_settings_result_sel { g_settings_section = 5; } seen = seen + 1; }
+    if settings_matches("ethernet dhcp ip network") { if seen == g_settings_result_sel { g_settings_section = 3; } seen = seen + 1; }
+    if settings_matches("installed apps defaults terminal files vex") { if seen == g_settings_result_sel { g_settings_section = 4; } seen = seen + 1; }
+    if settings_matches("24 hour time clock language") { if seen == g_settings_result_sel { g_settings_section = 5; } seen = seen + 1; }
+    if settings_matches("show seconds") { if seen == g_settings_result_sel { g_settings_section = 5; } seen = seen + 1; }
     if settings_matches("high contrast accessibility") { if seen == g_settings_result_sel { g_settings_section = 6; } seen = seen + 1; }
     if settings_matches("navigation hints accessibility") { if seen == g_settings_result_sel { g_settings_section = 6; } seen = seen + 1; }
-    if settings_matches("system diagnostics health") { if seen == g_settings_result_sel { g_settings_section = 7; } seen = seen + 1; }
+    if settings_matches("privacy security lock permissions") { if seen == g_settings_result_sel { g_settings_section = 7; } seen = seen + 1; }
+    if settings_matches("power sleep restart shutdown") { if seen == g_settings_result_sel { g_settings_section = 8; } seen = seen + 1; }
+    if settings_matches("disk files storage memory") { if seen == g_settings_result_sel { g_settings_section = 9; } seen = seen + 1; }
+    if settings_matches("hardware keyboard audio bluetooth devices") { if seen == g_settings_result_sel { g_settings_section = 10; } seen = seen + 1; }
+    if settings_matches("update version build about") { if seen == g_settings_result_sel { g_settings_section = 11; } seen = seen + 1; }
+    if settings_matches("system diagnostics health") { if seen == g_settings_result_sel { g_settings_section = 12; } seen = seen + 1; }
     if g_settings_result_count == 0 { return; }
+    if g_settings_section > 7 { g_settings_scroll = g_settings_section - 7; } else { g_settings_scroll = 0; }
     g_settings_search = false; g_settings_view = 0; settings_draw();
 }
 
