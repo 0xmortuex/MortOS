@@ -740,6 +740,21 @@ def browser_ui():
             links = _wait_guest_u32(handle, links_addr, lambda value: value >= 1)
             check("HTTP anchor is extracted as a navigable link", links >= 1)
 
+            remembered = _guest_bytes(handle, state_addr + 816, 80).split(b"\0", 1)[0].decode("ascii", "replace")
+            check("Last non-private HTTP page is stored for explicit recovery",
+                  remembered == address)
+            send_key(handle, "1")
+            _wait_guest_u32(handle, remote_addr, lambda value: (value & 0xff) == 0)
+            send_key(handle, "9")
+            restored = _wait_guest_u32(
+                handle, remote_addr, lambda value: (value & 0xff) != 0,
+                timeout_s=25)
+            restored_len = _guest_u32(handle, content_len_addr)
+            restored_text = _guest_bytes(
+                handle, content_addr, min(restored_len, 512)).decode("ascii", "replace")
+            check("Home page restores the last normal session only on request",
+                  (restored & 0xff) != 0 and marker in restored_text)
+
             send_key(handle, "l")
             send_key(handle, "ret")
             deadline = time.monotonic() + 25

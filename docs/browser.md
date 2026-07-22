@@ -15,6 +15,8 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 - Back, forward, home, reload, scrolling, and find-in-page.
 - Persistent bookmarks and six-entry history in the current user's
   `.vex-state` MortFS file.
+- Explicit session recovery: Home offers the last non-private HTTP page, but
+  never reconnects automatically at startup.
 - Private mode, which prevents new visits from entering persistent history.
 - Content-Type-aware rendering for HTML and literal plain-text responses.
   Script/style bodies are never executed or displayed, and unsupported binary
@@ -39,6 +41,7 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 | Up / Down | Scroll the page or move through a list |
 | `1` / `4` | Home / reload |
 | `5` / `6` / `7` / `8` | Bookmarks / history / downloads / settings |
+| `9` | Restore the last normal HTTP page from Home |
 | `B` | Bookmark the current page |
 | `F` | Find text in the current HTTP document |
 | `L` | Open the extracted-links panel |
@@ -93,4 +96,5 @@ The browser regression covers real DHCP configuration, ARP, TCP and HTTP
 loading, HTML and literal plain-text rendering, binary-content rejection,
 script/style removal, links, redirects, chunked responses, local suggestions,
 keyboard and mouse tab controls, private mode, bookmarks, downloads,
-screenshots, and bookmark persistence after a full reboot.
+explicit normal-session recovery, screenshots, and bookmark persistence after
+a full reboot.
