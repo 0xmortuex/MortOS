@@ -28,7 +28,7 @@ import sys
 
 SECTOR = 512
 MAGIC = 0x3153464D        # the bytes b"MFS1" read as a little-endian u32
-VERSION = 1
+VERSION = 2
 MAX_FILES = 64
 MAX_NAME = 23             # + terminating NUL fills the 24-byte name field
 MAX_SIZE = 65536          # one 128-sector extent; also the kernel's FILEBUF size
@@ -111,6 +111,10 @@ def make(path, size_mib=16, adds=(), bins=()):
         image[entry:entry + 24] = name.encode("ascii").ljust(24, b"\x00")
         image[entry + 24:entry + 40] = struct.pack(
             "<IIII", 1, len(content), next_free, EXTENT_SECTORS)
+        # v2 metadata: type(u8)=0 file, parent(u8)=255 root, uid(u8)=0 root,
+        # pad(u8), mode(u32)=0o644, mtime(u32)=0.
+        image[entry + 40:entry + 52] = struct.pack(
+            "<BBBBII", 0, 255, 0, 0, 0o644, 0)
         image[next_free * SECTOR:next_free * SECTOR + len(content)] = content
         next_free += EXTENT_SECTORS
     image[0:20] = struct.pack("<IIIII", MAGIC, VERSION, len(files), next_free,
@@ -121,7 +125,7 @@ def make(path, size_mib=16, adds=(), bins=()):
     # 3. Round-trip self-check: re-parse the written image and compare.
     _self_check(path, total_sectors, files)
 
-    print(f"wrote {path}: {size_mib} MiB MortFS v1, {len(files)} file(s)")
+    print(f"wrote {path}: {size_mib} MiB MortFS v2, {len(files)} file(s)")
     for i, (name, content) in enumerate(files):
         print(f"  {name:<24}{len(content):>7} bytes @ sector "
               f"{DATA_START + i * EXTENT_SECTORS}")

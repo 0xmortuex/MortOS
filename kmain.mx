@@ -21,6 +21,7 @@ let g_hist_n: u32 = 0;                                         // total commands
 let g_hist_nav: u32 = 0;                                       // 0 = live line, k = k-th most recent recalled
 let g_disk_ok: bool = false;                                   // ata_init() found a drive
 let g_fs_ok: bool = false;                                     // fs_init() verified the MortFS magic
+let g_uid: u8 = 0;                                             // current user id (0 = root; set at login in Phase 1)
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
 let g_pcol: u32 = 0;                                           // program-output cursor column (syscalls)
 let g_gfx: bool = false;                                       // a linear framebuffer is available
@@ -1220,6 +1221,40 @@ fn fs_entry_addr(i: u32) -> u32 {
     return 0x00801000 + 512 + i * 64;   // TABCACHE
 }
 
+// ----- MortFS v2 metadata (the spare bytes 40..63 of each 64-byte entry) -----
+//   type   @40 u8   0 = file, 1 = directory
+//   parent @41 u8   parent directory's entry index; 255 = root
+//   uid    @42 u8   owner user id
+//   mode   @44 u32  permission bits (low 9 = rwx rwx rwx, Unix-style)
+//   mtime  @48 u32  last-modified time, seconds since midnight (from the RTC)
+// Root is implicit: it is not a table entry, it is "everything with parent 255".
+
+fn fs_type(i: u32) -> u8 { return *((fs_entry_addr(i) + 40) as *u8); }
+fn fs_parent(i: u32) -> u8 { return *((fs_entry_addr(i) + 41) as *u8); }
+fn fs_uid(i: u32) -> u8 { return *((fs_entry_addr(i) + 42) as *u8); }
+fn fs_mode(i: u32) -> u32 { return *((fs_entry_addr(i) + 44) as *u32); }
+fn fs_mtime(i: u32) -> u32 { return *((fs_entry_addr(i) + 48) as *u32); }
+
+// Seconds since midnight, read from the CMOS RTC (for file timestamps).
+fn fs_now() -> u32 {
+    let stb: u8 = rtc_reg(0x0B);
+    let bin: bool = (stb & 4) != 0;
+    let h: u32 = rtc_conv(rtc_reg(4), bin) as u32;
+    let m: u32 = rtc_conv(rtc_reg(2), bin) as u32;
+    let s: u32 = rtc_conv(rtc_reg(0), bin) as u32;
+    return h * 3600 + m * 60 + s;
+}
+
+// Stamp an entry's v2 metadata (type, parent, owner, mode) + current time.
+fn fs_set_meta(base: u32, typ: u8, parent: u8, uid: u8, mode: u32) {
+    *((base + 40) as *u8) = typ;
+    *((base + 41) as *u8) = parent;
+    *((base + 42) as *u8) = uid;
+    *((base + 43) as *u8) = 0;
+    *((base + 44) as *u32) = mode;
+    *((base + 48) as *u32) = fs_now();
+}
+
 // Detect the disk, cache sectors 0..8, verify the superblock. Sets g_fs_ok.
 fn fs_init() -> bool {
     if !ata_init() {
@@ -1235,7 +1270,24 @@ fn fs_init() -> bool {
     if *(0x00801000 as *u32) != 0x3153464D {   // "MFS1" little-endian
         return false;
     }
-    if *((0x00801000 + 4) as *u32) != 1 {      // version
+    let ver: u32 = *((0x00801000 + 4) as *u32);
+    if ver == 1 {
+        // Upgrade a v1 disk in place: every existing file becomes a root-level
+        // file owned by root with default (0644) permissions, then bump to v2.
+        let i: u32 = 0;
+        while i < 64 {
+            let base: u32 = fs_entry_addr(i);
+            if *((base + 24) as *u32) == 1 {
+                fs_set_meta(base, 0, 255, 0, 0x1A4);
+            }
+            i = i + 1;
+        }
+        *((0x00801000 + 4) as *u32) = 2;
+        g_fs_ok = true;
+        fs_sync();
+        return true;
+    }
+    if ver != 2 {
         return false;
     }
     g_fs_ok = true;
@@ -1314,6 +1366,7 @@ fn fs_create(name: *u8) -> u32 {
     *((base + 28) as *u32) = 0;                        // size_bytes
     *((base + 32) as *u32) = next;                     // start_sector
     *((base + 36) as *u32) = 128;                      // capacity_sectors
+    fs_set_meta(base, 0, 255, g_uid, 0x1A4);           // file, root, owner, 0644
     *((0x00801000 + 12) as *u32) = next + 128;         // bump the allocator
     *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) + 1;   // file_count++
     if !fs_sync() {
@@ -1629,10 +1682,20 @@ fn run_command(cmd: *u8) -> bool {
             let base: u32 = fs_entry_addr(i);
             if *((base + 24) as *u32) == 1 {           // used
                 feed();
-                print_at(base as *u8, g_row, 2, 15);   // name (24-byte field)
+                // type marker + octal permission bits, e.g. "d 755" / "- 644"
+                let mode: u32 = fs_mode(i);
+                let tc: u8 = 45;                        // '-'
+                if fs_type(i) == 1 { tc = 100; }        // 'd'
+                put_cell_at(g_row, 0, tc, 10);
+                put_cell_at(g_row, 2, (48 + ((mode >> 6) & 7)) as u8, 7);
+                put_cell_at(g_row, 3, (48 + ((mode >> 3) & 7)) as u8, 7);
+                put_cell_at(g_row, 4, (48 + (mode & 7)) as u8, 7);
+                print_at(base as *u8, g_row, 7, 15);    // name
                 num_to_str(*((base + 28) as *u32), g_numbuf);
-                print_at(g_numbuf, g_row, 27, 7);
-                print_at(" bytes", g_row, 27 + g_numlen, 7);
+                print_at(g_numbuf, g_row, 34, 7);
+                print_at(" bytes  uid ", g_row, 34 + g_numlen, 7);
+                num_to_str(fs_uid(i) as u32, g_numbuf);
+                print_at(g_numbuf, g_row, 46 + g_numlen, 7);
                 shown = shown + 1;
             }
             i = i + 1;
