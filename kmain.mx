@@ -21,7 +21,13 @@ let g_hist_n: u32 = 0;                                         // total commands
 let g_hist_nav: u32 = 0;                                       // 0 = live line, k = k-th most recent recalled
 let g_disk_ok: bool = false;                                   // ata_init() found a drive
 let g_fs_ok: bool = false;                                     // fs_init() verified the MortFS magic
-let g_uid: u8 = 0;                                             // current user id (0 = root; set at login in Phase 1)
+let g_uid: u8 = 0;                                             // current user id (0 = root; set at login)
+// ----- user accounts (in-memory table; persistence comes later) -----
+let g_username: [u8; 24] = [0; 24];                           // current user's name
+let g_acct_count: u32 = 0;                                    // number of accounts
+let g_acct_name: [u8; 192] = [0; 192];                        // 8 slots x 24 bytes
+let g_acct_uid: [u32; 8] = [0; 8];                            // each account's uid
+let g_acct_hash: [u32; 8] = [0; 8];                           // each account's password hash
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
 let g_pcol: u32 = 0;                                           // program-output cursor column (syscalls)
 let g_gfx: bool = false;                                       // a linear framebuffer is available
@@ -1465,6 +1471,11 @@ fn fs_create_full(name: *u8, parent: u32, typ: u8) -> u32 {
         print_string("name too long (max 23 chars)", g_row, 12);
         return 64;
     }
+    if !can_write(dir_owner(parent), dir_mode(parent)) {
+        feed();
+        print_string("permission denied", g_row, 12);
+        return 64;
+    }
     let slot: u32 = fs_free_slot();
     if slot == 64 {
         feed();
@@ -1820,6 +1831,8 @@ fn run_command(cmd: *u8) -> bool {
         print_string("net: net (DHCP)  httpd (serve a page on :80)", g_row, 7);
         feed();
         print_string("power: F12 menu, or lock sleep restart shutdown", g_row, 7);
+        feed();
+        print_string("users: whoami su sudo passwd chmod chown", g_row, 7);
         return false;
     }
     if streq(cmd, "readme") {
@@ -1968,6 +1981,11 @@ fn run_command(cmd: *u8) -> bool {
                 print_string("write: is a directory", g_row, 12);
                 return false;
             }
+            if !can_write(fs_uid(i), fs_mode(i)) {
+                feed();
+                print_string("permission denied", g_row, 12);
+                return false;
+            }
         }
         if i == 64 {                                     // create it in the right directory
             let leaf: [u8; 24] = [0; 24];
@@ -2001,6 +2019,11 @@ fn run_command(cmd: *u8) -> bool {
             print_string("rm: is a directory (use rmdir)", g_row, 12);
             return false;
         }
+        if !can_write(fs_uid(i), fs_mode(i)) {
+            feed();
+            print_string("permission denied", g_row, 12);
+            return false;
+        }
         fs_remove(name);
         return false;
     }
@@ -2012,6 +2035,147 @@ fn run_command(cmd: *u8) -> bool {
     if starts_with(cmd, "exec ") {
         if !fs_guard() { return false; }
         exec_file((cmd as u32 + 5) as *u8);
+        return false;
+    }
+    if streq(cmd, "whoami") {
+        feed();
+        print_at((&g_username as u64) as *u8, g_row, 0, 15);
+        let ul: u32 = str_len((&g_username as u64) as *u8);
+        print_at(" (uid ", g_row, ul, 7);
+        num_to_str(g_uid as u32, g_numbuf);
+        print_at(g_numbuf, g_row, ul + 6, 15);
+        print_at(")", g_row, ul + 6 + g_numlen, 7);
+        return false;
+    }
+    if streq(cmd, "su") || starts_with(cmd, "su ") {
+        let target: u64 = "root" as u64;
+        if starts_with(cmd, "su ") {
+            target = (cmd as u32 + 3) as u64;
+        }
+        let ai: u32 = acct_find(target as *u8);
+        if ai == 64 {
+            feed();
+            print_string("su: no such user", g_row, 12);
+            return false;
+        }
+        feed();
+        print_at("password: ", g_row, 0, 7);
+        g_col = 10;
+        let pw: [u8; 64] = [0; 64];
+        kread_line(&pw as u64, true);
+        if g_acct_hash[ai] == hash_pw((&pw as u64) as *u8) {
+            g_uid = g_acct_uid[ai] as u8;
+            str_copy((&g_username as u64) as *u8, target as *u8);
+        } else {
+            feed();
+            print_string("su: authentication failure", g_row, 12);
+        }
+        return false;
+    }
+    if starts_with(cmd, "sudo ") {
+        let rest: u64 = (cmd as u32 + 5) as u64;
+        if g_uid == 0 {
+            run_command(rest as *u8);           // already root
+            return false;
+        }
+        feed();
+        print_at("[sudo] password for ", g_row, 0, 7);
+        let ul: u32 = str_len((&g_username as u64) as *u8);
+        print_at((&g_username as u64) as *u8, g_row, 20, 7);
+        print_at(": ", g_row, 20 + ul, 7);
+        g_col = 22 + ul;
+        let pw: [u8; 64] = [0; 64];
+        kread_line(&pw as u64, true);
+        let ai: u32 = acct_find((&g_username as u64) as *u8);
+        if ai != 64 && g_acct_hash[ai] == hash_pw((&pw as u64) as *u8) {
+            let saved: u8 = g_uid;
+            g_uid = 0;                           // run this one command as root
+            run_command(rest as *u8);
+            g_uid = saved;
+        } else {
+            feed();
+            print_string("sudo: authentication failure", g_row, 12);
+        }
+        return false;
+    }
+    if streq(cmd, "passwd") {
+        feed();
+        print_at("new password: ", g_row, 0, 7);
+        g_col = 14;
+        let pw: [u8; 64] = [0; 64];
+        kread_line(&pw as u64, true);
+        let ai: u32 = acct_find((&g_username as u64) as *u8);
+        if ai != 64 {
+            g_acct_hash[ai] = hash_pw((&pw as u64) as *u8);
+            feed();
+            print_string("password updated (this session)", g_row, 10);
+        }
+        return false;
+    }
+    if starts_with(cmd, "chmod ") {
+        if !fs_guard() { return false; }
+        let arg: u64 = (cmd as u32 + 6) as u64;
+        let sp: u32 = find_char(arg as *u8, 32);
+        if sp == 0 {
+            feed();
+            print_string("usage: chmod <octal> <path>", g_row, 12);
+            return false;
+        }
+        let mode: u32 = 0;
+        let k: u32 = 0;
+        while k < sp {
+            let d: u8 = *((arg + (k as u64)) as *u8);
+            if d >= 48 && d <= 55 {
+                mode = mode * 8 + ((d - 48) as u32);
+            }
+            k = k + 1;
+        }
+        let idx: u32 = fs_resolve(arg + (sp as u64) + 1);
+        if idx == 64 || idx == 255 {
+            feed();
+            print_string("chmod: not found", g_row, 12);
+            return false;
+        }
+        if g_uid != 0 && (g_uid as u32) != (fs_uid(idx) as u32) {
+            feed();
+            print_string("chmod: not permitted", g_row, 12);
+            return false;
+        }
+        *((fs_entry_addr(idx) + 44) as *u32) = mode;
+        fs_sync();
+        return false;
+    }
+    if starts_with(cmd, "chown ") {
+        if !fs_guard() { return false; }
+        if g_uid != 0 {
+            feed();
+            print_string("chown: not permitted (root only)", g_row, 12);
+            return false;
+        }
+        let arg: u64 = (cmd as u32 + 6) as u64;
+        let sp: u32 = find_char(arg as *u8, 32);
+        if sp == 0 {
+            feed();
+            print_string("usage: chown <uid> <path>", g_row, 12);
+            return false;
+        }
+        let uid: u32 = 0;
+        let k: u32 = 0;
+        while k < sp {
+            let d: u8 = *((arg + (k as u64)) as *u8);
+            if d >= 48 && d <= 57 {
+                uid = uid * 10 + ((d - 48) as u32);
+            }
+            k = k + 1;
+        }
+        let idx: u32 = fs_resolve(arg + (sp as u64) + 1);
+        if idx == 64 || idx == 255 {
+            feed();
+            print_string("chown: not found", g_row, 12);
+            return false;
+        }
+        *((fs_entry_addr(idx) + 42) as *u8) = uid as u8;
+        fs_sync();
         return false;
     }
     if streq(cmd, "reboot") {
@@ -2326,6 +2490,147 @@ fn switch_app(app: u32) {
     if app == 3 { settings_draw(); }
 }
 
+// ----- users, authentication & permissions -----
+//
+// An in-memory account table (root + a normal user) with djb2-hashed passwords
+// — not cryptographically strong, but no worse than a toy /etc/passwd, and it
+// keeps plaintext off the disk. The current user is g_uid/g_username. Password
+// prompts read the keyboard directly (kread_line), the same polling trick the
+// program syscall path uses, so they work from inside a shell command.
+
+fn hash_pw(s: *u8) -> u32 {
+    let h: u32 = 5381;
+    let i: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        h = h * 33 + (*((s as u32 + i) as *u8) as u32);
+        i = i + 1;
+    }
+    return h;
+}
+
+fn acct_add(name: *u8, uid: u32, hash: u32) {
+    if g_acct_count >= 8 {
+        return;
+    }
+    let slot: u32 = g_acct_count;
+    let base: u64 = (&g_acct_name as u64) + ((slot * 24) as u64);
+    let k: u32 = 0;
+    while k < 24 {
+        *((base + (k as u64)) as *u8) = 0;
+        k = k + 1;
+    }
+    str_copy(base as *u8, name);
+    g_acct_uid[slot] = uid;
+    g_acct_hash[slot] = hash;
+    g_acct_count = slot + 1;
+}
+
+fn acct_find(name: *u8) -> u32 {
+    let i: u32 = 0;
+    while i < g_acct_count {
+        let base: u64 = (&g_acct_name as u64) + ((i * 24) as u64);
+        if streq(name, base as *u8) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 64;
+}
+
+// The default accounts: root (uid 0) and a normal user (uid 1).
+fn acct_init() {
+    g_acct_count = 0;
+    acct_add("root", 0, hash_pw("toor"));
+    acct_add("mortuex", 1, hash_pw("mort"));
+}
+
+fn login_default() {
+    g_uid = 1;                                  // auto-login as the normal user
+    str_copy((&g_username as u64) as *u8, "mortuex");
+}
+
+// Read a line from the keyboard by polling (interrupts are off inside a shell
+// command). Echoes each character, or '*' when mask is true. Returns length.
+fn kread_line(buf: u64, mask: bool) -> u32 {
+    let len: u32 = 0;
+    let shift: bool = false;
+    move_cursor(g_row, g_col);
+    while true {
+        while (inb(0x64) & 1) == 0 {
+        }
+        let sc: u8 = inb(0x60);
+        if sc == 42 || sc == 54 {
+            shift = true;
+        } else if sc == 170 || sc == 182 {
+            shift = false;
+        } else if sc == 28 {                    // Enter
+            *((buf + (len as u64)) as *u8) = 0;
+            feed();
+            g_col = 2;
+            return len;
+        } else if sc == 14 {                    // Backspace
+            if len > 0 {
+                len = len - 1;
+                if g_col > 0 { g_col = g_col - 1; }
+                put_cell_at(g_row, g_col, 32, 7);
+                move_cursor(g_row, g_col);
+            }
+        } else if sc < 128 {
+            let ch: u8 = scancode_to_ascii(sc, shift);
+            if ch != 0 && len < 60 {
+                *((buf + (len as u64)) as *u8) = ch;
+                len = len + 1;
+                let disp: u8 = ch;
+                if mask { disp = 42; }          // '*'
+                put_cell_at(g_row, g_col, disp, 15);
+                g_col = g_col + 1;
+                move_cursor(g_row, g_col);
+            }
+        }
+    }
+    return len;
+}
+
+// May the current user write something owned by `uid` with permission `mode`?
+// root always may; the owner needs the owner-write bit; everyone else the
+// other-write bit.
+fn can_write(uid: u8, mode: u32) -> bool {
+    if g_uid == 0 {
+        return true;
+    }
+    if (g_uid as u32) == (uid as u32) {
+        return (mode & 0x80) != 0;              // 0200 octal: owner write
+    }
+    return (mode & 0x2) != 0;                   // 0002 octal: other write
+}
+
+// Owner/mode of a directory index, treating root (255) as root-owned 0755.
+fn dir_owner(dir: u32) -> u8 {
+    if dir == 255 { return 0; }
+    return fs_uid(dir);
+}
+fn dir_mode(dir: u32) -> u32 {
+    if dir == 255 { return 0x1ED; }
+    return fs_mode(dir);
+}
+
+// Give the normal user a home directory they own: /home/<user>, chowned to
+// them. Created as root during boot (before login).
+fn ensure_home() {
+    if fs_resolve("/home/mortuex" as u64) != 64 {
+        return;
+    }
+    let home: u32 = fs_resolve("/home" as u64);
+    if home == 64 {
+        return;
+    }
+    let idx: u32 = fs_create_full("mortuex", home, 1);
+    if idx != 64 {
+        *((fs_entry_addr(idx) + 42) as *u8) = 1;    // chown to uid 1
+        fs_sync();
+    }
+}
+
 // ----- session & power (clock, power menu, lock, sleep, shutdown) -----
 //
 // A small session layer over the desktop. A clock ticks in the top bar (read
@@ -2526,14 +2831,14 @@ fn open_lock() {
     draw_lock();
 }
 
-// The password is "mort".
+// Unlock if the typed password matches the current user's account password.
 fn lock_ok() -> bool {
-    if g_lock_len != 4 {
+    let ai: u32 = acct_find((&g_username as u64) as *u8);
+    if ai == 64 {
         return false;
     }
-    let p: u64 = &g_lockbuf as u64;
-    return *(p as *u8) == 109 && *((p + 1) as *u8) == 111
-        && *((p + 2) as *u8) == 114 && *((p + 3) as *u8) == 116;
+    *(((&g_lockbuf as u64) + (g_lock_len as u64)) as *u8) = 0;   // NUL-terminate the entry
+    return g_acct_hash[ai] == hash_pw((&g_lockbuf as u64) as *u8);
 }
 
 // ---- sleep ----
@@ -2767,7 +3072,10 @@ fn kmain(mbinfo: u32) {
     enable_cursor();
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);
     fs_init();                       // detect the disk + mount MortFS (safe without either)
-    fs_ensure_layout();              // seed /bin /etc /home /var if this is a fresh disk
+    fs_ensure_layout();              // seed /bin /etc /home /var if this is a fresh disk (as root)
+    acct_init();                     // load the account table (root + a normal user)
+    ensure_home();                   // create /home/mortuex, owned by the user
+    login_default();                 // auto-login as the normal user (uid 1)
 
     run_script(1);                   // run the startup script loaded from disk
 
