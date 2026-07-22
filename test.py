@@ -410,6 +410,7 @@ def smoke(disk_img=None):
     chacha_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_chacha_ok")
     poly1305_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_poly1305_ok")
     aead_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_aead_ok")
+    aead_decrypt_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_aead_decrypt_ok")
     x25519_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_x25519_ok")
     key_schedule_ok_addr = _elf32_symbol(ELF, "m_g_tls13_key_schedule_ok")
     hello_ok_addr = _elf32_symbol(ELF, "m_g_tls13_client_hello_ok")
@@ -424,6 +425,9 @@ def smoke(disk_img=None):
     server_traffic_addr = _elf32_symbol(ELF, "m_g_tls13_server_traffic_test")
     server_write_key_addr = _elf32_symbol(ELF, "m_g_tls13_server_write_key_test")
     server_write_iv_addr = _elf32_symbol(ELF, "m_g_tls13_server_write_iv_test")
+    record_ok_addr = _elf32_symbol(ELF, "m_g_tls13_record_ok")
+    record_plaintext_addr = _elf32_symbol(ELF, "m_g_tls13_record_plaintext_test")
+    record_content_type_addr = _elf32_symbol(ELF, "m_g_tls13_record_content_type")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -454,6 +458,8 @@ def smoke(disk_img=None):
               (_guest_u32(handle, poly1305_ok_addr) & 0xff) != 0, handle)
         check("Mort ChaCha20-Poly1305 passes the RFC 8439 AEAD vector",
               (_guest_u32(handle, aead_ok_addr) & 0xff) != 0, handle)
+        check("Mort AEAD rejects forged tags before releasing plaintext",
+              (_guest_u32(handle, aead_decrypt_ok_addr) & 0xff) != 0, handle)
         check("Mort X25519 passes RFC 7748 iteration and DH vectors",
               (_guest_u32(handle, x25519_ok_addr) & 0xff) != 0, handle)
         check("Mort TLS 1.3 key labels pass the RFC 8448 trace",
@@ -491,6 +497,10 @@ def smoke(disk_img=None):
                   "3fce516009c21727d0f2e4e86ee403bc")
               and _guest_bytes(handle, server_write_iv_addr, 12) == bytes.fromhex(
                   "5d313eb2671276ee13000b30"), handle)
+        check("Mort authenticates and decodes a TLS 1.3 encrypted record",
+              (_guest_u32(handle, record_ok_addr) & 0xff) != 0
+              and (_guest_u32(handle, record_content_type_addr) & 0xff) == 22
+              and _guest_bytes(handle, record_plaintext_addr, 5) == b"hello", handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",

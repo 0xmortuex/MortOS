@@ -94,8 +94,12 @@ key share against RFC 8448's published trace. The post-hello key schedule now
 computes the X25519 shared secret, rejects the forbidden all-zero result, and
 derives both handshake traffic secrets plus their write keys and IVs. Those
 outputs are checked byte-for-byte against the same published trace during boot.
-This does **not** enable HTTPS by itself: encrypted handshake records,
-authentication, X.509 parsing, trust
+Mort also constructs per-record nonces from the write IV and sequence number,
+authenticates TLS 1.3 record headers and ciphertext, rejects forged Poly1305
+tags before releasing plaintext, and decodes the authenticated inner content
+type and padding. The AEAD path accepts the full TLS ciphertext limit rather
+than only small test messages. This does **not** enable HTTPS by itself:
+handshake-message reassembly, authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
 
 Ephemeral TLS material is also fail-closed behind an x86 hardware-entropy gate.

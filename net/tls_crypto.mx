@@ -111,7 +111,11 @@ let g_tls_crypto_hkdf_ok: bool = false;
 let g_tls_crypto_chacha_ok: bool = false;
 let g_tls_crypto_poly1305_ok: bool = false;
 let g_tls_crypto_aead_ok: bool = false;
+let g_tls_crypto_aead_decrypt_ok: bool = false;
 let g_tls_poly1305_test_tag: [u8; 16] = [0; 16];
+// One browser connection is processed at a time.  This bounded scratch area
+// holds RFC 8446's maximum ciphertext plus AEAD padding and length fields.
+let g_tls_aead_auth_scratch: [u8; 16672] = [0; 16672];
 
 fn tls_rotr32(value: u32, amount: u32) -> u32 {
     return (value >> amount) | (value << (32 - amount));
@@ -373,15 +377,36 @@ fn tls_chacha20_poly1305_encrypt(key: u64, nonce: u64, aad: u64, aad_length: u32
     let aad_padded: u32 = (aad_length + 15) & 0xfffffff0;
     let text_padded: u32 = (plaintext_length + 15) & 0xfffffff0;
     let auth_length: u32 = aad_padded + text_padded + 16;
-    if auth_length > 512 { return false; }
-    let first_block: [u8; 64] = [0; 64]; let auth: [u8; 512] = [0; 512];
+    if auth_length > 16672 { return false; }
+    let first_block: [u8; 64] = [0; 64];
+    for i: u32 in 0..auth_length { g_tls_aead_auth_scratch[i] = 0; }
     tls_chacha20_block(key, 0, nonce, &first_block as u64);
     tls_chacha20_xor(key, 1, nonce, plaintext, plaintext_length, ciphertext);
-    for i: u32 in 0..aad_length { auth[i] = *((aad + (i as u64)) as *u8); }
-    for i: u32 in 0..plaintext_length { auth[aad_padded + i] = *((ciphertext + (i as u64)) as *u8); }
-    tls_store_le64(&auth as u64 + ((aad_padded + text_padded) as u64), aad_length as u64);
-    tls_store_le64(&auth as u64 + ((aad_padded + text_padded + 8) as u64), plaintext_length as u64);
-    tls_poly1305_auth(&first_block as u64, &auth as u64, auth_length, tag); return true;
+    for i: u32 in 0..aad_length { g_tls_aead_auth_scratch[i] = *((aad + (i as u64)) as *u8); }
+    for i: u32 in 0..plaintext_length { g_tls_aead_auth_scratch[aad_padded + i] = *((ciphertext + (i as u64)) as *u8); }
+    tls_store_le64(&g_tls_aead_auth_scratch as u64 + ((aad_padded + text_padded) as u64), aad_length as u64);
+    tls_store_le64(&g_tls_aead_auth_scratch as u64 + ((aad_padded + text_padded + 8) as u64), plaintext_length as u64);
+    tls_poly1305_auth(&first_block as u64, &g_tls_aead_auth_scratch as u64, auth_length, tag); return true;
+}
+
+fn tls_chacha20_poly1305_decrypt(key: u64, nonce: u64, aad: u64, aad_length: u32,
+                                 ciphertext: u64, ciphertext_length: u32,
+                                 tag: u64, plaintext: u64) -> bool {
+    let aad_padded: u32 = (aad_length + 15) & 0xfffffff0;
+    let text_padded: u32 = (ciphertext_length + 15) & 0xfffffff0;
+    let auth_length: u32 = aad_padded + text_padded + 16;
+    if auth_length > 16672 { return false; }
+    let first_block: [u8; 64] = [0; 64]; let expected_tag: [u8; 16] = [0; 16];
+    for i: u32 in 0..auth_length { g_tls_aead_auth_scratch[i] = 0; }
+    tls_chacha20_block(key, 0, nonce, &first_block as u64);
+    for i: u32 in 0..aad_length { g_tls_aead_auth_scratch[i] = *((aad + (i as u64)) as *u8); }
+    for i: u32 in 0..ciphertext_length { g_tls_aead_auth_scratch[aad_padded + i] = *((ciphertext + (i as u64)) as *u8); }
+    tls_store_le64(&g_tls_aead_auth_scratch as u64 + ((aad_padded + text_padded) as u64), aad_length as u64);
+    tls_store_le64(&g_tls_aead_auth_scratch as u64 + ((aad_padded + text_padded + 8) as u64), ciphertext_length as u64);
+    tls_poly1305_auth(&first_block as u64, &g_tls_aead_auth_scratch as u64, auth_length, &expected_tag as u64);
+    // Authentication is deliberately completed before writing any plaintext.
+    if !tls_bytes_equal(&expected_tag as u64, tag, 16) { return false; }
+    tls_chacha20_xor(key, 1, nonce, ciphertext, ciphertext_length, plaintext); return true;
 }
 
 fn tls_crypto_self_test() {
@@ -421,6 +446,19 @@ fn tls_crypto_self_test() {
     g_tls_crypto_aead_ok = aead_ok
         && tls_bytes_equal(&aead_cipher as u64, &TLS_AEAD_CIPHER1 as u64, 114)
         && tls_bytes_equal(&aead_tag as u64, &TLS_AEAD_TAG1 as u64, 16);
+    let decrypted: [u8; 114] = [0; 114]; let bad_tag: [u8; 16] = [0; 16];
+    for i: u32 in 0..16 { bad_tag[i] = TLS_AEAD_TAG1[i]; } bad_tag[0] = bad_tag[0] ^ 1;
+    for i: u32 in 0..114 { decrypted[i] = 0xa5; }
+    let rejected: bool = !tls_chacha20_poly1305_decrypt(
+        &TLS_AEAD_KEY1 as u64, &TLS_AEAD_NONCE1 as u64, &TLS_AEAD_AAD1 as u64, 12,
+        &TLS_AEAD_CIPHER1 as u64, 114, &bad_tag as u64, &decrypted as u64);
+    let untouched: bool = true; for i: u32 in 0..114 { if decrypted[i] != 0xa5 { untouched = false; } }
+    let decrypted_ok: bool = tls_chacha20_poly1305_decrypt(
+        &TLS_AEAD_KEY1 as u64, &TLS_AEAD_NONCE1 as u64, &TLS_AEAD_AAD1 as u64, 12,
+        &TLS_AEAD_CIPHER1 as u64, 114, &TLS_AEAD_TAG1 as u64, &decrypted as u64);
+    g_tls_crypto_aead_decrypt_ok = rejected && untouched && decrypted_ok
+        && tls_bytes_equal(&decrypted as u64,
+            "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it." as u64, 114);
     tls_x25519_self_test();
     tls13_self_test();
     tls_entropy_self_test();
