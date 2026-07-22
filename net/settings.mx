@@ -281,10 +281,16 @@ fn settings_hardware() {
     settings_text("ATA storage", 438, 334, false); settings_text(settings_yes_no(g_disk_ok), 650, 334, true);
     settings_text("Ethernet controller", 438, 366, false); settings_text(settings_yes_no(g_hw_ethernet), 650, 366, true);
     settings_text("Wireless controller", 438, 398, false); settings_text(settings_yes_no(g_hw_wifi), 650, 398, true);
-    settings_text("USB controller", 438, 430, false); settings_text(settings_yes_no(g_hw_usb), 650, 430, true);
-    settings_text("Audio controller", 438, 462, false); settings_text(settings_yes_no(g_hw_audio), 650, 462, true);
-    settings_text("PC speaker", 438, 494, false); settings_text(settings_on_off(g_speaker_enabled), 650, 494, true);
-    settings_text("Enter for device controls and a live rescan.", 438, 530, false);
+    settings_text("USB host / devices", 438, 430, false); settings_text(settings_yes_no(g_usb_ok), 610, 430, true);
+    num_to_str(g_usb_devices, g_numbuf); draw_text_abs(g_numbuf, 770, 430, 0xffffff, 0x0b0f14);
+    settings_text("USB descriptor", 438, 454, false); settings_text(settings_yes_no(g_usb_addressed), 650, 454, true);
+    settings_text("USB VID / PID", 438, 478, false); num_to_str(g_usb_vid as u32, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 478, 0xffffff, 0x0b0f14); draw_text_abs(" / ", 690, 478, 0x8fa1aa, 0x0b0f14);
+    num_to_str(g_usb_pid as u32, g_numbuf); draw_text_abs(g_numbuf, 714, 478, 0xffffff, 0x0b0f14);
+    settings_text("USB interface class", 438, 502, false); num_to_str(g_usb_interface_class as u32, g_numbuf);
+    draw_text_abs(g_numbuf, 650, 502, 0xffffff, 0x0b0f14);
+    settings_text("Audio controller", 438, 526, false); settings_text(settings_yes_no(g_hw_audio), 650, 526, true);
+    settings_text("Enter for device controls and a live rescan.", 438, 550, false);
 }
 
 fn settings_update() {
