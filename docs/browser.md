@@ -82,9 +82,11 @@ The TLS foundation is being built as independently testable Mort primitives.
 SHA-256, HMAC-SHA256, HKDF-SHA256, X25519, ChaCha20, Poly1305, and their
 combined AEAD construction are present and must pass published standard vectors
 during every boot. X25519 is checked both against the one-iteration function
-vector and Alice/Bob public/shared-secret vectors. This does **not** enable
-HTTPS by itself: the TLS state machine, X.509 parsing, trust anchors, hostname
-checks, and time validation must also be complete.
+vector and Alice/Bob public/shared-secret vectors. TLS 1.3's encoded HKDF labels
+and `Derive-Secret` operation are checked against an RFC 8448 handshake trace.
+This does **not** enable HTTPS by itself: the handshake/record state machine,
+X.509 parsing, trust anchors, hostname checks, and time validation must also be
+complete.
 
 Those are browser-engine projects in their own right, not hidden switches.
 The UI reports these limits directly so supported local pages and small HTTP

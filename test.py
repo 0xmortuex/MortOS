@@ -411,6 +411,7 @@ def smoke(disk_img=None):
     poly1305_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_poly1305_ok")
     aead_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_aead_ok")
     x25519_ok_addr = _elf32_symbol(ELF, "m_g_tls_crypto_x25519_ok")
+    key_schedule_ok_addr = _elf32_symbol(ELF, "m_g_tls13_key_schedule_ok")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -443,6 +444,8 @@ def smoke(disk_img=None):
               (_guest_u32(handle, aead_ok_addr) & 0xff) != 0, handle)
         check("Mort X25519 passes RFC 7748 iteration and DH vectors",
               (_guest_u32(handle, x25519_ok_addr) & 0xff) != 0, handle)
+        check("Mort TLS 1.3 key labels pass the RFC 8448 trace",
+              (_guest_u32(handle, key_schedule_ok_addr) & 0xff) != 0, handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",
