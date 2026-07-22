@@ -298,8 +298,14 @@ fn settings_hardware() {
     settings_text("USB class / protocol", 438, 526, false); num_to_str(g_usb_interface_class as u32, g_numbuf);
     draw_text_abs(g_numbuf, 650, 526, 0xffffff, 0x0b0f14); draw_text_abs(" / ", 690, 526, 0x8fa1aa, 0x0b0f14);
     num_to_str(g_usb_interface_protocol as u32, g_numbuf); draw_text_abs(g_numbuf, 714, 526, 0xffffff, 0x0b0f14);
-    settings_text("Audio", 438, 550, false); settings_text(settings_yes_no(g_hw_audio), 500, 550, true);
-    settings_text("Bluetooth", 610, 550, false); settings_text(settings_bluetooth_state(), 700, 550, true);
+    if g_usb_devices > 1 {
+        settings_text("USB #2 class / protocol", 438, 550, false); num_to_str(g_usb_device_class[1] as u32, g_numbuf);
+        draw_text_abs(g_numbuf, 650, 550, 0xffffff, 0x0b0f14); draw_text_abs(" / ", 690, 550, 0x8fa1aa, 0x0b0f14);
+        num_to_str(g_usb_device_protocol[1] as u32, g_numbuf); draw_text_abs(g_numbuf, 714, 550, 0xffffff, 0x0b0f14);
+    } else {
+        settings_text("Audio", 438, 550, false); settings_text(settings_yes_no(g_hw_audio), 500, 550, true);
+        settings_text("Bluetooth", 610, 550, false); settings_text(settings_bluetooth_state(), 700, 550, true);
+    }
 }
 
 fn settings_update() {
