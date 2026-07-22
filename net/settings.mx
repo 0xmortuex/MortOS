@@ -443,9 +443,31 @@ fn settings_draw_hardware_controls() {
     num_to_str(g_audio_volume, g_numbuf);
     settings_option_row("Audio volume", g_numbuf, 414, g_settings_sel == 4);
     settings_option_row("Test AC97 PCM", "Run", 450, g_settings_sel == 5);
-    settings_text("Wi-Fi controller", 438, 492, false); settings_text(settings_yes_no(g_hw_wifi), 650, 492, true);
-    settings_text("Bluetooth HCI", 438, 522, false); settings_text(settings_yes_no(g_hw_bluetooth), 650, 522, true);
+    settings_option_row("USB device list", "Open", 486, g_settings_sel == 6);
+    settings_text("Wi-Fi", 438, 530, false); settings_text(settings_yes_no(g_hw_wifi), 500, 530, true);
+    settings_text("Bluetooth", 610, 530, false); settings_text(settings_bluetooth_state(), 700, 530, true);
     settings_text("Up/Down: select   Enter: run   Esc/Left: back", 420, 580, false);
+}
+
+fn settings_draw_usb_devices() {
+    settings_title("USB Devices", "Assigned addresses and descriptor identities");
+    settings_text("Addr", 438, 270, false); settings_text("VID / PID", 510, 270, false);
+    settings_text("Class / proto", 650, 270, false);
+    let shown: u32 = g_usb_devices; if shown > 6 { shown = 6; }
+    for i: u32 in 0..shown {
+        let y: u32 = 304 + i * 40;
+        fill_rect(430, y - 7, 372, 30, 0x121a20);
+        num_to_str(g_usb_device_address[i] as u32, g_numbuf); draw_text_abs(g_numbuf, 446, y, 0xffffff, 0x121a20);
+        num_to_str(g_usb_device_vid[i] as u32, g_numbuf); draw_text_abs(g_numbuf, 510, y, 0xffffff, 0x121a20);
+        draw_text_abs(" / ", 558, y, 0x8fa1aa, 0x121a20);
+        num_to_str(g_usb_device_pid[i] as u32, g_numbuf); draw_text_abs(g_numbuf, 582, y, 0xffffff, 0x121a20);
+        num_to_str(g_usb_device_class[i] as u32, g_numbuf); draw_text_abs(g_numbuf, 674, y, 0xffffff, 0x121a20);
+        draw_text_abs(" / ", 714, y, 0x8fa1aa, 0x121a20);
+        num_to_str(g_usb_device_protocol[i] as u32, g_numbuf); draw_text_abs(g_numbuf, 738, y, 0xffffff, 0x121a20);
+        if g_usb_device_configured[i] { draw_text_abs("+", 782, y, g_accent, 0x121a20); }
+    }
+    if g_usb_devices == 0 { settings_text("No addressed USB devices.", 438, 320, false); }
+    settings_text("+ configured   Esc/Left: back", 420, 580, false);
 }
 
 fn settings_draw() {
@@ -458,6 +480,7 @@ fn settings_draw() {
     if g_settings_view == 3 { settings_draw_accessibility(); }
     if g_settings_view == 4 { settings_draw_hardware_controls(); }
     if g_settings_view == 5 { settings_draw_network_controls(); }
+    if g_settings_view == 6 { settings_draw_usb_devices(); }
 }
 
 fn settings_up() {
@@ -482,7 +505,8 @@ fn settings_down() {
         return;
     }
     let last: u32 = 1;
-    if g_settings_view == 4 { last = 5; }
+    if g_settings_view == 4 { last = 6; }
+    if g_settings_view == 6 { return; }
     if g_settings_sel < last { g_settings_sel = g_settings_sel + 1; settings_draw(); }
 }
 
@@ -543,6 +567,7 @@ fn settings_enter() {
         if g_settings_sel == 3 { ac97_init(); hw_scan_pci(); settings_draw(); }
         if g_settings_sel == 4 { ac97_set_volume((g_audio_volume + 25) % 125); settings_draw(); }
         if g_settings_sel == 5 { ac97_test_tone(); settings_draw(); }
+        if g_settings_sel == 6 { g_settings_view = 6; g_settings_sel = 0; settings_draw(); }
         return;
     }
     if g_settings_view == 5 {
