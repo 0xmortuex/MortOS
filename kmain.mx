@@ -418,6 +418,7 @@ fn mouse_click() {
         }
         return;
     }
+    if g_overlay == 0 && g_app == 2 { browser_click(g_mouse_x, g_mouse_y); return; }
     if g_overlay == 0 && g_app == 3 && g_mouse_x >= 198 && g_mouse_x < 390 && g_mouse_y >= 230 && g_mouse_y < 486 {
         let row: u32 = (g_mouse_y - 230) / 32;
         let section: u32 = g_settings_scroll + row;

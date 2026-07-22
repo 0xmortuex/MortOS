@@ -668,6 +668,40 @@ fn browser_edit_key(sc: u8) {
     }
 }
 
+fn browser_click(x: u32, y: u32) {
+    if y >= 192 && y < 212 {
+        for tab: u32 in 0..g_browser_tab_count {
+            let left: u32 = 196 + tab * 148;
+            if x >= left && x < left + 140 {
+                g_browser_active_tab = tab; browser_load(browser_tab_slot(tab), false); return;
+            }
+        }
+        if x >= 784 && x < 824 { browser_new_tab(); return; }
+    }
+    if y >= 218 && y < 245 {
+        if x >= 188 && x < 216 { browser_back(); return; }
+        if x >= 216 && x < 240 { browser_forward(); return; }
+        if x >= 240 && x < 266 { browser_home(); return; }
+        if x >= 266 && x < 292 { browser_reload(); return; }
+        if x >= 292 && x < 806 { browser_begin_address(); return; }
+    }
+    if g_browser_links_open {
+        for i: u32 in 0..g_browser_link_count {
+            let top: u32 = 299 + i * 40;
+            if x >= 204 && x < 804 && y >= top && y < top + 30 { browser_open_link(i); return; }
+        }
+        return;
+    }
+    if !g_browser_remote && (g_browser_page == 2 || g_browser_page == 3) {
+        let count: u32 = browser_history_count(); let base: u32 = BROWSER_HISTORY_BASE;
+        if g_browser_page == 3 { count = browser_bookmark_count(); base = BROWSER_BOOKMARK_BASE; }
+        for i: u32 in 0..count {
+            let top: u32 = 275 + i * 42;
+            if x >= 204 && x < 804 && y >= top && y < top + 30 { browser_load(browser_slot(base, i), true); return; }
+        }
+    }
+}
+
 fn browser_find_key(sc: u8) {
     if sc == 42 || sc == 54 { g_browser_shift = true; return; }
     if sc == 170 || sc == 182 { g_browser_shift = false; return; }

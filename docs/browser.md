@@ -8,6 +8,8 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 ## What works
 
 - Up to four tabs with page titles, switching, creation, and closing.
+- Clickable tabs, new-tab control, navigation buttons, address bar, history,
+  bookmarks, and extracted-link rows when a mouse is attached.
 - Address entry for `vex://`, `http://`, and bare host names.
 - Private, on-device address suggestions from bookmarks and recent history.
 - Back, forward, home, reload, scrolling, and find-in-page.
