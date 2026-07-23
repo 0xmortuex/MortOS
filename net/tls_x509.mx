@@ -12,6 +12,7 @@ let g_tls_x509_rtc_ok: bool = false;
 let g_tls_x509_rtc_test: [u8; 8] = [0; 8];
 let g_tls_x509_rsa_spki_ok: bool = false;
 let g_tls_x509_rsa_edge_test: [u8; 2] = [0; 2];
+let g_tls_x509_policy_ok: bool = false;
 
 fn tls_der_read(input: u64, available: u32, expected_tag: u8,
                 content_offset: u64, content_length: u64) -> u32 {
@@ -221,6 +222,25 @@ fn tls_x509_general_names_match(general_names: u64, general_names_length: u32,
         if item_total == 0 { return false; }
         if tag == 0x82 && tls_x509_dns_name_matches(
             general_names + ((pos + item_offset) as u64), item_length, host, host_length) { return true; }
+        pos = pos + item_total;
+    }
+    return false;
+}
+
+fn tls_x509_general_names_match_ip(general_names: u64, general_names_length: u32,
+                                   address: u64) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    if tls_der_read(general_names, general_names_length, 0x30,
+        &content_offset as u64, &content_length as u64) != general_names_length { return false; }
+    let pos: u32 = content_offset; let end: u32 = content_offset + content_length;
+    while pos < end {
+        let tag: u8 = *((general_names + (pos as u64)) as *u8);
+        let item_offset: u32 = 0; let item_length: u32 = 0;
+        let item_total: u32 = tls_der_read(general_names + (pos as u64), end - pos, tag,
+            &item_offset as u64, &item_length as u64);
+        if item_total == 0 { return false; }
+        if tag == 0x87 && item_length == 4
+            && tls_bytes_equal(general_names + ((pos + item_offset) as u64), address, 4) { return true; }
         pos = pos + item_total;
     }
     return false;
@@ -480,6 +500,117 @@ fn tls_x509_find_san(certificate: u64, extensions_offset: u32, extensions_length
     return found;
 }
 
+fn tls_x509_basic_constraints(value: u64, value_length: u32, expected_ca: bool) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    if tls_der_read(value, value_length, 0x30,
+        &content_offset as u64, &content_length as u64) != value_length { return false; }
+    let pos: u32 = content_offset; let end: u32 = content_offset + content_length; let ca: bool = false;
+    let item_offset: u32 = 0; let item_length: u32 = 0;
+    if pos < end && *((value + (pos as u64)) as *u8) == 0x01 {
+        let total: u32 = tls_der_read(value + (pos as u64), end - pos, 0x01,
+            &item_offset as u64, &item_length as u64);
+        if total == 0 || item_length != 1 { return false; }
+        let flag: u8 = *((value + ((pos + item_offset) as u64)) as *u8);
+        if flag != 0 && flag != 0xff { return false; }
+        ca = flag == 0xff; pos = pos + total;
+    }
+    if pos < end {
+        let total: u32 = tls_der_read(value + (pos as u64), end - pos, 0x02,
+            &item_offset as u64, &item_length as u64);
+        if total == 0 || item_length == 0 || item_length > 4
+            || !tls_x509_integer_valid(value + ((pos + item_offset) as u64), item_length) { return false; }
+        pos = pos + total;
+    }
+    return pos == end && ca == expected_ca;
+}
+
+fn tls_x509_key_usage(value: u64, value_length: u32, ca: bool) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    if tls_der_read(value, value_length, 0x03,
+        &content_offset as u64, &content_length as u64) != value_length
+        || content_length < 2 { return false; }
+    let unused: u8 = *((value + (content_offset as u64)) as *u8);
+    if unused > 7 { return false; }
+    let first: u8 = *((value + ((content_offset + 1) as u64)) as *u8);
+    if ca { return (first & 0x04) != 0; } // keyCertSign
+    return (first & 0x80) != 0; // digitalSignature
+}
+
+fn tls_x509_server_eku(value: u64, value_length: u32) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    if tls_der_read(value, value_length, 0x30,
+        &content_offset as u64, &content_length as u64) != value_length { return false; }
+    let pos: u32 = content_offset; let end: u32 = content_offset + content_length;
+    let server_oid: [u8; 8] = [0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01];
+    let found: bool = false;
+    while pos < end {
+        let oid_offset: u32 = 0; let oid_length: u32 = 0;
+        let total: u32 = tls_der_read(value + (pos as u64), end - pos, 0x06,
+            &oid_offset as u64, &oid_length as u64);
+        if total == 0 { return false; }
+        if oid_length == 8 && tls_bytes_equal(
+            value + ((pos + oid_offset) as u64), &server_oid as u64, 8) { found = true; }
+        pos = pos + total;
+    }
+    return pos == end && found;
+}
+
+fn tls_x509_extensions_policy(certificate: u64, extensions_offset: u32,
+                              extensions_length: u32, ca: bool) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    if extensions_length == 0 || tls_der_read(certificate + (extensions_offset as u64),
+        extensions_length, 0x30, &content_offset as u64, &content_length as u64) != extensions_length { return false; }
+    let pos: u32 = extensions_offset + content_offset; let end: u32 = pos + content_length;
+    let have_basic: bool = false; let have_usage: bool = false; let have_eku: bool = false; let have_san: bool = false;
+    while pos < end {
+        let ext_offset: u32 = 0; let ext_length: u32 = 0;
+        let ext_total: u32 = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+            &ext_offset as u64, &ext_length as u64);
+        if ext_total == 0 { return false; }
+        let scan: u32 = pos + ext_offset; let ext_end: u32 = scan + ext_length;
+        let item_offset: u32 = 0; let item_length: u32 = 0;
+        let oid_total: u32 = tls_der_read(certificate + (scan as u64), ext_end - scan, 0x06,
+            &item_offset as u64, &item_length as u64);
+        if oid_total == 0 { return false; }
+        let oid: u64 = certificate + ((scan + item_offset) as u64);
+        let oid_size: u32 = item_length; scan = scan + oid_total;
+        let critical: bool = false;
+        if scan < ext_end && *((certificate + (scan as u64)) as *u8) == 0x01 {
+            let bool_total: u32 = tls_der_read(certificate + (scan as u64), ext_end - scan, 0x01,
+                &item_offset as u64, &item_length as u64);
+            if bool_total == 0 || item_length != 1 { return false; }
+            let flag: u8 = *((certificate + ((scan + item_offset) as u64)) as *u8);
+            if flag != 0 && flag != 0xff { return false; }
+            critical = flag == 0xff; scan = scan + bool_total;
+        }
+        let value_total: u32 = tls_der_read(certificate + (scan as u64), ext_end - scan, 0x04,
+            &item_offset as u64, &item_length as u64);
+        if value_total == 0 || scan + value_total != ext_end { return false; }
+        let value: u64 = certificate + ((scan + item_offset) as u64);
+        // X.509 extension OIDs used here are all 2.5.29.N (three DER bytes).
+        let extension_number: u8 = 0xff;
+        if oid_size == 3 && *((oid + 0) as *u8) == 0x55 && *((oid + 1) as *u8) == 0x1d {
+            extension_number = *((oid + 2) as *u8);
+        } else if critical { return false; }
+        if extension_number == 19 {
+            if have_basic || !tls_x509_basic_constraints(value, item_length, ca) { return false; }
+            have_basic = true;
+        } else if extension_number == 15 {
+            if have_usage || !tls_x509_key_usage(value, item_length, ca) { return false; }
+            have_usage = true;
+        } else if extension_number == 37 {
+            if ca || have_eku || !tls_x509_server_eku(value, item_length) { return false; }
+            have_eku = true;
+        } else if extension_number == 17 {
+            if have_san { return false; }
+            have_san = true;
+        } else if extension_number != 14 && extension_number != 35 && critical { return false; }
+        pos = pos + ext_total;
+    }
+    if ca { return have_basic && have_usage; }
+    return have_basic && have_usage && have_eku && have_san;
+}
+
 fn tls_x509_rsa_oid(input: u64, length: u32) -> bool {
     let oid: [u8; 9] = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
     return length == 9 && tls_bytes_equal(input, &oid as u64, 9);
@@ -726,4 +857,22 @@ fn tls_x509_self_test() {
         && exponent == 65537 && g_tls_x509_rsa_edge_test[0] == 0x80 && g_tls_x509_rsa_edge_test[1] == 1
         && !tls_x509_spki_rsa(&rsa_spki as u64, 294,
                               &modulus_offset as u64, &modulus_length as u64, &exponent as u64);
+    let ca_constraints: [u8; 5] = [0x30, 0x03, 0x01, 0x01, 0xff];
+    let leaf_constraints: [u8; 2] = [0x30, 0x00];
+    let ca_usage: [u8; 4] = [0x03, 0x02, 0x05, 0x04];
+    let leaf_usage: [u8; 4] = [0x03, 0x02, 0x07, 0x80];
+    let server_eku: [u8; 12] = [
+        0x30, 0x0a, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01
+    ];
+    let ip_names: [u8; 8] = [0x30, 0x06, 0x87, 0x04, 10, 0, 2, 2];
+    let ip_address: [u8; 4] = [10, 0, 2, 2]; let wrong_ip: [u8; 4] = [10, 0, 2, 3];
+    g_tls_x509_policy_ok = tls_x509_basic_constraints(&ca_constraints as u64, 5, true)
+        && tls_x509_basic_constraints(&leaf_constraints as u64, 2, false)
+        && !tls_x509_basic_constraints(&leaf_constraints as u64, 2, true)
+        && tls_x509_key_usage(&ca_usage as u64, 4, true)
+        && tls_x509_key_usage(&leaf_usage as u64, 4, false)
+        && !tls_x509_key_usage(&leaf_usage as u64, 4, true)
+        && tls_x509_server_eku(&server_eku as u64, 12)
+        && tls_x509_general_names_match_ip(&ip_names as u64, 8, &ip_address as u64)
+        && !tls_x509_general_names_match_ip(&ip_names as u64, 8, &wrong_ip as u64);
 }

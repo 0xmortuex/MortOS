@@ -399,7 +399,21 @@ fn browser_tls_leaf_rsa(message: u64, message_length: u32,
                 &current_extensions_offset as u64, &current_extensions_length as u64)
             || !tls_x509_parse_validity(current + (current_validity_offset as u64),
                 current_validity_length, &current_not_before as u64, &current_not_after as u64)
-            || !tls_x509_valid_at(current_not_before, current_not_after, chain_now) { return false; }
+            || !tls_x509_valid_at(current_not_before, current_not_after, chain_now)
+            || !tls_x509_extensions_policy(current, current_extensions_offset,
+                                            current_extensions_length, index > 0) { return false; }
+        if index == 0 {
+            let san_offset: u32 = 0; let san_length: u32 = 0;
+            if !tls_x509_find_san(current, current_extensions_offset, current_extensions_length,
+                                  &san_offset as u64, &san_length as u64) { return false; }
+            let host_ip: [u8; 4] = [0; 4];
+            if browser_parse_ipv4(&g_browser_net_host as u64, &host_ip as u64) {
+                if !tls_x509_general_names_match_ip(current + (san_offset as u64), san_length,
+                                                    &host_ip as u64) { return false; }
+            } else if !tls_x509_general_names_match(
+                current + (san_offset as u64), san_length, &g_browser_net_host as u64,
+                str_len(&g_browser_net_host as *u8)) { return false; }
+        }
         if index + 1 < certificate_count {
             let issuer_offset: u32 = 0; let issuer_length: u32 = 0;
             if !tls13_certificate_at(message, message_length, index + 1,

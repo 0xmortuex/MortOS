@@ -451,6 +451,7 @@ def smoke(disk_img=None):
     x509_rtc_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_rtc_ok")
     x509_rtc_addr = _elf32_symbol(ELF, "m_g_tls_x509_rtc_test")
     x509_rsa_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_rsa_spki_ok")
+    x509_policy_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_policy_ok")
     rsa_modexp_ok_addr = _elf32_symbol(ELF, "m_g_tls_rsa_modexp_ok")
     rsa_output_addr = _elf32_symbol(ELF, "m_g_tls_rsa_output_test")
     rsa_pkcs1_ok_addr = _elf32_symbol(ELF, "m_g_tls_rsa_pkcs1_ok")
@@ -570,6 +571,8 @@ def smoke(disk_img=None):
               and 20200101000000 <= guest_rtc <= 99991231235959, handle)
         check("Mort extracts policy-sized RSA keys from X.509 SubjectPublicKeyInfo",
               (_guest_u32(handle, x509_rsa_ok_addr) & 0xff) != 0, handle)
+        check("Mort enforces CA, key-usage, server-EKU, and IP-SAN policy",
+              (_guest_u32(handle, x509_policy_ok_addr) & 0xff) != 0, handle)
         rsa_em = _guest_bytes(handle, rsa_output_addr, 128)
         check("Mort RSA public operation reproduces the RFC 8448 certificate signature block",
               (_guest_u32(handle, rsa_modexp_ok_addr) & 0xff) != 0

@@ -169,6 +169,10 @@ the server Finished value. Presented RSA chains are iterated within the 16-entry
 certificate-list bound; every certificate receives RTC validity validation,
 adjacent issuer/subject Names must match exactly, and every child
 SHA256-with-RSA signature is verified using the next certificate's key. The
+leaf must assert `CA:FALSE`, digitalSignature, serverAuth EKU, and a matching
+DNS or IPv4 SAN. Every issuer must assert `CA:TRUE` and keyCertSign. Duplicate
+role extensions and unrecognized critical extensions are rejected.
+The
 SHA-256 fingerprint of the final verified chain anchor can then be approved
 explicitly with `K`; Vex stores the host-and-port-scoped anchor pin in the user's
 MortFS state and compares it in constant time on later connections. Private
@@ -181,13 +185,13 @@ passes it to the same content-type-aware text renderer used by HTTP. No
 application bytes are released before record authentication and pin validation.
 Relative links from an authenticated HTTPS page retain the `https://` scheme,
 host, and non-default port rather than silently downgrading to HTTP.
-This enables pinned HTTPS, not automatic public-Web PKI. Chain construction and
-RSA issuer signatures are implemented, including renewed leaf certificates
-under the same pinned anchor. A future public-root mode still needs
-BasicConstraints/key-usage/EKU policy, unknown critical-extension rejection,
-hostname/IP SAN enforcement across the validated chain, and an audited root
-store. Until then, the host/port anchor pin is the trust decision and a changed
-anchor fails closed for renewed explicit approval.
+This enables pinned HTTPS, not automatic public-Web PKI. Chain construction,
+RSA issuer signatures, certificate roles, usages, critical-extension policy,
+and DNS/IPv4 SAN identity are enforced, including renewed leaf certificates
+under the same pinned anchor. A future public-root mode still needs an audited
+root store and revocation/update strategy. Until then, the host/port anchor pin
+is the trust decision and a changed anchor fails closed for renewed explicit
+approval.
 
 Ephemeral TLS material is also fail-closed behind an x86 hardware-entropy gate.
 Mort checks CPUID for RDRAND, retries failed samples, and enables the gate only

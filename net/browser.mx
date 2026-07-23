@@ -553,7 +553,8 @@ fn browser_draw_about() {
         && g_tls13_encrypt_record_ok && g_input_bounds_ok && g_tls_x509_der_ok
         && g_tls_x509_certificate_message_ok && g_tls_x509_hostname_ok && g_tls_x509_fields_ok
         && g_tls_x509_time_test[0] != 0 && g_tls_x509_rtc_ok && g_tls_x509_rtc_test[0] != 0
-        && g_tls_x509_rsa_spki_ok && g_tls_rsa_modexp_ok && g_tls_rsa_output_test[1] == 1
+        && g_tls_x509_rsa_spki_ok && g_tls_x509_policy_ok
+        && g_tls_rsa_modexp_ok && g_tls_rsa_output_test[1] == 1
         && g_tls_rsa_pkcs1_ok && g_tls_rsa_pss_ok && g_tls_rsa_pss_output_test[127] == 0xbc;
     draw_text_abs(settings_yes_no(aead_ok), 512, 530, 0x4fd1c5, 0x0b0f14);
     num_to_str(g_tls13_client_hello_test_len, g_numbuf); draw_text_abs(g_numbuf, 568, 530, 0x8fa1aa, 0x0b0f14);
