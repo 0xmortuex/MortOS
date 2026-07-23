@@ -125,6 +125,11 @@ RSA SubjectPublicKeyInfo parsing requires the `rsaEncryption` OID with canonical
 NULL parameters, a byte-aligned BIT STRING, a positive odd 2048- to 4096-bit
 modulus, and a positive odd bounded exponent. The long-form DER path is covered
 by a generated 2048-bit parser vector.
+Mort also has a bounded 1024- to 4096-bit RSA public operation (the 1024-bit
+floor exists only so the historical RFC trace can test the arithmetic; X.509
+policy still requires at least 2048 bits). Its Montgomery implementation is
+checked by recovering the complete PKCS#1 signature block from RFC 8448's
+published certificate, including the expected SHA-256 digest.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

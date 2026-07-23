@@ -464,4 +464,5 @@ fn tls_crypto_self_test() {
     tls_entropy_self_test();
     input_bounds_self_test();
     tls_x509_self_test();
+    tls_rsa_self_test();
 }

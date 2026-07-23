@@ -476,7 +476,7 @@ fn browser_draw_about() {
         && g_tls13_reassembly_ok && g_input_bounds_ok && g_tls_x509_der_ok
         && g_tls_x509_certificate_message_ok && g_tls_x509_hostname_ok && g_tls_x509_fields_ok
         && g_tls_x509_time_test[0] != 0 && g_tls_x509_rtc_ok && g_tls_x509_rtc_test[0] != 0
-        && g_tls_x509_rsa_spki_ok;
+        && g_tls_x509_rsa_spki_ok && g_tls_rsa_modexp_ok && g_tls_rsa_output_test[1] == 1;
     draw_text_abs(settings_yes_no(aead_ok), 512, 530, 0x4fd1c5, 0x0b0f14);
     num_to_str(g_tls13_client_hello_test_len, g_numbuf); draw_text_abs(g_numbuf, 568, 530, 0x8fa1aa, 0x0b0f14);
     draw_text_abs("CH / RNG", 600, 530, 0x8fa1aa, 0x0b0f14);
