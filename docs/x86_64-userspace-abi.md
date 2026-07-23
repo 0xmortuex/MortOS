@@ -11,9 +11,10 @@ facilities remain planned unless explicitly marked otherwise.
 
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,
-`malloc`, `calloc`, `realloc`, `free`, and C++ `new`/`delete` are exercised in
-an isolated process. This is a bootstrap runtime, not yet the complete
-libc/libc++ surface required by Chromium.
+`malloc`, `calloc`, `realloc`, `free`, C++ `new`/`delete`, compiler atomics,
+and an FS-base TLS value preserved across a context switch are exercised in an
+isolated process. This is a bootstrap runtime, not yet the complete libc/libc++
+surface required by Chromium.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
 Mort 0.39's hosted `net_*` intrinsic detection collides with MortOS's own
@@ -64,6 +65,7 @@ The initial numeric assignments are:
 | 24 | `yield()` | Implemented with per-process saved context and round-robin resumption |
 | 39 | `getpid()` | Implemented for scheduled processes |
 | 60 | `exit(status)` | Implemented for the current process |
+| 158 | `arch_prctl(code, address)` | Implements bounded `ARCH_SET_FS`/`ARCH_GET_FS`; FS base is restored per process |
 | 228 | `clock_gettime(clock_id, timespec)` | Implemented for `CLOCK_MONOTONIC` from the 100 Hz kernel tick |
 
 The remaining implementation order is:

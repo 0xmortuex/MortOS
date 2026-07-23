@@ -9,6 +9,14 @@ extern "C" void *malloc(size_type);
 extern "C" void free(void *);
 extern "C" void *calloc(size_type, size_type);
 extern "C" void *realloc(void *, size_type);
+extern "C" unsigned long mortos_mmap(
+    unsigned long, unsigned long, unsigned long,
+    unsigned long, unsigned long, unsigned long);
+extern "C" unsigned long mortos_munmap(unsigned long, unsigned long);
+extern "C" unsigned long mortos_arch_prctl(unsigned long, unsigned long);
+extern "C" unsigned long mortos_yield();
+extern "C" void mortos_fs_store(unsigned long, unsigned long);
+extern "C" unsigned long mortos_fs_load(unsigned long);
 
 static unsigned long constructor_value;
 
@@ -60,6 +68,26 @@ extern "C" int main() {
         return 6;
     }
     delete widget;
+
+    unsigned long tls = mortos_mmap(0, 4096, 3, 0x22, ~0UL, 0);
+    if (tls >= ~4095UL
+        || mortos_arch_prctl(0x1002, tls) != 0) {
+        return 8;
+    }
+    mortos_fs_store(8, 0x544C5356414C5545UL);
+    unsigned long atomic_value = 10;
+    if (__atomic_fetch_add(&atomic_value, 7, __ATOMIC_SEQ_CST) != 10
+        || atomic_value != 17
+        || mortos_yield() != 0
+        || mortos_fs_load(8) != 0x544C5356414C5545UL
+        || mortos_arch_prctl(0x1003, tls + 16) != 0
+        || *reinterpret_cast<unsigned long *>(tls + 16) != tls) {
+        return 9;
+    }
+    if (mortos_arch_prctl(0x1002, 0) != 0
+        || mortos_munmap(tls, 4096) != 0) {
+        return 10;
+    }
 
     static const char message[] = "MORT64 CXX RUNTIME OK\r\n";
     if (mortos_write(message, sizeof(message) - 1) != sizeof(message) - 1) {

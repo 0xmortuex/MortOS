@@ -83,6 +83,28 @@ mortos_call0:
     ret
 .size mortos_call0, . - mortos_call0
 
+.global mortos_arch_prctl
+.type mortos_arch_prctl, @function
+mortos_arch_prctl:
+    mov $158, %rax                 /* SYS_arch_prctl */
+    syscall
+    ret
+.size mortos_arch_prctl, . - mortos_arch_prctl
+
+.global mortos_fs_store
+.type mortos_fs_store, @function
+mortos_fs_store:
+    mov %rsi, %fs:(%rdi)
+    ret
+.size mortos_fs_store, . - mortos_fs_store
+
+.global mortos_fs_load
+.type mortos_fs_load, @function
+mortos_fs_load:
+    mov %fs:(%rdi), %rax
+    ret
+.size mortos_fs_load, . - mortos_fs_load
+
 .global mortos_spin
 .type mortos_spin, @function
 mortos_spin:

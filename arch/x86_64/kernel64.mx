@@ -39,6 +39,8 @@ let g_process_context_valid64: [u8; 8] = [0; 8];
 let g_process_preemptions64: [u64; 8] = [0; 8];
 let g_process_clock_seen64: [u8; 8] = [0; 8];
 let g_process_mmap_seen64: [u8; 8] = [0; 8];
+let g_process_fs_base64: [u64; 8] = [0; 8];
+let g_process_tls_seen64: [u8; 8] = [0; 8];
 let g_current_process64: u32 = 8;
 let g_next_pid64: u64 = 1;
 let g_timer_ticks64: u64 = 0;
@@ -58,6 +60,7 @@ extern fn mort64_cxx_image_size() -> u64;
 extern fn mort64_enter_user(entry: u64, stack_top: u64, page_root: u64);
 extern fn mort64_resume_user(context: u64, page_root: u64);
 extern fn mort64_flush_tlb();
+extern fn mort64_set_user_fs(address: u64);
 
 fn serial_init64() {
     outb(0x3F9, 0);       // disable UART interrupts
@@ -452,6 +455,8 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_preemptions64[slot] = 0;
             g_process_clock_seen64[slot] = 0;
             g_process_mmap_seen64[slot] = 0;
+            g_process_fs_base64[slot] = 0;
+            g_process_tls_seen64[slot] = 0;
             g_next_pid64 = g_next_pid64 + 1;
             return slot;
         }
@@ -477,6 +482,7 @@ fn process_schedule64() -> u32 {
                 g_process_state64[slot] = 2;
                 g_user_pt64 = g_process_pt64[slot];
                 g_user_mmap_pt64 = g_process_mmap_pt64[slot];
+                mort64_set_user_fs(g_process_fs_base64[slot]);
                 if g_process_context_valid64[slot] != 0 {
                     let context: u64 = (&g_process_context64 as u64)
                         + ((slot as u64) * 144);
@@ -559,6 +565,7 @@ fn process_reap64(slot: u32) -> bool {
     g_process_pt64[slot] = 0;
     g_process_mmap_pt64[slot] = 0;
     g_process_entry64[slot] = 0;
+    g_process_fs_base64[slot] = 0;
     g_process_context_valid64[slot] = 0;
     return true;
 }
@@ -1009,6 +1016,30 @@ fn syscall_dispatch64(
         }
         return 0;
     }
+    if number == 158 {
+        if g_current_process64 >= 8 {
+            return ~(21 as u64);                // -EINVAL
+        }
+        if argument0 == 0x1002 {                // ARCH_SET_FS
+            if argument1 != 0
+                && !user_range_writable64(argument1, 1) {
+                return ~(13 as u64);            // -EFAULT
+            }
+            g_process_fs_base64[g_current_process64] = argument1;
+            g_process_tls_seen64[g_current_process64] = 1;
+            mort64_set_user_fs(argument1);
+            return 0;
+        }
+        if argument0 == 0x1003 {                // ARCH_GET_FS
+            if !user_range_writable64(argument1, 8) {
+                return ~(13 as u64);
+            }
+            *(argument1 as *u64) =
+                g_process_fs_base64[g_current_process64];
+            return 0;
+        }
+        return ~(21 as u64);
+    }
     return ~(37 as u64); // -ENOSYS
 }
 
@@ -1144,7 +1175,10 @@ fn kmain64(multiboot_info: u64) {
             }
             if g_process_state64[cxx_slot] == 3
                 && g_process_exit64[cxx_slot] == 23
-                && g_process_mmap_seen64[cxx_slot] != 0 {
+                && g_process_mmap_seen64[cxx_slot] != 0
+                && g_process_tls_seen64[cxx_slot] != 0 {
+                serial_write64(
+                    "MORT64: FS-base TLS and atomic ABI passed\r\n");
                 serial_write64(
                     "MORT64: freestanding C++ runtime passed\r\n");
             } else {

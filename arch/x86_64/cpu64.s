@@ -221,6 +221,17 @@ mort64_flush_tlb:
     ret
 .size mort64_flush_tlb, . - mort64_flush_tlb
 
+.global mort64_set_user_fs
+.type mort64_set_user_fs, @function
+mort64_set_user_fs:
+    mov %rdi, %rax
+    mov %rdi, %rdx
+    shr $32, %rdx
+    mov $0xC0000100, %ecx           /* IA32_FS_BASE */
+    wrmsr
+    ret
+.size mort64_set_user_fs, . - mort64_set_user_fs
+
 .type mort64_syscall_entry, @function
 mort64_syscall_entry:
     cmp $24, %rax                   /* cooperative process yield */

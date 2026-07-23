@@ -30,7 +30,7 @@ def main():
     cmd = [
         qemu,
         "-machine", "q35",
-        "-m", "256M",
+        "-m", "64M",
         "-display", "none",
         "-serial", "stdio",
         "-monitor", "none",
@@ -72,6 +72,7 @@ def main():
         "MORT64: W^X JIT mapping transition passed",
         "MORT64: timer preemption context switch passed",
         "MORT64 CXX RUNTIME OK",
+        "MORT64: FS-base TLS and atomic ABI passed",
         "MORT64: freestanding C++ runtime passed",
         "MORT64: process address spaces reclaimed",
         "MORT64: bootstrap foundation ready",
