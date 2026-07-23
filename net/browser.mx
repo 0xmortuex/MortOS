@@ -629,8 +629,10 @@ fn browser_draw_network() {
     else { draw_text_abs("Not assigned", 400, 428, 0xffffff, 0x0b0f14); }
     draw_text_abs("Transport", 208, 460, 0x8fa1aa, 0x0b0f14); draw_text_abs("Ethernet / IPv4 / TCP", 400, 460, 0xffffff, 0x0b0f14);
     draw_text_abs("Secure transport", 208, 492, 0x8fa1aa, 0x0b0f14);
-    if g_browser_tls_probe_ok { draw_text_abs("TLS 1.3 encrypted handshake / trust pending", 400, 492, 0xffb454, 0x0b0f14); }
-    else { draw_text_abs("TLS trust pending", 400, 492, 0xffb454, 0x0b0f14); }
+    if g_browser_tls_http_ok { draw_text_abs("TLS 1.3 / pinned / authenticated", 400, 492, 0x4fd1c5, 0x0b0f14); }
+    else if g_browser_tls_pin_matched { draw_text_abs("TLS 1.3 / pinned handshake", 400, 492, 0x4fd1c5, 0x0b0f14); }
+    else if g_browser_tls_probe_ok { draw_text_abs("TLS 1.3 / trust approval required", 400, 492, 0xffb454, 0x0b0f14); }
+    else { draw_text_abs("TLS 1.3 ready / no active session", 400, 492, 0x8fa1aa, 0x0b0f14); }
     num_to_str(g_browser_tls_probe_stage, g_numbuf); draw_text_abs(g_numbuf, 744, 492, 0x8fa1aa, 0x0b0f14);
     draw_text_abs("Open Settings > Network to renew DHCP.", 208, 532, 0xc8d0d4, 0x0b0f14);
 }

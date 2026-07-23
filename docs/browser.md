@@ -10,7 +10,7 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 - Up to four tabs with page titles, switching, creation, and closing.
 - Clickable tabs, new-tab control, navigation buttons, address bar, history,
   bookmarks, and extracted-link rows when a mouse is attached.
-- Address entry for `vex://`, `http://`, and bare host names.
+- Address entry for `vex://`, `http://`, `https://`, and bare host names.
 - Private, on-device address suggestions from bookmarks and recent history.
 - Back, forward, home, reload, scrolling, and find-in-page.
 - Persistent bookmarks and six-entry history in the current user's
@@ -26,6 +26,9 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 - DHCP lease parsing for address/subnet/router/DNS, DNS A queries, subnet-aware
   ARP routing, TCP handshakes, HTTP/1.0 requests, and HTTP/1.1 chunked-transfer
   decoding over an RTL8139 interface.
+- TLS 1.3 with X25519, RSA-PSS authentication, ChaCha20-Poly1305 records,
+  explicit host/port certificate pins, encrypted HTTP requests, and
+  authenticated HTML/plain-text responses.
 - Saving the current rendered document as `vex-page.txt` in the user's home
   directory.
 - Local pages for Home, About, History, Bookmarks, Downloads, Settings, and
@@ -49,6 +52,7 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 | `T` / `X` | New tab / close tab |
 | `Tab` | Switch to the next tab |
 | `P` | Toggle private mode |
+| `K` | Approve the currently verified but untrusted HTTPS certificate pin |
 | `C` | Clear history while on `vex://settings` |
 | `V` | Clear the saved HTTPS certificate pin on `vex://settings` |
 
@@ -73,10 +77,12 @@ checks persistence across a reboot.
 
 ## Security and current engine boundary
 
-Vex deliberately blocks `https://` instead of silently downgrading it because
-MortOS does not yet have a TLS implementation or certificate store. It does
-not execute JavaScript, accept cookies, load images or media, apply CSS layout,
-submit forms, or provide a general-purpose DOM. HTTP traffic is unencrypted and
+Vex supports authenticated TLS 1.3 for explicitly pinned RSA certificates and
+never silently downgrades `https://`. It does not yet ship a public CA root
+store or general certificate-chain builder, so a first connection remains
+blocked behind explicit fingerprint approval. It also does not execute
+JavaScript, accept cookies, load images or media, apply CSS layout, submit
+forms, or provide a general-purpose DOM. Plain HTTP remains unencrypted and
 must not be used for passwords or other sensitive data.
 
 The TLS foundation is being built as independently testable Mort primitives.
@@ -171,9 +177,11 @@ passes it to the same content-type-aware text renderer used by HTTP. No
 application bytes are released before record authentication and pin validation.
 Relative links from an authenticated HTTPS page retain the `https://` scheme,
 host, and non-default port rather than silently downgrading to HTTP.
-This does **not** enable HTTPS by itself:
-authentication, X.509 parsing, trust
-anchors, hostname checks, and time validation must also be complete.
+This enables pinned HTTPS, not automatic public-Web PKI. A future CA mode still
+needs chain construction, BasicConstraints/key-usage/EKU policy, unknown
+critical-extension rejection, hostname/IP SAN enforcement across the validated
+chain, and an audited root store. Until then, the host/port pin is the trust
+anchor and a changed certificate fails closed for renewed explicit approval.
 
 Ephemeral TLS material is also fail-closed behind an x86 hardware-entropy gate.
 Mort checks CPUID for RDRAND, retries failed samples, and enables the gate only
@@ -195,9 +203,10 @@ python test.py usb-hotplug
 python test.py smoke
 ```
 
-The browser regression covers real DHCP configuration, ARP, TCP and HTTP
+The browser regression covers real DHCP configuration, ARP, TCP, HTTP, and TLS
 loading, HTML and literal plain-text rendering, binary-content rejection,
 script/style removal, links, redirects, chunked responses, local suggestions,
 keyboard and mouse tab controls, private mode, bookmarks, downloads,
-explicit normal-session recovery, screenshots, and bookmark persistence after
-a full reboot.
+explicit normal-session recovery, screenshots, live ServerHello through
+Finished verification, private-mode pin refusal, pinned encrypted GET/response,
+and bookmark/pin persistence plus trust clearing after a full reboot.
