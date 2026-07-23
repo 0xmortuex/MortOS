@@ -9,6 +9,12 @@ anonymous mappings with a boot-tested RW→RX JIT execution transition,
 `yield`, `getpid`, `clock_gettime`, and `exit` are boot-tested. Other
 facilities remain planned unless explicitly marked otherwise.
 
+The build also links and boots a freestanding C++ executable using
+`programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,
+`malloc`, `calloc`, `realloc`, `free`, and C++ `new`/`delete` are exercised in
+an isolated process. This is a bootstrap runtime, not yet the complete
+libc/libc++ surface required by Chromium.
+
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
 Mort 0.39's hosted `net_*` intrinsic detection collides with MortOS's own
 kernel network functions and must be fixed before the OS toolchain advances.

@@ -87,6 +87,7 @@ USER64_ELFS = {
     for name in ("probe", "isolation", "survivor", "preempt")
 }
 USER64_ELF = USER64_ELFS["probe"]
+CXX64_ELF = os.path.join(BUILD64, "user_cxx.elf")
 DISK = os.path.join(BUILD, "disk.img")
 
 # User programs: compiled from programs/*.mx into flat binaries the kernel
@@ -212,7 +213,7 @@ def build64():
     ]
     asm_flags = ["-target", TARGET64, "-fno-pie"]
 
-    # Build three separate Mort ELF64 processes. The kernel embeds each complete
+    # Build four separate Mort ELF64 processes. The kernel embeds each complete
     # executable, validates it, and loads it into an independent address space.
     user_start_o = os.path.join(BUILD64, "user_pstart.o")
     user_syscall_o = os.path.join(BUILD64, "user_syscall.o")
@@ -243,9 +244,37 @@ def build64():
             "-o", user_elf, user_start_o, user_syscall_o, user_o,
             user_runtime_o,
         ], check=True)
+
+    # Build a separately linked freestanding C++ process. This is the first
+    # executable consumer of the x86_64-mortos C/C++ runtime layer.
+    cxx = cc[:-1] + ["c++"]
+    cxx_flags = [
+        *c_flags, "-fno-exceptions", "-fno-rtti",
+        "-fno-threadsafe-statics",
+    ]
+    cxx_start_o = os.path.join(BUILD64, "user_cxx_start.o")
+    cxx_runtime_o = os.path.join(BUILD64, "user_cxx_runtime.o")
+    cxx_probe_o = os.path.join(BUILD64, "user_cxx_probe.o")
+    subprocess.run([*cc, *asm_flags, "-c",
+                    os.path.join(PROGRAMS64, "cxx_start.s"),
+                    "-o", cxx_start_o], check=True)
+    subprocess.run([*cxx, *cxx_flags, "-c",
+                    os.path.join(PROGRAMS64, "cxx_runtime.cpp"),
+                    "-o", cxx_runtime_o], check=True)
+    subprocess.run([*cxx, *cxx_flags, "-c",
+                    os.path.join(PROGRAMS64, "cxx_probe.cpp"),
+                    "-o", cxx_probe_o], check=True)
+    subprocess.run([
+        *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",
+        "-Wl,-T," + os.path.join(PROGRAMS64, "prog.ld"),
+        "-Wl,--build-id=none", "-Wl,-e,_user_start",
+        "-o", CXX64_ELF, cxx_start_o, user_syscall_o, cxx_probe_o,
+        cxx_runtime_o, user_runtime_o,
+    ], check=True)
+
     # Invalidate Zig's .incbin cache whenever the userspace ELF changes.
     user_hasher = hashlib.sha256()
-    for user_elf in USER64_ELFS.values():
+    for user_elf in [*USER64_ELFS.values(), CXX64_ELF]:
         with open(user_elf, "rb") as fh:
             user_hasher.update(fh.read())
     user_digest = user_hasher.hexdigest()
@@ -314,6 +343,7 @@ def build64():
     print(f"built {os.path.relpath(PAYLOAD64, ROOT)} (ELF64 Mort kernel)")
     for user_elf in USER64_ELFS.values():
         print(f"built {os.path.relpath(user_elf, ROOT)} (ELF64 Mort userspace)")
+    print(f"built {os.path.relpath(CXX64_ELF, ROOT)} (ELF64 C++ userspace)")
     print(f"built {os.path.relpath(ELF64, ROOT)} (Multiboot trampoline + payload)")
 
 
@@ -360,7 +390,8 @@ def check64():
     require(payload_bin and payload_bin in bootstrap,
             "ELF64 payload is not embedded in the Multiboot image")
 
-    for user_name, user_path in USER64_ELFS.items():
+    checked_users = {**USER64_ELFS, "cxx": CXX64_ELF}
+    for user_name, user_path in checked_users.items():
         with open(user_path, "rb") as fh:
             user_elf = fh.read()
         require(user_elf[:4] == b"\x7fELF" and user_elf[4] == 2,
@@ -401,7 +432,7 @@ def check64():
                 f"userspace {user_name} is not embedded in kernel payload")
 
     print(f"OK: genuine ELF64 Mort payload at 0x200000")
-    print("OK: four isolated W^X ELF64 Mort images at 0x01000000")
+    print("OK: five isolated W^X ELF64 userspace images at 0x01000000")
     print(f"OK: ELF32 Multiboot trampoline; valid header at file offset {offset}")
     print("OK: ELF64 payload embedded in the bootable image")
     print("Boot it with:  python build.py run64")

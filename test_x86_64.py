@@ -54,7 +54,7 @@ def main():
         "MORT64: GDT TSS IDT and SYSCALL active",
         "MORT64: IDT breakpoint self-test passed",
         "MORT64: PIT timer interrupts active",
-        "MORT64: ELF64 loader mapped four isolated processes",
+        "MORT64: ELF64 loader mapped five isolated processes",
         "MORT64: syscall rejected supervisor pointer",
         "MORT64 USERSPACE OK",
         "MORT64 PROCESS 2 START",
@@ -71,6 +71,8 @@ def main():
         "MORT64 PREEMPTED PROCESS OK",
         "MORT64: W^X JIT mapping transition passed",
         "MORT64: timer preemption context switch passed",
+        "MORT64 CXX RUNTIME OK",
+        "MORT64: freestanding C++ runtime passed",
         "MORT64: process address spaces reclaimed",
         "MORT64: bootstrap foundation ready",
     ]

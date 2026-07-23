@@ -53,6 +53,8 @@ extern fn mort64_survivor_image() -> u64;
 extern fn mort64_survivor_image_size() -> u64;
 extern fn mort64_preempt_image() -> u64;
 extern fn mort64_preempt_image_size() -> u64;
+extern fn mort64_cxx_image() -> u64;
+extern fn mort64_cxx_image_size() -> u64;
 extern fn mort64_enter_user(entry: u64, stack_top: u64, page_root: u64);
 extern fn mort64_resume_user(context: u64, page_root: u64);
 extern fn mort64_flush_tlb();
@@ -1061,8 +1063,10 @@ fn kmain64(multiboot_info: u64) {
             mort64_survivor_image(), mort64_survivor_image_size());
         let preempt_slot: u32 = process_create64(
             mort64_preempt_image(), mort64_preempt_image_size());
+        let cxx_slot: u32 = process_create64(
+            mort64_cxx_image(), mort64_cxx_image_size());
         if probe_slot < 8 && isolation_slot < 8 && survivor_slot < 8
-            && preempt_slot < 8
+            && preempt_slot < 8 && cxx_slot < 8
             && g_process_root64[probe_slot]
                 != g_process_root64[isolation_slot]
             && g_process_root64[probe_slot]
@@ -1074,11 +1078,19 @@ fn kmain64(multiboot_info: u64) {
             && g_process_root64[preempt_slot]
                 != g_process_root64[isolation_slot]
             && g_process_root64[preempt_slot]
-                != g_process_root64[survivor_slot] {
+                != g_process_root64[survivor_slot]
+            && g_process_root64[cxx_slot]
+                != g_process_root64[probe_slot]
+            && g_process_root64[cxx_slot]
+                != g_process_root64[isolation_slot]
+            && g_process_root64[cxx_slot]
+                != g_process_root64[survivor_slot]
+            && g_process_root64[cxx_slot]
+                != g_process_root64[preempt_slot] {
             serial_write64(
-                "MORT64: ELF64 loader mapped four isolated processes\r\n");
+                "MORT64: ELF64 loader mapped five isolated processes\r\n");
             let dispatched: u32 = process_schedule64();
-            if dispatched >= 5
+            if dispatched >= 7
                 && g_process_state64[probe_slot] == 3
                 && g_process_exit64[probe_slot] == 42
                 && g_user_probe_seen64
@@ -1130,10 +1142,20 @@ fn kmain64(multiboot_info: u64) {
                 serial_write64(
                     "MORT64 ERROR: timer preemption failed\r\n");
             }
+            if g_process_state64[cxx_slot] == 3
+                && g_process_exit64[cxx_slot] == 23
+                && g_process_mmap_seen64[cxx_slot] != 0 {
+                serial_write64(
+                    "MORT64: freestanding C++ runtime passed\r\n");
+            } else {
+                serial_write64(
+                    "MORT64 ERROR: C++ runtime failed\r\n");
+            }
             if process_reap64(probe_slot)
                 && process_reap64(isolation_slot)
                 && process_reap64(survivor_slot)
                 && process_reap64(preempt_slot)
+                && process_reap64(cxx_slot)
                 && g_frame_free64 == frames_before_processes {
                 serial_write64(
                     "MORT64: process address spaces reclaimed\r\n");
