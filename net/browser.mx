@@ -11,11 +11,14 @@ let BROWSER_PIN_HOST_BASE: u32 = 896;
 let BROWSER_PIN_HASH_BASE: u32 = 960;
 let BROWSER_PIN_PORT_BASE: u32 = 992;
 let BROWSER_STATE_MAGIC: u32 = 0x31535856; // "VXS1"
-let BROWSER_ROOT_MAGIC: u32 = 0x31525856;  // "VXR1"
+let BROWSER_ROOT_LEGACY_MAGIC: u32 = 0x31525856; // "VXR1" hash-only records
+let BROWSER_ROOT_MAGIC: u32 = 0x32525856;        // "VXR2" validated DER anchors
 let BROWSER_ROOT_MAX: u32 = 8;
+let BROWSER_ROOT_RECORD_SIZE: u32 = 4132; // length + SHA-256 + up to 4096 DER bytes
+let BROWSER_ROOT_STORE_SIZE: u32 = 33280; // 65 sectors
 
 let g_browser_state: [u8; 1024] = [0; 1024];
-let g_browser_roots: [u8; 512] = [0; 512];
+let g_browser_roots: [u8; 33280] = [0; 33280];
 let g_browser_url: [u8; 80] = [0; 80];
 let g_browser_input: [u8; 80] = [0; 80];
 let g_browser_find: [u8; 32] = [0; 32];
@@ -192,13 +195,45 @@ fn browser_pin_clear() {
 }
 
 fn browser_roots_reset() {
-    browser_zero(&g_browser_roots as u64, 512);
+    browser_zero(&g_browser_roots as u64, BROWSER_ROOT_STORE_SIZE);
     *(&g_browser_roots as *u32) = BROWSER_ROOT_MAGIC;
 }
 
 fn browser_root_count() -> u32 { return g_browser_roots[4] as u32; }
+fn browser_root_record(index: u32) -> u64 {
+    return &g_browser_roots as u64 + 16 + ((index * BROWSER_ROOT_RECORD_SIZE) as u64);
+}
+fn browser_root_length(index: u32) -> u32 {
+    return *((browser_root_record(index)) as *u32);
+}
 fn browser_root_hash(index: u32) -> u64 {
-    return &g_browser_roots as u64 + 16 + ((index * 32) as u64);
+    return browser_root_record(index) + 4;
+}
+fn browser_root_der(index: u32) -> u64 {
+    return browser_root_record(index) + 36;
+}
+
+fn browser_root_certificate_valid(root: u64, size: u32, verify_signature: bool) -> bool {
+    if size < 256 || size > 4096 { return false; }
+    let tbs_offset: u32 = 0; let tbs_length: u32 = 0;
+    let signature_offset: u32 = 0; let signature_length: u32 = 0;
+    let validity_offset: u32 = 0; let validity_length: u32 = 0;
+    let spki_offset: u32 = 0; let spki_length: u32 = 0;
+    let extensions_offset: u32 = 0; let extensions_length: u32 = 0;
+    let not_before: u64 = 0; let not_after: u64 = 0; let now: u64 = 0;
+    let path_limit: u32 = 0xffffffff;
+    if !tls_x509_certificate_shape(root, size, &tbs_offset as u64, &tbs_length as u64,
+        &signature_offset as u64, &signature_length as u64)
+        || !tls_x509_tbs_fields(root, tbs_offset, tbs_length,
+            &validity_offset as u64, &validity_length as u64,
+            &spki_offset as u64, &spki_length as u64,
+            &extensions_offset as u64, &extensions_length as u64)
+        || !tls_x509_parse_validity(root + (validity_offset as u64), validity_length,
+                                    &not_before as u64, &not_after as u64)
+        || !tls_x509_rtc_snapshot(&now as u64) || !tls_x509_valid_at(not_before, not_after, now)
+        || !tls_x509_extensions_policy(
+            root, extensions_offset, extensions_length, true, &path_limit as u64) { return false; }
+    return !verify_signature || tls_x509_verify_rsa_issuer(root, size, root, size);
 }
 
 fn browser_roots_load() {
@@ -207,10 +242,45 @@ fn browser_roots_load() {
     let idx: u32 = fs_find_in(".vex-roots", g_cwd);
     if idx == 64 { return; }
     let base: u32 = fs_entry_addr(idx);
-    if fs_type(idx) != 0 || *((base + 28) as *u32) != 512
-        || !ata_read(*((base + 32) as *u32), &g_browser_roots as *u8)
-        || *(&g_browser_roots as *u32) != BROWSER_ROOT_MAGIC
-        || browser_root_count() > BROWSER_ROOT_MAX { browser_roots_reset(); }
+    let size: u32 = *((base + 28) as *u32); let start: u32 = *((base + 32) as *u32);
+    if fs_type(idx) != 0 { return; }
+    if size == 512 {
+        if !ata_read(start, &g_browser_roots as *u8)
+            || *(&g_browser_roots as *u32) != BROWSER_ROOT_LEGACY_MAGIC
+            || browser_root_count() > BROWSER_ROOT_MAX { browser_roots_reset(); return; }
+        let legacy_count: u32 = browser_root_count();
+        let legacy_hashes: [u8; 256] = [0; 256];
+        for i: u32 in 0..(legacy_count * 32) { legacy_hashes[i] = g_browser_roots[16 + i]; }
+        browser_roots_reset(); g_browser_roots[4] = legacy_count as u8;
+        for root_index: u32 in 0..legacy_count {
+            for byte_index: u32 in 0..32 {
+                *((browser_root_hash(root_index) + (byte_index as u64)) as *u8) =
+                    legacy_hashes[root_index * 32 + byte_index];
+            }
+        }
+        browser_roots_save(); return;
+    }
+    if size != BROWSER_ROOT_STORE_SIZE { return; }
+    for sector: u32 in 0..65 {
+        if !ata_read(start + sector,
+            (&g_browser_roots as u64 + ((sector * 512) as u64)) as *u8) {
+            browser_roots_reset(); return;
+        }
+    }
+    if *(&g_browser_roots as *u32) != BROWSER_ROOT_MAGIC
+        || browser_root_count() > BROWSER_ROOT_MAX { browser_roots_reset(); return; }
+    for root_index: u32 in 0..browser_root_count() {
+        let root_size: u32 = browser_root_length(root_index);
+        if root_size == 0 { continue; } // migrated VXR1 fingerprint-only entry
+        let fingerprint: [u8; 32] = [0; 32];
+        tls_sha256(browser_root_der(root_index), root_size, &fingerprint as u64);
+        if !browser_root_certificate_valid(
+            browser_root_der(root_index), root_size, false)
+            || !tls_bytes_equal(
+                browser_root_hash(root_index), &fingerprint as u64, 32) {
+            browser_roots_reset(); return;
+        }
+    }
 }
 
 fn browser_roots_save() -> bool {
@@ -219,8 +289,13 @@ fn browser_roots_save() -> bool {
     if idx == 64 { idx = fs_create_full(".vex-roots", g_cwd, 0); }
     if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) { return false; }
     let base: u32 = fs_entry_addr(idx);
-    if !ata_write(*((base + 32) as *u32), &g_browser_roots as *u8) { return false; }
-    *((base + 28) as *u32) = 512; *((base + 48) as *u32) = fs_now();
+    let start: u32 = *((base + 32) as *u32);
+    for sector: u32 in 0..65 {
+        if !ata_write(start + sector,
+            (&g_browser_roots as u64 + ((sector * 512) as u64)) as *u8) { return false; }
+    }
+    *((base + 28) as *u32) = BROWSER_ROOT_STORE_SIZE;
+    *((base + 48) as *u32) = fs_now();
     return fs_sync();
 }
 
@@ -228,6 +303,37 @@ fn browser_root_contains(fingerprint: u64) -> bool {
     for i: u32 in 0..BROWSER_ROOT_MAX {
         if i < browser_root_count()
             && tls_bytes_equal(browser_root_hash(i), fingerprint, 32) { return true; }
+    }
+    return false;
+}
+
+fn browser_root_path_allows(index: u32, subordinate_ca_count: u32) -> bool {
+    let root: u64 = browser_root_der(index); let size: u32 = browser_root_length(index);
+    let tbs_offset: u32 = 0; let tbs_length: u32 = 0;
+    let signature_offset: u32 = 0; let signature_length: u32 = 0;
+    let validity_offset: u32 = 0; let validity_length: u32 = 0;
+    let spki_offset: u32 = 0; let spki_length: u32 = 0;
+    let extensions_offset: u32 = 0; let extensions_length: u32 = 0;
+    let path_limit: u32 = 0xffffffff;
+    return tls_x509_certificate_shape(root, size, &tbs_offset as u64, &tbs_length as u64,
+        &signature_offset as u64, &signature_length as u64)
+        && tls_x509_tbs_fields(root, tbs_offset, tbs_length,
+            &validity_offset as u64, &validity_length as u64,
+            &spki_offset as u64, &spki_length as u64,
+            &extensions_offset as u64, &extensions_length as u64)
+        && tls_x509_extensions_policy(
+            root, extensions_offset, extensions_length, true, &path_limit as u64)
+        && (path_limit == 0xffffffff || subordinate_ca_count <= path_limit);
+}
+
+fn browser_root_issues(certificate: u64, certificate_length: u32,
+                       subordinate_ca_count: u32) -> bool {
+    for i: u32 in 0..BROWSER_ROOT_MAX {
+        if i < browser_root_count() && browser_root_length(i) != 0
+            && browser_root_path_allows(i, subordinate_ca_count)
+            && tls_x509_verify_rsa_issuer(
+                certificate, certificate_length, browser_root_der(i),
+                browser_root_length(i)) { return true; }
     }
     return false;
 }
@@ -249,25 +355,7 @@ fn browser_root_import() {
         browser_set_status("Root DER is empty, oversized, or unreadable"); browser_draw(); return;
     }
     let root: u64 = 0x00810000;
-    let tbs_offset: u32 = 0; let tbs_length: u32 = 0;
-    let signature_offset: u32 = 0; let signature_length: u32 = 0;
-    let validity_offset: u32 = 0; let validity_length: u32 = 0;
-    let spki_offset: u32 = 0; let spki_length: u32 = 0;
-    let extensions_offset: u32 = 0; let extensions_length: u32 = 0;
-    let not_before: u64 = 0; let not_after: u64 = 0; let now: u64 = 0;
-    let path_limit: u32 = 0xffffffff;
-    if !tls_x509_certificate_shape(root, size, &tbs_offset as u64, &tbs_length as u64,
-        &signature_offset as u64, &signature_length as u64)
-        || !tls_x509_tbs_fields(root, tbs_offset, tbs_length,
-            &validity_offset as u64, &validity_length as u64,
-            &spki_offset as u64, &spki_length as u64,
-            &extensions_offset as u64, &extensions_length as u64)
-        || !tls_x509_parse_validity(root + (validity_offset as u64), validity_length,
-                                    &not_before as u64, &not_after as u64)
-        || !tls_x509_rtc_snapshot(&now as u64) || !tls_x509_valid_at(not_before, not_after, now)
-        || !tls_x509_extensions_policy(
-            root, extensions_offset, extensions_length, true, &path_limit as u64)
-        || !tls_x509_verify_rsa_issuer(root, size, root, size) {
+    if !browser_root_certificate_valid(root, size, true) {
         browser_set_status("Root rejected: CA policy or signature invalid"); browser_draw(); return;
     }
     let fingerprint: [u8; 32] = [0; 32]; tls_sha256(root, size, &fingerprint as u64);
@@ -281,9 +369,16 @@ fn browser_root_import() {
     for i: u32 in 0..32 {
         *((browser_root_hash(count) + (i as u64)) as *u8) = fingerprint[i];
     }
+    *((browser_root_record(count)) as *u32) = size;
+    for i: u32 in 0..size {
+        *((browser_root_der(count) + (i as u64)) as *u8) = *((root + (i as u64)) as *u8);
+    }
     g_browser_roots[4] = (count + 1) as u8;
     if browser_roots_save() { browser_set_status("Validated CA root imported"); }
-    else { g_browser_roots[4] = count as u8; browser_set_status("Could not save trusted roots"); }
+    else {
+        browser_zero(browser_root_record(count), BROWSER_ROOT_RECORD_SIZE);
+        g_browser_roots[4] = count as u8; browser_set_status("Could not save trusted roots");
+    }
     browser_draw();
 }
 

@@ -931,9 +931,8 @@ def browser_ui():
              "-out", tls_leaf_ca],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with open(tls_chain_ca, "wb") as output:
-            for certificate_path in (tls_leaf_ca, tls_root_cert):
-                with open(certificate_path, "rb") as certificate_stream:
-                    output.write(certificate_stream.read())
+            with open(tls_leaf_ca, "rb") as certificate_stream:
+                output.write(certificate_stream.read())
         tls_contexts = []
         for certificate_path, key_path in (
                 (tls_chain, tls_key), (tls_chain_renewed, tls_key_renewed),
@@ -1307,7 +1306,7 @@ def browser_ui():
                     time.sleep(0.1)
             check("Settings validates and imports a self-signed CA from MortFS",
                   ((imported_roots & 0xff) == 1
-                   and _guest_bytes(handle, roots_addr + 16, 32) == expected_anchor_hash
+                   and _guest_bytes(handle, roots_addr + 20, 32) == expected_anchor_hash
                    and "root imported" in import_status))
             send_key(handle, "slash")
             for char in secure_address:
@@ -1324,7 +1323,7 @@ def browser_ui():
             ca_length = _guest_u32(handle, content_len_addr)
             ca_text = _guest_bytes(
                 handle, content_addr, min(max(ca_length, 1), 512)).decode("ascii", "replace")
-            check("Imported CA authenticates a third independently renewed leaf",
+            check("Imported CA completes a chain when the server omits its root",
                   (ca_stage == 10
                    and (_guest_u32(handle, tls_root_matched_addr) & 0xff) != 0
                    and (_guest_u32(handle, tls_http_ok_addr) & 0xff) != 0
@@ -1350,7 +1349,7 @@ def browser_ui():
         check("Browser bookmarks and imported CA roots survive a full reboot",
               state[6] >= 1 and state[7] == 0
               and _guest_bytes(handle, roots_addr + 4, 1)[0] == 1
-              and _guest_bytes(handle, roots_addr + 16, 32) == expected_anchor_hash)
+              and _guest_bytes(handle, roots_addr + 20, 32) == expected_anchor_hash)
         send_key(handle, "8")
         send_key(handle, "u")
         cleared_roots = _wait_guest_u32(

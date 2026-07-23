@@ -186,9 +186,14 @@ mode cannot persist trust. Alternatively, Settings can import a self-signed DER
 CA from `vex-root.der` in the user's home or filesystem root. Import re-runs
 canonical certificate parsing, RTC validity, CA BasicConstraints/keyCertSign,
 critical-extension, RSA issuer, and self-signature checks before storing only
-the SHA-256 anchor fingerprint in the bounded `.vex-roots` MortFS store.
+the validated DER anchor and its SHA-256 fingerprint in the bounded
+`.vex-roots` MortFS store.
 Malformed stores reset fail-closed; duplicate roots and stores beyond eight
-entries are rejected. On a trusted reconnect, Vex derives both application
+entries are rejected. If a server follows normal TLS practice and omits the
+self-signed root, Vex verifies the signature on the final presented
+intermediate (or leaf) against each locally stored root and completes the path
+without requiring the server to transmit that root. On a trusted reconnect,
+Vex derives both application
 traffic secrets and keys, encrypts and sends client Finished, and retains
 sequence-zero application state for the HTTPS request. Vex encrypts the GET,
 accepts authenticated application records, safely ignores bounded NewSessionTicket
@@ -233,5 +238,5 @@ keyboard and mouse tab controls, private mode, bookmarks, downloads,
 explicit normal-session recovery, screenshots, live ServerHello through
 Finished verification, private-mode pin refusal, pinned encrypted GET/response,
 private-mode root-import refusal, CA import, a separately renewed leaf under
-the imported root, and bookmark/root persistence plus trust clearing after a
-full reboot.
+the imported root with that root omitted by the server, and bookmark/root
+persistence plus trust clearing after a full reboot.

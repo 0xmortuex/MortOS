@@ -34,6 +34,7 @@ let g_browser_tls_pending_port: u16 = 0;
 let g_browser_tls_pending: bool = false;
 let g_browser_tls_pin_matched: bool = false;
 let g_browser_tls_root_matched: bool = false;
+let g_browser_tls_chain_root_matched: bool = false;
 let g_browser_tls_application_ready: bool = false;
 let g_browser_tls_client_app_key: [u8; 32] = [0; 32];
 let g_browser_tls_server_app_key: [u8; 32] = [0; 32];
@@ -427,6 +428,9 @@ fn browser_tls_leaf_rsa(message: u64, message_length: u32,
                     message + (issuer_offset as u64), issuer_length) { return false; }
         } else {
             tls_sha256(current, current_length, &g_browser_tls_leaf_fingerprint as u64);
+            g_browser_tls_chain_root_matched =
+                browser_root_contains(&g_browser_tls_leaf_fingerprint as u64)
+                || browser_root_issues(current, current_length, index);
         }
     }
     *((modulus_length) as *u32) = found_length;
@@ -625,6 +629,7 @@ fn browser_tls_probe(url: u64) -> bool {
     g_browser_tls_probe_ok = false; g_browser_tls_probe_stage = 0;
     g_browser_tls_pending = false; g_browser_tls_pin_matched = false;
     g_browser_tls_root_matched = false;
+    g_browser_tls_chain_root_matched = false;
     g_browser_tls_http_ok = false;
     browser_tls_application_clear();
     browser_zero(&g_browser_tls_probe_server_key as u64, 32);
@@ -687,8 +692,7 @@ fn browser_tls_probe(url: u64) -> bool {
     if g_browser_tls_probe_ok {
         g_browser_tls_pin_matched = browser_pin_matches(
             &g_browser_net_host as u64, g_browser_net_port, &g_browser_tls_leaf_fingerprint as u64);
-        g_browser_tls_root_matched =
-            browser_root_contains(&g_browser_tls_leaf_fingerprint as u64);
+        g_browser_tls_root_matched = g_browser_tls_chain_root_matched;
         if g_browser_tls_pin_matched || g_browser_tls_root_matched {
             if browser_tls_finish_client(&handshake_secret as u64, &client_traffic as u64,
                                          &client_key as u64, &client_iv as u64) {
