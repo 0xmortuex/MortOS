@@ -801,6 +801,21 @@ def browser_ui():
         results.append((name, ok))
         print(f"{'PASS' if ok else 'FAIL'}: {name}")
 
+    def corrupt_mortfs_file_byte(image_path, name, offset):
+        with open(image_path, "r+b") as disk:
+            table = bytearray(disk.read(512 + 64 * 64))
+            for entry_index in range(64):
+                entry = 512 + entry_index * 64
+                stored_name = bytes(table[entry:entry + 24]).split(b"\0", 1)[0]
+                used, size, start = struct.unpack_from("<III", table, entry + 24)
+                if used == 1 and stored_name == name.encode("ascii"):
+                    if offset >= size:
+                        raise RuntimeError(f"MortFS corruption offset {offset} exceeds {name}")
+                    disk.seek(start * 512 + offset)
+                    disk.write(b"\x31")
+                    return
+        raise RuntimeError(f"MortFS test file {name} was not found")
+
     with tempfile.TemporaryDirectory(prefix="mort_web_") as webroot:
         marker = "MORT-VEX-HTTP-OK"
         second_marker = "MORT-VEX-LINK-OK"
@@ -946,11 +961,31 @@ def browser_ui():
             [openssl, "x509", "-in", tls_root_cert, "-outform", "DER"],
             stderr=subprocess.DEVNULL)
         expected_anchor_hash = hashlib.sha256(root_der).digest()
+        tls_bundle_root_key = os.path.join(webroot, "tls-bundle-root-key.pem")
+        tls_bundle_root_cert = os.path.join(webroot, "tls-bundle-root-cert.pem")
+        subprocess.run(
+            [openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-subj", "/CN=Mort Vex Bundle Root", "-days", "1",
+             "-addext", "basicConstraints=critical,CA:TRUE",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+             "-keyout", tls_bundle_root_key, "-out", tls_bundle_root_cert],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        bundle_root_der = subprocess.check_output(
+            [openssl, "x509", "-in", tls_bundle_root_cert, "-outform", "DER"],
+            stderr=subprocess.DEVNULL)
+        expected_bundle_hash = hashlib.sha256(bundle_root_der).digest()
         root_der_path = os.path.join(webroot, "vex-root.der")
         with open(root_der_path, "wb") as stream:
             stream.write(root_der)
+        root_bundle_path = os.path.join(webroot, "vex-roots.der")
+        with open(root_bundle_path, "wb") as stream:
+            stream.write(root_der)
+            stream.write(bundle_root_der)
         import mkfs
-        mkfs.make(temp_disk, bins=[(root_der_path, "vex-root.der")])
+        mkfs.make(
+            temp_disk,
+            bins=[(root_der_path, "vex-root.der"),
+                  (root_bundle_path, "vex-roots.der")])
         tls_port = 18443
         tls_ready = threading.Event()
         tls_complete = threading.Event()
@@ -1308,6 +1343,21 @@ def browser_ui():
                   ((imported_roots & 0xff) == 1
                    and _guest_bytes(handle, roots_addr + 20, 32) == expected_anchor_hash
                    and "root imported" in import_status))
+            send_key(handle, "a")
+            bundled_roots = _wait_guest_u32(
+                handle, roots_addr + 4, lambda value: (value & 0xff) == 2,
+                timeout_s=30)
+            bundle_status = ""
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and "bundle imported" not in bundle_status:
+                bundle_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "bundle imported" not in bundle_status:
+                    time.sleep(0.1)
+            check("Settings atomically imports a DER bundle and skips duplicates",
+                  ((bundled_roots & 0xff) == 2
+                   and _guest_bytes(handle, roots_addr + 4152, 32) == expected_bundle_hash
+                   and "bundle imported" in bundle_status))
             send_key(handle, "slash")
             for char in secure_address:
                 send_key(handle, key_name(char))
@@ -1338,6 +1388,7 @@ def browser_ui():
             server_thread.join(timeout=5)
             tls_thread.join(timeout=12)
 
+    corrupt_mortfs_file_byte(temp_disk, "vex-roots.der", len(root_der))
     handle = boot_iso(kernel_build.ISO, temp_disk)
     try:
         _wait_guest_u32(handle, ticks_addr, lambda value: value >= 100,
@@ -1348,16 +1399,31 @@ def browser_ui():
         state = _guest_bytes(handle, state_addr, 8)
         check("Browser bookmarks and imported CA roots survive a full reboot",
               state[6] >= 1 and state[7] == 0
-              and _guest_bytes(handle, roots_addr + 4, 1)[0] == 1
-              and _guest_bytes(handle, roots_addr + 20, 32) == expected_anchor_hash)
+              and _guest_bytes(handle, roots_addr + 4, 1)[0] == 2
+              and _guest_bytes(handle, roots_addr + 20, 32) == expected_anchor_hash
+              and _guest_bytes(handle, roots_addr + 4152, 32) == expected_bundle_hash)
         send_key(handle, "8")
+        send_key(handle, "a")
+        rejected_bundle_status = ""
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and "rejected atomically" not in rejected_bundle_status:
+            rejected_bundle_status = _guest_bytes(
+                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            if "rejected atomically" not in rejected_bundle_status:
+                time.sleep(0.1)
+        check("Invalid CA bundle rollback preserves every trusted root",
+              (_guest_bytes(handle, roots_addr + 4, 1)[0] == 2
+               and _guest_bytes(handle, roots_addr + 20, 32) == expected_anchor_hash
+               and _guest_bytes(handle, roots_addr + 4152, 32) == expected_bundle_hash
+               and "rejected atomically" in rejected_bundle_status))
         send_key(handle, "u")
         cleared_roots = _wait_guest_u32(
             handle, roots_addr + 4, lambda value: (value & 0xff) == 0,
             timeout_s=10)
         check("Browser Settings can clear all persisted CA roots",
               (cleared_roots & 0xff) == 0
-              and not any(_guest_bytes(handle, roots_addr + 16, 256)))
+              and _guest_u32(handle, roots_addr + 16) == 0
+              and _guest_u32(handle, roots_addr + 4148) == 0)
     finally:
         shutdown(handle)
         try:

@@ -57,6 +57,7 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 | `C` | Clear history while on `vex://settings` |
 | `V` | Clear the saved HTTPS certificate pin on `vex://settings` |
 | `I` | Validate and import `vex-root.der` from the current home or `/` |
+| `A` | Atomically import concatenated DER roots from `vex-roots.der` |
 | `U` | Clear all imported CA roots on `vex://settings` |
 
 ## Network path
@@ -82,7 +83,7 @@ checks persistence across a reboot.
 
 Vex supports authenticated TLS 1.3 for validated RSA certificate chains and
 never silently downgrades `https://`. Trust can come from an explicit
-host-and-port anchor pin or from one of up to eight user-imported CA roots.
+host-and-port anchor pin or from one of up to fifteen user-imported CA roots.
 It does not yet ship a bundled public CA set, revocation service, or automatic
 root-update channel, so arbitrary public websites are not universally trusted
 out of the box. It also does not execute
@@ -188,8 +189,13 @@ canonical certificate parsing, RTC validity, CA BasicConstraints/keyCertSign,
 critical-extension, RSA issuer, and self-signature checks before storing only
 the validated DER anchor and its SHA-256 fingerprint in the bounded
 `.vex-roots` MortFS store.
-Malformed stores reset fail-closed; duplicate roots and stores beyond eight
-entries are rejected. If a server follows normal TLS practice and omits the
+Settings can also validate a `vex-roots.der` file containing concatenated
+canonical DER certificates. Bundle import skips already trusted roots, rejects
+the entire in-memory transaction if any new entry is invalid or would exceed
+the fifteen-root bound, and persists only after every entry passes. The VXR3
+store occupies 122 of a MortFS file's 128-sector extent and migrates earlier
+VXR1 hash-only and VXR2 DER stores in place. Malformed stores reset fail-closed.
+If a server follows normal TLS practice and omits the
 self-signed root, Vex verifies the signature on the final presented
 intermediate (or leaf) against each locally stored root and completes the path
 without requiring the server to transmit that root. On a trusted reconnect,
