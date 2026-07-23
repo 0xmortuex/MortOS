@@ -49,6 +49,10 @@ upstream/native boundary.
 - Strict HTTP/1.0 and HTTP/1.1 status-line parsing rejects unsupported
   versions, non-decimal codes, and missing separators before redirects or
   response bodies are accepted.
+- Header names are recognized only at line boundaries. `Content-Length` uses
+  bounded decimal parsing, duplicate or invalid values fail closed,
+  `Content-Length` plus chunked transfer is rejected as ambiguous, and a body
+  shorter than its declared length is never rendered.
 - TLS 1.3 with X25519, RSA-PSS authentication, ChaCha20-Poly1305 records,
   strict RSA certificate-chain validation, explicit host/port anchor pins,
   imported CA roots, encrypted HTTP requests, and authenticated HTML/plain-text

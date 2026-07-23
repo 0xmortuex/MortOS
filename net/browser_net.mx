@@ -817,7 +817,8 @@ fn browser_http_to_text(body: u32) {
 fn browser_header_line_contains(body: u32, header: u64, value: u64) -> bool {
     let pos: u32 = 0;
     while pos < body {
-        if browser_match_ci(&g_browser_http_raw as u64, pos, body, header) {
+        if pos > 0 && g_browser_http_raw[pos - 1] == 10
+            && browser_match_ci(&g_browser_http_raw as u64, pos, body, header) {
             let end: u32 = pos;
             while end < body && g_browser_http_raw[end] != 10 { end = end + 1; }
             let scan: u32 = pos;
@@ -835,7 +836,11 @@ fn browser_header_line_contains(body: u32, header: u64, value: u64) -> bool {
 fn browser_content_kind(body: u32) -> u32 {
     let pos: u32 = 0; let found: bool = false;
     while pos + 13 < body {
-        if browser_match_ci(&g_browser_http_raw as u64, pos, body, "content-type:" as u64) { found = true; break; }
+        if pos > 0 && g_browser_http_raw[pos - 1] == 10
+            && browser_match_ci(
+                &g_browser_http_raw as u64, pos, body, "content-type:" as u64) {
+            found = true; break;
+        }
         pos = pos + 1;
     }
     if !found { return 0; } // HTTP/0.9-style and minimal servers default to HTML.
@@ -947,7 +952,9 @@ fn browser_http_status_code(data: u64, length: u32) -> u32 {
 fn browser_headers_chunked(body: u32) -> bool {
     let pos: u32 = 0;
     while pos + 18 < body {
-        if browser_match_ci(&g_browser_http_raw as u64, pos, body, "transfer-encoding:" as u64) {
+        if pos > 0 && g_browser_http_raw[pos - 1] == 10
+            && browser_match_ci(
+                &g_browser_http_raw as u64, pos, body, "transfer-encoding:" as u64) {
             let end: u32 = pos;
             while end < body && g_browser_http_raw[end] != 10 { end = end + 1; }
             let scan: u32 = pos + 18;
@@ -960,6 +967,43 @@ fn browser_headers_chunked(body: u32) -> bool {
         pos = pos + 1;
     }
     return false;
+}
+
+fn browser_content_length(body: u32, present: u64) -> u32 {
+    *(present as *u8) = 0;
+    let pos: u32 = 0; let found: bool = false; let result: u32 = 0;
+    while pos + 15 < body {
+        if pos > 0 && g_browser_http_raw[pos - 1] == 10
+            && browser_match_ci(
+                &g_browser_http_raw as u64, pos, body, "content-length:" as u64) {
+            if found { return 0xffffffff; }
+            found = true; let scan: u32 = pos + 15;
+            while scan < body
+                && (g_browser_http_raw[scan] == 32 || g_browser_http_raw[scan] == 9) {
+                scan = scan + 1;
+            }
+            let digits: u32 = 0; let value: u32 = 0;
+            while scan < body && g_browser_http_raw[scan] >= 48
+                && g_browser_http_raw[scan] <= 57 {
+                let digit: u32 = (g_browser_http_raw[scan] - 48) as u32;
+                if value > (12288 - digit) / 10 { return 0xffffffff; }
+                value = value * 10 + digit; digits = digits + 1; scan = scan + 1;
+            }
+            if digits == 0 { return 0xffffffff; }
+            while scan < body
+                && (g_browser_http_raw[scan] == 32 || g_browser_http_raw[scan] == 9) {
+                scan = scan + 1;
+            }
+            if scan >= body || g_browser_http_raw[scan] != 13
+                || scan + 1 >= body || g_browser_http_raw[scan + 1] != 10 {
+                return 0xffffffff;
+            }
+            result = value;
+        }
+        pos = pos + 1;
+    }
+    if found { *(present as *u8) = 1; }
+    return result;
 }
 
 fn browser_decode_chunked(body: u32) -> bool {
@@ -1033,7 +1077,27 @@ fn browser_http_parse() -> bool {
     if code < 200 || code >= 300 {
         browser_set_status("HTTP server returned a non-success status"); return false;
     }
-    if browser_headers_chunked(body) && !browser_decode_chunked(body) { return false; }
+    let has_length: bool = false;
+    let content_length: u32 = browser_content_length(body, &has_length as u64);
+    if content_length == 0xffffffff {
+        browser_set_status("Invalid HTTP Content-Length"); return false;
+    }
+    let chunked: bool = browser_headers_chunked(body);
+    if chunked && has_length {
+        browser_set_status("Ambiguous HTTP response framing"); return false;
+    }
+    if chunked {
+        if !browser_decode_chunked(body) { return false; }
+    } else if has_length {
+        let available: u32 = g_browser_http_raw_len - body;
+        if content_length > available {
+            browser_set_status("HTTP body shorter than Content-Length"); return false;
+        }
+        g_browser_http_raw_len = body + content_length;
+        if g_browser_http_raw_len < 12288 {
+            g_browser_http_raw[g_browser_http_raw_len] = 0;
+        }
+    }
     let kind: u32 = browser_content_kind(body);
     if kind == 2 { return browser_binary_prepare(body); }
     if kind == 1 { browser_plain_to_text(body); }

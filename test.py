@@ -866,6 +866,23 @@ def browser_ui():
             protocol_version = "HTTP/1.1"
 
             def do_GET(self):
+                if self.path == "/ambiguous-framing":
+                    self.connection.sendall(
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: text/html\r\n"
+                        b"Content-Length: 31\r\n"
+                        b"Transfer-Encoding: chunked\r\n\r\n"
+                        b"19\r\n<h1>SMUGGLED-CONTENT</h1>\r\n0\r\n\r\n")
+                    self.close_connection = True
+                    return
+                if self.path == "/short-length":
+                    self.connection.sendall(
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: text/html\r\n"
+                        b"Content-Length: 80\r\n\r\n"
+                        b"<h1>TRUNCATED-CONTENT</h1>")
+                    self.close_connection = True
+                    return
                 if self.path == "/malformed-status":
                     self.connection.sendall(
                         b"HTTP/1.1 2A0 Invalid\r\n"
@@ -1383,6 +1400,44 @@ def browser_ui():
                   ("Invalid HTTP response" in malformed_status
                    and (_guest_u32(handle, remote_addr) & 0xff) == 0
                    and b"MUST-NOT-BE-RENDERED" not in malformed_content))
+
+            send_key(handle, "slash")
+            ambiguous_address = f"http://10.0.2.2:{port}/ambiguous-framing"
+            for char in ambiguous_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            ambiguous_status = ""
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and "Ambiguous HTTP response framing" not in ambiguous_status:
+                ambiguous_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "Ambiguous HTTP response framing" not in ambiguous_status:
+                    time.sleep(0.25)
+            ambiguous_content = _guest_bytes(
+                handle, content_addr, min(_guest_u32(handle, content_len_addr), 256))
+            check("Vex rejects Content-Length plus chunked framing ambiguity",
+                  ("Ambiguous HTTP response framing" in ambiguous_status
+                   and (_guest_u32(handle, remote_addr) & 0xff) == 0
+                   and b"SMUGGLED-CONTENT" not in ambiguous_content))
+
+            send_key(handle, "slash")
+            short_address = f"http://10.0.2.2:{port}/short-length"
+            for char in short_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            short_status = ""
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and "body shorter" not in short_status:
+                short_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "body shorter" not in short_status:
+                    time.sleep(0.25)
+            short_content = _guest_bytes(
+                handle, content_addr, min(_guest_u32(handle, content_len_addr), 256))
+            check("Vex rejects truncated Content-Length bodies before rendering",
+                  ("body shorter" in short_status
+                   and (_guest_u32(handle, remote_addr) & 0xff) == 0
+                   and b"TRUNCATED-CONTENT" not in short_content))
 
             send_key(handle, "slash")
             plain_address = f"http://10.0.2.2:{port}/plain"
