@@ -433,6 +433,9 @@ def smoke(disk_img=None):
     reassembly_ok_addr = _elf32_symbol(ELF, "m_g_tls13_reassembly_ok")
     reassembly_payload_addr = _elf32_symbol(ELF, "m_g_tls13_reassembly_payload_test")
     input_bounds_ok_addr = _elf32_symbol(ELF, "m_g_input_bounds_ok")
+    x509_der_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_der_ok")
+    x509_message_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_certificate_message_ok")
+    x509_signature_addr = _elf32_symbol(ELF, "m_g_tls_x509_signature_test")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -515,6 +518,10 @@ def smoke(disk_img=None):
               and _guest_bytes(handle, reassembly_payload_addr, 3) == b"\x01\x02\x03", handle)
         check("Network, persisted-state, and USB parser bounds checks reject hostile lengths",
               (_guest_u32(handle, input_bounds_ok_addr) & 0xff) != 0, handle)
+        check("Mort parses canonical DER and bounded TLS Certificate lists",
+              (_guest_u32(handle, x509_der_ok_addr) & 0xff) != 0
+              and (_guest_u32(handle, x509_message_ok_addr) & 0xff) != 0
+              and _guest_bytes(handle, x509_signature_addr, 2) == b"\xaa\xbb", handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",

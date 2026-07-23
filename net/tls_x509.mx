@@ -1,0 +1,129 @@
+// Bounds-checked DER and TLS 1.3 Certificate container parsing.  No certificate
+// is trusted here: this layer only establishes canonical, fully-contained byte
+// ranges for the later X.509 name, validity, key, and signature checks.
+
+let g_tls_x509_der_ok: bool = false;
+let g_tls_x509_certificate_message_ok: bool = false;
+let g_tls_x509_signature_test: [u8; 2] = [0; 2];
+
+fn tls_der_read(input: u64, available: u32, expected_tag: u8,
+                content_offset: u64, content_length: u64) -> u32 {
+    if available < 2 || *((input + 0) as *u8) != expected_tag
+        || (expected_tag & 0x1f) == 0x1f { return 0; }
+    let first: u32 = *((input + 1) as *u8) as u32;
+    let header: u32 = 2; let length: u32 = 0;
+    if first < 128 { length = first; }
+    else {
+        let count: u32 = first & 0x7f;
+        if count == 0 || count > 4 || count > available - 2
+            || *((input + 2) as *u8) == 0 { return 0; }
+        header = 2 + count;
+        for i: u32 in 0..count {
+            length = (length << 8) | (*((input + ((2 + i) as u64)) as *u8) as u32);
+        }
+        if length < 128 { return 0; } // DER requires the shortest length form.
+    }
+    if header > available || length > available - header { return 0; }
+    *((content_offset) as *u32) = header;
+    *((content_length) as *u32) = length;
+    return header + length;
+}
+
+fn tls_x509_certificate_shape(certificate: u64, certificate_length: u32,
+                              tbs_offset: u64, tbs_length: u64,
+                              signature_offset: u64, signature_length: u64) -> bool {
+    let outer_offset: u32 = 0; let outer_length: u32 = 0;
+    let outer_total: u32 = tls_der_read(certificate, certificate_length, 0x30,
+        &outer_offset as u64, &outer_length as u64);
+    if outer_total == 0 || outer_total != certificate_length { return false; }
+    let pos: u32 = outer_offset; let end: u32 = outer_offset + outer_length;
+
+    let item_offset: u32 = 0; let item_length: u32 = 0;
+    let tbs_total: u32 = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+        &item_offset as u64, &item_length as u64);
+    if tbs_total == 0 { return false; }
+    *((tbs_offset) as *u32) = pos; *((tbs_length) as *u32) = tbs_total; pos = pos + tbs_total;
+
+    let algorithm_total: u32 = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+        &item_offset as u64, &item_length as u64);
+    if algorithm_total == 0 { return false; }
+    pos = pos + algorithm_total;
+
+    let bits_total: u32 = tls_der_read(certificate + (pos as u64), end - pos, 0x03,
+        &item_offset as u64, &item_length as u64);
+    if bits_total == 0 || item_length < 2
+        || *((certificate + ((pos + item_offset) as u64)) as *u8) != 0
+        || pos + bits_total != end { return false; }
+    *((signature_offset) as *u32) = pos + item_offset + 1;
+    *((signature_length) as *u32) = item_length - 1;
+    return true;
+}
+
+fn tls13_parse_certificate_message(message: u64, message_length: u32,
+                                   first_certificate_offset: u64,
+                                   first_certificate_length: u64) -> bool {
+    if message_length < 12 || *((message + 0) as *u8) != 11
+        || tls13_read_u24(message, 1) + 4 != message_length { return false; }
+    let pos: u32 = 4; let context_length: u32 = *((message + (pos as u64)) as *u8) as u32; pos = pos + 1;
+    if context_length > message_length - pos { return false; }
+    pos = pos + context_length;
+    if message_length - pos < 3 { return false; }
+    let list_length: u32 = tls13_read_u24(message, pos); pos = pos + 3;
+    if list_length == 0 || list_length != message_length - pos { return false; }
+    let end: u32 = message_length; let count: u32 = 0;
+    while pos < end {
+        if count >= 16 || end - pos < 5 { return false; }
+        let certificate_length: u32 = tls13_read_u24(message, pos); pos = pos + 3;
+        if certificate_length == 0 || certificate_length > end - pos { return false; }
+        let der_offset: u32 = 0; let der_length: u32 = 0;
+        if tls_der_read(message + (pos as u64), certificate_length, 0x30,
+                        &der_offset as u64, &der_length as u64) != certificate_length { return false; }
+        if count == 0 {
+            *((first_certificate_offset) as *u32) = pos;
+            *((first_certificate_length) as *u32) = certificate_length;
+        }
+        pos = pos + certificate_length;
+        if end - pos < 2 { return false; }
+        let extensions_length: u32 = tls13_read_u16(message, pos); pos = pos + 2;
+        if extensions_length > end - pos { return false; }
+        pos = pos + extensions_length; count = count + 1;
+    }
+    return pos == end && count > 0;
+}
+
+fn tls_x509_self_test() {
+    let certificate: [u8; 17] = [
+        0x30, 0x0f,
+        0x30, 0x03, 0x02, 0x01, 0x01,
+        0x30, 0x03, 0x06, 0x01, 0x2a,
+        0x03, 0x03, 0x00, 0xaa, 0xbb
+    ];
+    let tbs_offset: u32 = 0; let tbs_length: u32 = 0;
+    let signature_offset: u32 = 0; let signature_length: u32 = 0;
+    let shape_ok: bool = tls_x509_certificate_shape(
+        &certificate as u64, 17, &tbs_offset as u64, &tbs_length as u64,
+        &signature_offset as u64, &signature_length as u64);
+    let noncanonical: [u8; 3] = [0x30, 0x81, 0x00];
+    let off: u32 = 0; let len: u32 = 0;
+    g_tls_x509_der_ok = shape_ok && tbs_offset == 2 && tbs_length == 5
+        && signature_offset == 15 && signature_length == 2
+        && tls_der_read(&noncanonical as u64, 3, 0x30, &off as u64, &len as u64) == 0
+        && tls_der_read(&certificate as u64, 16, 0x30, &off as u64, &len as u64) == 0;
+
+    let handshake: [u8; 30] = [0; 30];
+    handshake[0] = 11; handshake[1] = 0; handshake[2] = 0; handshake[3] = 26;
+    handshake[4] = 0; handshake[5] = 0; handshake[6] = 0; handshake[7] = 22;
+    handshake[8] = 0; handshake[9] = 0; handshake[10] = 17;
+    for i: u32 in 0..17 { handshake[11 + i] = certificate[i]; }
+    handshake[28] = 0; handshake[29] = 0;
+    let certificate_offset: u32 = 0; let certificate_size: u32 = 0;
+    let message_ok: bool = tls13_parse_certificate_message(
+        &handshake as u64, 30, &certificate_offset as u64, &certificate_size as u64);
+    for i: u32 in 0..2 { g_tls_x509_signature_test[i] = certificate[15 + i]; }
+    handshake[10] = 18; // Claimed certificate now crosses the list boundary.
+    let malformed_rejected: bool = !tls13_parse_certificate_message(
+        &handshake as u64, 30, &certificate_offset as u64, &certificate_size as u64);
+    g_tls_x509_certificate_message_ok = message_ok && certificate_offset == 11
+        && certificate_size == 17 && malformed_rejected
+        && tls_bytes_equal(&g_tls_x509_signature_test as u64, &certificate as u64 + 15, 2);
+}

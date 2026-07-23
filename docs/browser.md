@@ -104,6 +104,10 @@ transcript-through-CertificateVerify and Finished values are checked at boot.
 The handshake byte stream is reassembled independently of record boundaries,
 including split four-byte headers, split bodies, and multiple messages in one
 record, behind a fail-closed 64 KiB per-message resource limit.
+The certificate path begins with a canonical DER reader and bounded TLS 1.3
+Certificate-list parser. Indefinite or non-minimal lengths, truncation, trailing
+bytes, oversized chains, malformed BIT STRING signatures, and entry/extension
+length mismatches are rejected before higher-level X.509 processing.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
