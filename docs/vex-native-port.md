@@ -14,7 +14,8 @@ a native Mort subsystem:
 | Canonical Vex concept | MortuexOS implementation |
 | --- | --- |
 | Vex gold diamond and browser chrome | Rasterized by the Mort framebuffer UI |
-| Vertical tabs and new-tab workflow | Bounded four-tab native sidebar |
+| Vertical tabs and new-tab workflow | Four isolated bounded tab stacks in a native sidebar |
+| Workspaces | Personal, Work, School, and Dev stacks with persisted selection |
 | Address / command surface | Local suggestions plus `vex://`, HTTP, and HTTPS navigation |
 | History, bookmarks, sessions | Per-user MortFS records |
 | Private browsing | No persistent history, session recovery, pins, or CA imports |
@@ -31,8 +32,8 @@ or Chromium engine is embedded.
 ## Porting order
 
 1. Shared identity, vertical tabs, library navigation, and command/address UI.
-2. Persistent workspaces and named sessions.
-3. Searchable history and a multi-item download manager.
+2. Isolated workspaces and persisted workspace selection.
+3. Named sessions, searchable history, and a multi-item download manager.
 4. Reading mode, per-site preferences, and content controls supported by the
    native renderer.
 5. Further web compatibility only after memory isolation, process support, and

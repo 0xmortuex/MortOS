@@ -53,10 +53,13 @@ let g_browser_loaded_dir: u32 = 256;
 let g_browser_state_saved: bool = false;
 let g_browser_downloaded: bool = false;
 let g_browser_private: bool = false;
-let g_browser_tabs: [u8; 320] = [0; 320];
-let g_browser_tab_titles: [u8; 96] = [0; 96];
+let g_browser_tabs: [u8; 1280] = [0; 1280];       // 4 workspaces x 4 tabs x 80 bytes
+let g_browser_tab_titles: [u8; 384] = [0; 384];   // 4 workspaces x 4 titles x 24
 let g_browser_tab_count: u32 = 0;
 let g_browser_active_tab: u32 = 0;
+let g_browser_workspace: u32 = 0;                  // Personal / Work / School / Dev
+let g_browser_workspace_counts: [u32; 4] = [0; 4];
+let g_browser_workspace_active: [u32; 4] = [0; 4];
 let g_browser_links: [u8; 480] = [0; 480];
 let g_browser_suggestions: [u8; 240] = [0; 240];
 let g_browser_link_count: u32 = 0;
@@ -103,8 +106,12 @@ fn browser_slot(base: u32, index: u32) -> u64 {
     return &g_browser_state as u64 + (base as u64) + ((index * BROWSER_URL_CAP) as u64);
 }
 
-fn browser_tab_slot(index: u32) -> u64 { return &g_browser_tabs as u64 + ((index * 80) as u64); }
-fn browser_tab_title(index: u32) -> u64 { return &g_browser_tab_titles as u64 + ((index * 24) as u64); }
+fn browser_tab_slot(index: u32) -> u64 {
+    return &g_browser_tabs as u64 + (((g_browser_workspace * 4 + index) * 80) as u64);
+}
+fn browser_tab_title(index: u32) -> u64 {
+    return &g_browser_tab_titles as u64 + (((g_browser_workspace * 4 + index) * 24) as u64);
+}
 fn browser_link_slot(index: u32) -> u64 { return &g_browser_links as u64 + ((index * 80) as u64); }
 fn browser_suggestion_slot(index: u32) -> u64 { return &g_browser_suggestions as u64 + ((index * 80) as u64); }
 
@@ -162,6 +169,7 @@ fn browser_history_count() -> u32 { return *((&g_browser_state as u64 + 4) as *u
 fn browser_history_index() -> u32 { return *((&g_browser_state as u64 + 5) as *u8) as u32; }
 fn browser_bookmark_count() -> u32 { return *((&g_browser_state as u64 + 6) as *u8) as u32; }
 fn browser_pin_valid() -> bool { return *((&g_browser_state as u64 + 7) as *u8) == 1; }
+fn browser_saved_workspace() -> u32 { return *((&g_browser_state as u64 + 8) as *u8) as u32; }
 fn browser_last_url() -> u64 { return &g_browser_state as u64 + (BROWSER_LAST_URL_BASE as u64); }
 fn browser_pin_host() -> u64 { return &g_browser_state as u64 + (BROWSER_PIN_HOST_BASE as u64); }
 fn browser_pin_hash() -> u64 { return &g_browser_state as u64 + (BROWSER_PIN_HASH_BASE as u64); }
@@ -169,6 +177,7 @@ fn browser_pin_hash() -> u64 { return &g_browser_state as u64 + (BROWSER_PIN_HAS
 fn browser_set_history_count(value: u32) { *((&g_browser_state as u64 + 4) as *u8) = value as u8; }
 fn browser_set_history_index(value: u32) { *((&g_browser_state as u64 + 5) as *u8) = value as u8; }
 fn browser_set_bookmark_count(value: u32) { *((&g_browser_state as u64 + 6) as *u8) = value as u8; }
+fn browser_set_saved_workspace(value: u32) { *((&g_browser_state as u64 + 8) as *u8) = value as u8; }
 
 fn browser_pin_matches(host: u64, port: u16, fingerprint: u64) -> bool {
     return browser_pin_valid() && browser_streq(browser_pin_host(), host)
@@ -479,16 +488,29 @@ fn browser_roots_clear() {
     browser_draw();
 }
 
+fn browser_workspace_memory_reset() {
+    browser_zero(&g_browser_tabs as u64, 1280);
+    browser_zero(&g_browser_tab_titles as u64, 384);
+    for i: u32 in 0..4 {
+        g_browser_workspace_counts[i] = 0;
+        g_browser_workspace_active[i] = 0;
+    }
+    g_browser_tab_count = 0;
+    g_browser_active_tab = 0;
+}
+
 fn browser_state_reset() {
     browser_zero(&g_browser_state as u64, 1024);
     *(&g_browser_state as *u32) = BROWSER_STATE_MAGIC;
     browser_set_history_count(0); browser_set_history_index(0); browser_set_bookmark_count(0);
+    g_browser_workspace = 0; browser_set_saved_workspace(0);
     g_browser_state_saved = false;
 }
 
 fn browser_state_save() -> bool {
     g_browser_state_saved = false;
     if !g_fs_ok || g_cwd > 255 { return false; }
+    browser_set_saved_workspace(g_browser_workspace);
     let idx: u32 = fs_find_in(".vex-state", g_cwd);
     if idx == 64 { idx = fs_create_full(".vex-state", g_cwd, 0); }
     if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) { return false; }
@@ -502,7 +524,7 @@ fn browser_state_save() -> bool {
 }
 
 fn browser_state_load() {
-    g_browser_loaded_dir = g_cwd; browser_state_reset();
+    g_browser_loaded_dir = g_cwd; browser_workspace_memory_reset(); browser_state_reset();
     if !g_fs_ok || g_cwd > 255 { return; }
     let idx: u32 = fs_find_in(".vex-state", g_cwd);
     if idx == 64 { browser_state_save(); return; }
@@ -516,6 +538,8 @@ fn browser_state_load() {
         browser_state_reset(); return;
     }
     if *((&g_browser_state as u64 + 7) as *u8) > 1 { browser_state_reset(); return; }
+    if browser_saved_workspace() >= 4 { browser_state_reset(); return; }
+    g_browser_workspace = browser_saved_workspace();
     if browser_pin_valid() {
         *((browser_pin_host() + 63) as *u8) = 0;
         if *((browser_pin_host()) as *u8) == 0
@@ -710,9 +734,59 @@ fn browser_forward() {
 
 fn browser_reload() { browser_load(&g_browser_url as u64, false); }
 
+fn browser_workspace_name(index: u32) -> *u8 {
+    if index == 0 { return "Personal"; }
+    if index == 1 { return "Work"; }
+    if index == 2 { return "School"; }
+    return "Dev";
+}
+
+fn browser_workspace_color(index: u32) -> u32 {
+    if index == 0 { return 0xd4a574; }
+    if index == 1 { return 0x6fa8dc; }
+    if index == 2 { return 0x55d6a0; }
+    return 0xc18cff;
+}
+
+fn browser_workspace_sync() {
+    if g_browser_workspace >= 4 { return; }
+    g_browser_workspace_counts[g_browser_workspace] = g_browser_tab_count;
+    g_browser_workspace_active[g_browser_workspace] = g_browser_active_tab;
+}
+
+fn browser_workspace_activate(next: u32) {
+    if next >= 4 || next == g_browser_workspace { return; }
+    browser_workspace_sync();
+    g_browser_workspace = next;
+    g_browser_tab_count = g_browser_workspace_counts[next];
+    g_browser_active_tab = g_browser_workspace_active[next];
+    if g_browser_tab_count == 0 {
+        g_browser_tab_count = 1; g_browser_active_tab = 0;
+        browser_zero(browser_tab_slot(0), 80);
+        browser_zero(browser_tab_title(0), 24);
+        browser_copy(browser_tab_slot(0), "vex://home" as u64, 80);
+        browser_copy(browser_tab_title(0), "Home" as u64, 24);
+        browser_workspace_sync();
+    }
+    if g_browser_active_tab >= g_browser_tab_count { g_browser_active_tab = 0; }
+    browser_set_saved_workspace(g_browser_workspace);
+    if !g_browser_private { browser_state_save(); }
+    browser_load(browser_tab_slot(g_browser_active_tab), false);
+    if next == 0 { browser_set_status("Personal workspace"); }
+    if next == 1 { browser_set_status("Work workspace"); }
+    if next == 2 { browser_set_status("School workspace"); }
+    if next == 3 { browser_set_status("Dev workspace"); }
+    browser_draw();
+}
+
+fn browser_workspace_cycle() {
+    browser_workspace_activate((g_browser_workspace + 1) % 4);
+}
+
 fn browser_new_tab() {
     if g_browser_tab_count >= 4 { browser_set_status("Four-tab limit reached"); browser_draw(); return; }
     g_browser_active_tab = g_browser_tab_count; g_browser_tab_count = g_browser_tab_count + 1;
+    browser_workspace_sync();
     browser_zero(browser_tab_slot(g_browser_active_tab), 80);
     browser_copy(browser_tab_slot(g_browser_active_tab), "vex://home" as u64, 80);
     browser_load(browser_tab_slot(g_browser_active_tab), true);
@@ -721,6 +795,7 @@ fn browser_new_tab() {
 fn browser_switch_tab() {
     if g_browser_tab_count < 2 { browser_set_status("Only one tab is open"); browser_draw(); return; }
     g_browser_active_tab = (g_browser_active_tab + 1) % g_browser_tab_count;
+    browser_workspace_sync();
     browser_load(browser_tab_slot(g_browser_active_tab), false);
 }
 
@@ -734,6 +809,7 @@ fn browser_close_tab() {
     }
     g_browser_tab_count = g_browser_tab_count - 1;
     if g_browser_active_tab >= g_browser_tab_count { g_browser_active_tab = g_browser_tab_count - 1; }
+    browser_workspace_sync();
     browser_load(browser_tab_slot(g_browser_active_tab), false);
 }
 
@@ -815,8 +891,8 @@ fn browser_draw_shell() {
 
 fn browser_draw_toolbar() {
     outline_round_rect(70, 116, 108, 34, 8, 0x4a3a29, 0x211b15);
-    fill_round_rect(78, 127, 8, 8, 3, 0xd4a574);
-    draw_text_abs("Personal", 92, 125, 0xe7daca, 0x211b15);
+    fill_round_rect(78, 127, 8, 8, 3, browser_workspace_color(g_browser_workspace));
+    draw_text_abs(browser_workspace_name(g_browser_workspace), 92, 125, 0xe7daca, 0x211b15);
     draw_text_abs("TABS", 74, 158, 0x887765, 0x17130f);
     for tab: u32 in 0..g_browser_tab_count {
         let y: u32 = 176 + tab * 42;
@@ -1056,6 +1132,8 @@ fn browser_draw() {
     if g_browser_tab_count == 0 {
         g_browser_tab_count = 1; g_browser_active_tab = 0;
         browser_copy(browser_tab_slot(0), "vex://home" as u64, 80);
+        browser_copy(browser_tab_title(0), "Home" as u64, 24);
+        browser_workspace_sync();
     }
     if g_browser_url[0] == 0 {
         browser_set_url("vex://home" as u64); browser_set_title("Home"); browser_set_status("Local start page");
@@ -1077,7 +1155,7 @@ fn browser_draw() {
     if g_browser_mode == 2 {
         draw_text_abs("Find: ", 204, 624, 0xd4a574, 0x17130f); draw_text_abs(&g_browser_find as *u8, 252, 624, 0xffffff, 0x17130f);
     } else { draw_text_abs(&g_browser_status as *u8, 204, 624, 0xa89882, 0x17130f); }
-    draw_text_abs("/:address  arrows:nav  B:bookmark  F:find  D:save  T:new  Tab:switch", 196, 648, 0x685b4d, 0x0b0f14);
+    draw_text_abs("/:address arrows:nav B:mark F:find D:save T:new Tab:tab W:workspace", 196, 648, 0x685b4d, 0x0b0f14);
 }
 
 fn browser_begin_address() {
@@ -1220,11 +1298,13 @@ fn browser_edit_key(sc: u8) {
 }
 
 fn browser_click(x: u32, y: u32) {
+    if x >= 70 && x < 180 && y >= 116 && y < 150 { browser_workspace_cycle(); return; }
     if x >= 70 && x < 180 {
         for tab: u32 in 0..g_browser_tab_count {
             let top: u32 = 171 + tab * 42;
             if y >= top && y < top + 34 {
-                g_browser_active_tab = tab; browser_load(browser_tab_slot(tab), false); return;
+                g_browser_active_tab = tab; browser_workspace_sync();
+                browser_load(browser_tab_slot(tab), false); return;
             }
         }
         let new_top: u32 = 171 + g_browser_tab_count * 42;
@@ -1334,6 +1414,7 @@ fn browser_on_key(sc: u8) {
     if sc == 20 { browser_new_tab(); return; } // T
     if sc == 45 { browser_close_tab(); return; } // X
     if sc == 15 { browser_switch_tab(); return; } // Tab
+    if sc == 17 { browser_workspace_cycle(); return; } // W
     if sc == 25 { browser_toggle_private(); return; } // P
     if sc == 37 { browser_pin_approve(); return; } // K
     if sc == 46 && g_browser_page == 5 { browser_clear_history(); return; } // C in settings

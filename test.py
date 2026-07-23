@@ -781,6 +781,8 @@ def browser_ui():
     downloaded_addr = _elf32_symbol(ELF, "m_g_browser_downloaded")
     links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
     tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
+    workspace_addr = _elf32_symbol(ELF, "m_g_browser_workspace")
+    workspace_counts_addr = _elf32_symbol(ELF, "m_g_browser_workspace_counts")
     mouse_ready_addr = _elf32_symbol(ELF, "m_g_usb_mouse_ready")
     mouse_x_addr = _elf32_symbol(ELF, "m_g_mouse_x")
     mouse_y_addr = _elf32_symbol(ELF, "m_g_mouse_y")
@@ -1087,6 +1089,32 @@ def browser_ui():
             tabs = _wait_guest_u32(handle, tabs_addr, lambda value: value == 2)
             check("Mouse click opens a Vex tab from the toolbar", tabs == 2)
             send_key(handle, "x")
+            _wait_guest_u32(handle, tabs_addr, lambda value: value == 1)
+
+            send_key(handle, "w")
+            work_workspace = _wait_guest_u32(
+                handle, workspace_addr, lambda value: value == 1)
+            work_tabs = _wait_guest_u32(handle, tabs_addr, lambda value: value == 1)
+            check("Vex switches into an independent Work workspace",
+                  work_workspace == 1 and work_tabs == 1)
+            send_key(handle, "t")
+            _wait_guest_u32(handle, tabs_addr, lambda value: value == 2)
+            for _ in range(3):
+                send_key(handle, "w")
+            personal_workspace = _wait_guest_u32(
+                handle, workspace_addr, lambda value: value == 0)
+            personal_tabs = _wait_guest_u32(handle, tabs_addr, lambda value: value == 1)
+            check("Workspace tab stacks remain isolated when cycling",
+                  (personal_workspace == 0 and personal_tabs == 1
+                   and _guest_u32(handle, workspace_counts_addr + 4) == 2))
+            send_key(handle, "w")
+            restored_work_tabs = _wait_guest_u32(
+                handle, tabs_addr, lambda value: value == 2)
+            check("Returning to Work restores its two-tab stack",
+                  restored_work_tabs == 2)
+            for _ in range(3):
+                send_key(handle, "w")
+            _wait_guest_u32(handle, workspace_addr, lambda value: value == 0)
             _wait_guest_u32(handle, tabs_addr, lambda value: value == 1)
 
             send_key(handle, "slash")
@@ -1461,6 +1489,9 @@ def browser_ui():
                       handle, last_download_name_addr, 24).split(b"\0", 1)[0] == b"secure.bin"
                    and _guest_u32(handle, last_download_len_addr) == len(tls_binary_body)
                    and "Binary response saved" in secure_binary_status))
+            send_key(handle, "w")
+            send_key(handle, "w")
+            _wait_guest_u32(handle, workspace_addr, lambda value: value == 2)
         finally:
             shutdown(handle)
             server.shutdown()
@@ -1480,12 +1511,14 @@ def browser_ui():
         send_key(handle, "esc")
         send_key(handle, "f3")
         _wait_guest_u32(handle, app_addr, lambda value: value == 2, timeout_s=10)
-        state = _guest_bytes(handle, state_addr, 8)
+        state = _guest_bytes(handle, state_addr, 9)
         check("Browser bookmarks and imported CA roots survive a full reboot",
               state[6] >= 1 and state[7] == 0
               and _guest_bytes(handle, roots_addr + 4, 1)[0] == 2
               and _guest_bytes(handle, roots_addr + 20, 32) == expected_anchor_hash
               and _guest_bytes(handle, roots_addr + 4152, 32) == expected_bundle_hash)
+        check("Active Vex workspace survives a full reboot",
+              state[8] == 2 and _guest_u32(handle, workspace_addr) == 2)
         send_key(handle, "8")
         send_key(handle, "a")
         rejected_bundle_status = ""

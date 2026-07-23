@@ -13,6 +13,8 @@ upstream/native boundary.
 
 - Canonical Vex chrome with its gold diamond, vertical tab sidebar, workspace
   header, library navigation, and new-tab surface.
+- Personal, Work, School, and Dev workspaces with isolated four-tab stacks;
+  the active workspace persists in the user's `.vex-state` file.
 - Up to four tabs with page titles, switching, creation, and closing.
 - Clickable tabs, new-tab control, navigation buttons, address bar, history,
   bookmarks, and extracted-link rows when a mouse is attached.
@@ -58,6 +60,7 @@ upstream/native boundary.
 | `D` | Save the rendered document to MortFS |
 | `T` / `X` | New tab / close tab |
 | `Tab` | Switch to the next tab |
+| `W` | Cycle Personal / Work / School / Dev workspaces |
 | `P` | Toggle private mode |
 | `K` | Approve the currently verified but untrusted HTTPS certificate pin |
 | `C` | Clear history while on `vex://settings` |
