@@ -300,7 +300,7 @@ fn browser_load(url: u64, add_history: bool) {
         g_browser_page = 7;
         if browser_tls_probe(url) {
             browser_set_title("Secure server reached");
-            browser_set_status("TLS encrypted; certificate trust gate remains closed");
+            browser_set_status("TLS signatures verified; chain trust gate remains closed");
         } else {
             browser_set_title("Secure connection failed");
             browser_set_status("TLS negotiation failed closed");

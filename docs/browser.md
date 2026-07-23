@@ -155,8 +155,11 @@ the ClientHello through RTL8139/TCP, reassembles a fragmented/coalesced TLS
 record stream, validates a live ChaCha20-Poly1305 ServerHello, and derives the
 live handshake traffic keys. It then validates an optional compatibility CCS,
 authenticates and decrypts the first protected record, and requires the
-EncryptedExtensions handshake message. It deliberately stops at the certificate
-trust gate and does not expose unauthenticated response content.
+EncryptedExtensions handshake message. It continues across protected records,
+parses the leaf certificate, validates its RTC validity interval and RSA key,
+verifies RSA-PSS CertificateVerify against the exact transcript, and verifies
+the server Finished value. It deliberately stops at the certificate-chain trust
+gate and does not expose unauthenticated response content.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

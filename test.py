@@ -1109,11 +1109,11 @@ def browser_ui():
                 timeout_s=30)
             secure_status = _guest_bytes(
                 handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
-            check("Vex authenticates a live encrypted TLS 1.3 handshake record",
+            check("Vex verifies the live TLS 1.3 server flight and Finished",
                   (tls_probe & 0xff) != 0
                   and any(_guest_bytes(handle, tls_server_key_addr, 32))
-                  and _guest_u32(handle, tls_probe_stage_addr) == 7
-                  and "certificate trust gate remains closed" in secure_status)
+                  and _guest_u32(handle, tls_probe_stage_addr) == 8
+                  and "chain trust gate remains closed" in secure_status)
             if (tls_probe & 0xff) == 0:
                 print("TLS probe stage:", _guest_u32(handle, tls_probe_stage_addr),
                       "status:", secure_status, "server:", tls_errors)
