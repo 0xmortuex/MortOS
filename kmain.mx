@@ -2181,6 +2181,8 @@ fn run_command_impl(cmd: *u8) -> bool {
         feed();
         print_string("net: net (DHCP)  httpd (serve a page on :80)", g_row, 7);
         feed();
+        print_string("pkg: mpkg update|list|search|install|remove", g_row, 7);
+        feed();
         print_string("power: F12 menu, or lock sleep restart shutdown", g_row, 7);
         feed();
         print_string("users: whoami su sudo passwd chmod chown", g_row, 7);
@@ -2211,6 +2213,12 @@ fn run_command_impl(cmd: *u8) -> bool {
             print_string(hist_slot(k) as *u8, g_row, 7);
             k = k - 1;
         }
+        return false;
+    }
+    if streq(cmd, "mpkg") || starts_with(cmd, "mpkg ") {
+        let args: u64 = (cmd as u32 + 4) as u64;
+        if *((args) as *u8) == 32 { args = args + 1; }
+        mpkg_command(args);
         return false;
     }
     if streq(cmd, "net") {
@@ -3574,6 +3582,7 @@ fn builtin_name(i: u32) -> u64 {
     if i == 32 { return "shutdown" as u64; }
     if i == 33 { return "history" as u64; }
     if i == 34 { return "crash" as u64; }
+    if i == 35 { return "mpkg" as u64; }
     return 0;
 }
 
