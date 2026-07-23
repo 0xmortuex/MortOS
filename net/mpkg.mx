@@ -336,12 +336,14 @@ fn mpkg_do_update() {
     num_to_str(count, g_numbuf);
     print_at(g_numbuf, g_row, 21, 15);
     print_at(" packages available", g_row, 21 + g_numlen, 10);
+    mpkg_persist_index();                       // cache to /var/mpkg so it survives reboots
 }
 
 fn mpkg_do_list() {
     if !mpkg_need_index() { return; }
     let name: [u8; 32] = [0; 32];
     let ver: [u8; 16] = [0; 16];
+    let file: [u8; 48] = [0; 48];
     let desc: [u8; 64] = [0; 64];
     let pos: u32 = 0;
     while pos < g_mpkg_index_len {
@@ -349,9 +351,13 @@ fn mpkg_do_list() {
         if mpkg_is_pkg_line(pos, e) {
             mpkg_field(pos, e, 0, &name as u64, 32);
             mpkg_field(pos, e, 1, &ver as u64, 16);
+            mpkg_field(pos, e, 2, &file as u64, 48);
             mpkg_field(pos, e, 4, &desc as u64, 64);
+            // Installed packages (their .bin is in /bin) show their name in green.
+            let nc: u8 = 15;
+            if mpkg_is_installed(&file as u64) { nc = 10; }
             feed();
-            print_at((&name as u64) as *u8, g_row, 0, 15);
+            print_at((&name as u64) as *u8, g_row, 0, nc);
             print_at((&ver as u64) as *u8, g_row, 16, 8);
             print_at((&desc as u64) as *u8, g_row, 24, 7);
         }
@@ -443,6 +449,52 @@ fn mpkg_fs_write(idx: u32, src: u64, len: u32) -> bool {
         s = s + 1;
     }
     *((base + 28) as *u32) = len;               // size_bytes
+    return true;
+}
+
+// Save the cached index to /var/mpkg/index so it survives reboots. Best-effort:
+// silently does nothing if the dir/file can't be created (e.g. run as non-root).
+fn mpkg_persist_index() {
+    fs_mkdir("/var/mpkg" as u64);               // no-op if it already exists
+    let dir: u32 = fs_resolve("/var/mpkg" as u64);
+    if dir == 64 { return; }
+    let idx: u32 = fs_resolve("/var/mpkg/index" as u64);
+    if idx == 64 {
+        idx = fs_create_full("index", dir, 0);
+        if idx == 64 { return; }
+    }
+    mpkg_fs_write(idx, &g_mpkg_index as u64, g_mpkg_index_len);
+    fs_sync();
+}
+
+// Load a persisted index from a previous session if none is cached in RAM.
+fn mpkg_load_index() {
+    if g_mpkg_have_index { return; }
+    let idx: u32 = fs_resolve("/var/mpkg/index" as u64);
+    if idx == 64 { return; }
+    if idx == 255 { return; }
+    let size: u32 = fs_read_file(idx);          // content -> FILEBUF 0x00810000
+    if size == 0 { return; }
+    if size > 4095 { size = 4095; }
+    let k: u32 = 0;
+    while k < size {
+        *((&g_mpkg_index as u64 + (k as u64)) as *u8) = *((0x00810000 + k) as *u8);
+        k = k + 1;
+    }
+    *((&g_mpkg_index as u64 + (size as u64)) as *u8) = 0;
+    g_mpkg_index_len = size;
+    g_mpkg_have_index = true;
+}
+
+// Is package `file` (its .bin) present in /bin?
+fn mpkg_is_installed(file: u64) -> bool {
+    let path: [u8; 64] = [0; 64];
+    let pp: u32 = mpkg_puts(&path as u64, 0, "/bin/" as u64);
+    pp = mpkg_puts(&path as u64, pp, file);
+    *((&path as u64 + (pp as u64)) as *u8) = 0;
+    let r: u32 = fs_resolve(&path as u64);
+    if r == 64 { return false; }
+    if r == 255 { return false; }
     return true;
 }
 
@@ -560,6 +612,7 @@ fn mpkg_usage() {
 
 // Entry point: `args` is the text after "mpkg " (empty for a bare "mpkg").
 fn mpkg_command(args: u64) {
+    mpkg_load_index();                          // pick up a persisted index, if any
     if streq(args as *u8, "update") { mpkg_do_update(); return; }
     if streq(args as *u8, "list") { mpkg_do_list(); return; }
     if starts_with(args as *u8, "search ") { mpkg_do_search(args + 7); return; }
