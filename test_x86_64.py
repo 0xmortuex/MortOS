@@ -72,6 +72,7 @@ def main():
         "MORT64: W^X JIT mapping transition passed",
         "MORT64: timer preemption context switch passed",
         "MORT64 CXX RUNTIME OK",
+        "MORT64: shared-address-space thread passed",
         "MORT64: FS-base TLS and atomic ABI passed",
         "MORT64: freestanding C++ runtime passed",
         "MORT64: process address spaces reclaimed",

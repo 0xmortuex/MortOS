@@ -17,6 +17,9 @@ extern "C" unsigned long mortos_arch_prctl(unsigned long, unsigned long);
 extern "C" unsigned long mortos_yield();
 extern "C" void mortos_fs_store(unsigned long, unsigned long);
 extern "C" unsigned long mortos_fs_load(unsigned long);
+extern "C" unsigned long mortos_gettid();
+extern "C" unsigned long mortos_thread_create(
+    unsigned long, unsigned long, unsigned long);
 
 static unsigned long constructor_value;
 
@@ -32,6 +35,15 @@ struct Widget {
     explicit Widget(unsigned long initial) : value(initial) {}
     unsigned long value;
 };
+
+extern "C" unsigned long thread_worker(void *opaque) {
+    if (mortos_getpid() != 5 || mortos_gettid() == 5) {
+        return 30;
+    }
+    auto *ready = static_cast<unsigned long *>(opaque);
+    __atomic_store_n(ready, 1UL, __ATOMIC_RELEASE);
+    return 31;
+}
 
 extern "C" int main() {
     if (mortos_getpid() != 5
@@ -77,11 +89,33 @@ extern "C" int main() {
     mortos_fs_store(8, 0x544C5356414C5545UL);
     unsigned long atomic_value = 10;
     if (__atomic_fetch_add(&atomic_value, 7, __ATOMIC_SEQ_CST) != 10
-        || atomic_value != 17
-        || mortos_yield() != 0
-        || mortos_fs_load(8) != 0x544C5356414C5545UL
+        || atomic_value != 17) {
+        return 9;
+    }
+    unsigned long thread_stack = mortos_mmap(
+        0, 8192, 3, 0x22, ~0UL, 0);
+    if (thread_stack >= ~4095UL) {
+        return 9;
+    }
+    unsigned long thread_ready = 0;
+    unsigned long thread_id = mortos_thread_create(
+        reinterpret_cast<unsigned long>(&thread_worker),
+        thread_stack + 8192,
+        reinterpret_cast<unsigned long>(&thread_ready));
+    if (thread_id <= 5) {
+        return 9;
+    }
+    while (__atomic_load_n(&thread_ready, __ATOMIC_ACQUIRE) == 0) {
+        if (mortos_yield() != 0) {
+            return 9;
+        }
+    }
+    if (mortos_fs_load(8) != 0x544C5356414C5545UL
         || mortos_arch_prctl(0x1003, tls + 16) != 0
         || *reinterpret_cast<unsigned long *>(tls + 16) != tls) {
+        return 9;
+    }
+    if (mortos_munmap(thread_stack, 8192) != 0) {
         return 9;
     }
     if (mortos_arch_prctl(0x1002, 0) != 0

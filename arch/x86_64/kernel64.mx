@@ -24,6 +24,8 @@ let g_user_fault_error64: u64 = 0;
 // Process states: 0 FREE, 1 READY, 2 RUNNING, 3 EXITED, 4 FAULTED.
 let g_process_state64: [u8; 8] = [0; 8];
 let g_process_pid64: [u64; 8] = [0; 8];
+let g_process_tid64: [u64; 8] = [0; 8];
+let g_process_is_thread64: [u8; 8] = [0; 8];
 let g_process_root64: [u64; 8] = [0; 8];
 let g_process_pt64: [u64; 8] = [0; 8];
 let g_process_mmap_pt64: [u64; 8] = [0; 8];
@@ -41,9 +43,11 @@ let g_process_clock_seen64: [u8; 8] = [0; 8];
 let g_process_mmap_seen64: [u8; 8] = [0; 8];
 let g_process_fs_base64: [u64; 8] = [0; 8];
 let g_process_tls_seen64: [u8; 8] = [0; 8];
+let g_process_thread_seen64: [u8; 8] = [0; 8];
 let g_current_process64: u32 = 8;
 let g_next_pid64: u64 = 1;
 let g_timer_ticks64: u64 = 0;
+let g_thread_exit_seen64: bool = false;
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
@@ -443,6 +447,8 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             }
             g_process_state64[slot] = 1;
             g_process_pid64[slot] = g_next_pid64;
+            g_process_tid64[slot] = g_next_pid64;
+            g_process_is_thread64[slot] = 0;
             g_process_root64[slot] = root;
             g_process_pt64[slot] = g_user_pt64;
             g_process_mmap_pt64[slot] = g_user_mmap_pt64;
@@ -457,6 +463,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_mmap_seen64[slot] = 0;
             g_process_fs_base64[slot] = 0;
             g_process_tls_seen64[slot] = 0;
+            g_process_thread_seen64[slot] = 0;
             g_next_pid64 = g_next_pid64 + 1;
             return slot;
         }
@@ -509,6 +516,72 @@ fn process_schedule64() -> u32 {
     return dispatched;
 }
 
+fn user_address_executable64(address: u64) -> bool {
+    let entry: *u64 = user_page_entry64(address);
+    if entry == ((0 as u64) as *u64) {
+        return false;
+    }
+    let no_execute: u64 = (1 as u64) << 63;
+    return (*entry & 0x5) == 0x5 && (*entry & no_execute) == 0;
+}
+
+// Create a schedulable task that shares the caller's address space. The
+// supplied return trampoline guarantees a normal thread function return
+// becomes SYS_exit rather than falling into an unmapped address.
+fn thread_create64(
+    entry: u64,
+    stack_top: u64,
+    argument: u64,
+    return_trampoline: u64
+) -> u64 {
+    if g_current_process64 >= 8
+        || (stack_top & 0xF) != 0
+        || stack_top < 8
+        || !user_address_executable64(entry)
+        || !user_address_executable64(return_trampoline)
+        || !user_range_writable64(stack_top - 8, 8) {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    let parent: u32 = g_current_process64;
+    let slot: u32 = 0;
+    while slot < 8 {
+        if g_process_state64[slot] == 0 {
+            let context: u64 = (&g_process_context64 as u64)
+                + ((slot as u64) * 144);
+            let field: u32 = 0;
+            while field < 18 {
+                *((context + ((field as u64) * 8)) as *u64) = 0;
+                field = field + 1;
+            }
+            *((stack_top - 8) as *u64) = return_trampoline;
+            *((context + 72) as *u64) = argument;       // RDI
+            *((context + 120) as *u64) = entry;        // RIP
+            *((context + 128) as *u64) = 0x202;        // RFLAGS
+            *((context + 136) as *u64) = stack_top - 8;// RSP
+
+            g_process_state64[slot] = 1;
+            g_process_pid64[slot] = g_process_pid64[parent];
+            g_process_tid64[slot] = g_next_pid64;
+            g_process_is_thread64[slot] = 1;
+            g_process_root64[slot] = g_process_root64[parent];
+            g_process_pt64[slot] = g_process_pt64[parent];
+            g_process_mmap_pt64[slot] = g_process_mmap_pt64[parent];
+            g_process_entry64[slot] = entry;
+            g_process_brk64[slot] = g_process_brk64[parent];
+            g_process_fs_base64[slot] = 0;
+            g_process_context_valid64[slot] = 1;
+            g_process_exit64[slot] = 0;
+            g_process_fault64[slot] = 0;
+            g_process_preemptions64[slot] = 0;
+            g_process_thread_seen64[parent] = 1;
+            g_next_pid64 = g_next_pid64 + 1;
+            return g_process_tid64[slot];
+        }
+        slot = slot + 1;
+    }
+    return ~(10 as u64);                       // -EAGAIN
+}
+
 // Reclaim every user leaf and paging structure owned by a terminal process.
 // The current bootstrap has one user PT under PML4[0]/PDPT[0]/PD[8].
 fn process_reap64(slot: u32) -> bool {
@@ -522,6 +595,26 @@ fn process_reap64(slot: u32) -> bool {
     let mmap_pt: u64 = g_process_mmap_pt64[slot];
     if root == 0 || user_pt == 0 || mmap_pt == 0 {
         return false;
+    }
+    // Reap terminal threads sharing this address space before releasing its
+    // page tables. A live sibling makes the owner non-reapable.
+    let sibling: u32 = 0;
+    while sibling < 8 {
+        if sibling != slot && g_process_root64[sibling] == root {
+            if g_process_state64[sibling] != 3
+                && g_process_state64[sibling] != 4 {
+                return false;
+            }
+            g_process_state64[sibling] = 0;
+            g_process_pid64[sibling] = 0;
+            g_process_tid64[sibling] = 0;
+            g_process_is_thread64[sibling] = 0;
+            g_process_root64[sibling] = 0;
+            g_process_pt64[sibling] = 0;
+            g_process_mmap_pt64[sibling] = 0;
+            g_process_context_valid64[sibling] = 0;
+        }
+        sibling = sibling + 1;
     }
     let index: u32 = 0;
     while index < 512 {
@@ -561,6 +654,8 @@ fn process_reap64(slot: u32) -> bool {
     frame_free64(root);
     g_process_state64[slot] = 0;
     g_process_pid64[slot] = 0;
+    g_process_tid64[slot] = 0;
+    g_process_is_thread64[slot] = 0;
     g_process_root64[slot] = 0;
     g_process_pt64[slot] = 0;
     g_process_mmap_pt64[slot] = 0;
@@ -997,6 +1092,16 @@ fn syscall_dispatch64(
         }
         return 0;
     }
+    if number == 186 {
+        if g_current_process64 < 8 {
+            return g_process_tid64[g_current_process64];
+        }
+        return 0;
+    }
+    if number == 400 {
+        return thread_create64(
+            argument0, argument1, argument2, argument3);
+    }
     if number == 12 {
         return process_brk64(argument0);
     }
@@ -1050,6 +1155,10 @@ fn on_user_exit64(status: u64) {
         g_process_exit64[g_current_process64] = status;
         g_process_state64[g_current_process64] = 3;
         g_process_context_valid64[g_current_process64] = 0;
+        if g_process_is_thread64[g_current_process64] != 0
+            && status == 31 {
+            g_thread_exit_seen64 = true;
+        }
     }
 }
 
@@ -1121,7 +1230,7 @@ fn kmain64(multiboot_info: u64) {
             serial_write64(
                 "MORT64: ELF64 loader mapped five isolated processes\r\n");
             let dispatched: u32 = process_schedule64();
-            if dispatched >= 7
+            if dispatched >= 9
                 && g_process_state64[probe_slot] == 3
                 && g_process_exit64[probe_slot] == 42
                 && g_user_probe_seen64
@@ -1176,7 +1285,11 @@ fn kmain64(multiboot_info: u64) {
             if g_process_state64[cxx_slot] == 3
                 && g_process_exit64[cxx_slot] == 23
                 && g_process_mmap_seen64[cxx_slot] != 0
-                && g_process_tls_seen64[cxx_slot] != 0 {
+                && g_process_tls_seen64[cxx_slot] != 0
+                && g_process_thread_seen64[cxx_slot] != 0
+                && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: shared-address-space thread passed\r\n");
                 serial_write64(
                     "MORT64: FS-base TLS and atomic ABI passed\r\n");
                 serial_write64(

@@ -105,6 +105,32 @@ mortos_fs_load:
     ret
 .size mortos_fs_load, . - mortos_fs_load
 
+.global mortos_gettid
+.type mortos_gettid, @function
+mortos_gettid:
+    mov $186, %rax                 /* SYS_gettid */
+    syscall
+    ret
+.size mortos_gettid, . - mortos_gettid
+
+.global mortos_thread_create
+.type mortos_thread_create, @function
+mortos_thread_create:
+    /* rdi=entry, rsi=stack top, rdx=argument; r10=return trampoline. */
+    lea mortos_thread_return(%rip), %r10
+    mov $400, %rax                 /* MortOS SYS_thread_create */
+    syscall
+    ret
+.size mortos_thread_create, . - mortos_thread_create
+
+.type mortos_thread_return, @function
+mortos_thread_return:
+    mov %rax, %rdi
+    mov $60, %rax
+    syscall
+    ud2
+.size mortos_thread_return, . - mortos_thread_return
+
 .global mortos_spin
 .type mortos_spin, @function
 mortos_spin:
