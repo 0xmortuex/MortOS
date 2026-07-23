@@ -441,6 +441,7 @@ def smoke(disk_img=None):
     x509_time_addr = _elf32_symbol(ELF, "m_g_tls_x509_time_test")
     x509_rtc_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_rtc_ok")
     x509_rtc_addr = _elf32_symbol(ELF, "m_g_tls_x509_rtc_test")
+    x509_rsa_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_rsa_spki_ok")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -537,6 +538,8 @@ def smoke(disk_img=None):
         check("Mort reads a stable full RTC date for certificate validity",
               (_guest_u32(handle, x509_rtc_ok_addr) & 0xff) != 0
               and 20200101000000 <= guest_rtc <= 99991231235959, handle)
+        check("Mort extracts policy-sized RSA keys from X.509 SubjectPublicKeyInfo",
+              (_guest_u32(handle, x509_rsa_ok_addr) & 0xff) != 0, handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",

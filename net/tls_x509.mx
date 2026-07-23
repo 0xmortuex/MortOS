@@ -10,6 +10,8 @@ let g_tls_x509_fields_ok: bool = false;
 let g_tls_x509_time_test: [u8; 8] = [0; 8];
 let g_tls_x509_rtc_ok: bool = false;
 let g_tls_x509_rtc_test: [u8; 8] = [0; 8];
+let g_tls_x509_rsa_spki_ok: bool = false;
+let g_tls_x509_rsa_edge_test: [u8; 2] = [0; 2];
 
 fn tls_der_read(input: u64, available: u32, expected_tag: u8,
                 content_offset: u64, content_length: u64) -> u32 {
@@ -400,6 +402,74 @@ fn tls_x509_find_san(certificate: u64, extensions_offset: u32, extensions_length
     return found;
 }
 
+fn tls_x509_rsa_oid(input: u64, length: u32) -> bool {
+    let oid: [u8; 9] = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+    return length == 9 && tls_bytes_equal(input, &oid as u64, 9);
+}
+
+fn tls_x509_spki_rsa(spki: u64, spki_length: u32,
+                     modulus_offset: u64, modulus_length: u64, exponent_output: u64) -> bool {
+    let outer_offset: u32 = 0; let outer_length: u32 = 0;
+    if tls_der_read(spki, spki_length, 0x30, &outer_offset as u64, &outer_length as u64) != spki_length {
+        return false;
+    }
+    let pos: u32 = outer_offset; let end: u32 = outer_offset + outer_length;
+    let algorithm_offset: u32 = 0; let algorithm_length: u32 = 0;
+    let algorithm_total: u32 = tls_der_read(spki + (pos as u64), end - pos, 0x30,
+        &algorithm_offset as u64, &algorithm_length as u64);
+    if algorithm_total == 0 { return false; }
+    let scan: u32 = pos + algorithm_offset; let algorithm_end: u32 = scan + algorithm_length;
+    let item_offset: u32 = 0; let item_length: u32 = 0;
+    let oid_total: u32 = tls_der_read(spki + (scan as u64), algorithm_end - scan, 0x06,
+        &item_offset as u64, &item_length as u64);
+    if oid_total == 0 || !tls_x509_rsa_oid(spki + ((scan + item_offset) as u64), item_length) { return false; }
+    scan = scan + oid_total;
+    let null_total: u32 = tls_der_read(spki + (scan as u64), algorithm_end - scan, 0x05,
+        &item_offset as u64, &item_length as u64);
+    if null_total == 0 || item_length != 0 || scan + null_total != algorithm_end { return false; }
+    pos = pos + algorithm_total;
+
+    let bits_offset: u32 = 0; let bits_length: u32 = 0;
+    let bits_total: u32 = tls_der_read(spki + (pos as u64), end - pos, 0x03,
+        &bits_offset as u64, &bits_length as u64);
+    if bits_total == 0 || bits_length < 2 || pos + bits_total != end
+        || *((spki + ((pos + bits_offset) as u64)) as *u8) != 0 { return false; }
+    let rsa: u32 = pos + bits_offset + 1; let rsa_available: u32 = bits_length - 1;
+    let rsa_offset: u32 = 0; let rsa_length: u32 = 0;
+    if tls_der_read(spki + (rsa as u64), rsa_available, 0x30,
+                    &rsa_offset as u64, &rsa_length as u64) != rsa_available { return false; }
+    scan = rsa + rsa_offset; let rsa_end: u32 = scan + rsa_length;
+
+    let integer_offset: u32 = 0; let integer_length: u32 = 0;
+    let modulus_total: u32 = tls_der_read(spki + (scan as u64), rsa_end - scan, 0x02,
+        &integer_offset as u64, &integer_length as u64);
+    if modulus_total == 0 || !tls_x509_integer_valid(spki + ((scan + integer_offset) as u64), integer_length) {
+        return false;
+    }
+    let raw_modulus: u32 = scan + integer_offset; let raw_length: u32 = integer_length;
+    if raw_length > 1 && *((spki + (raw_modulus as u64)) as *u8) == 0 {
+        raw_modulus = raw_modulus + 1; raw_length = raw_length - 1;
+    }
+    if raw_length < 256 || raw_length > 512 || (*((spki + (raw_modulus as u64)) as *u8) & 0x80) == 0
+        || (*((spki + ((raw_modulus + raw_length - 1) as u64)) as *u8) & 1) == 0 {
+        return false;
+    }
+    scan = scan + modulus_total;
+    let exponent_total: u32 = tls_der_read(spki + (scan as u64), rsa_end - scan, 0x02,
+        &integer_offset as u64, &integer_length as u64);
+    if exponent_total == 0 || scan + exponent_total != rsa_end || integer_length == 0 || integer_length > 4
+        || !tls_x509_integer_valid(spki + ((scan + integer_offset) as u64), integer_length) { return false; }
+    let exponent: u32 = 0;
+    for i: u32 in 0..integer_length {
+        exponent = (exponent << 8) | (*((spki + ((scan + integer_offset + i) as u64)) as *u8) as u32);
+    }
+    if exponent < 3 || (exponent & 1) == 0 || (exponent & 0x80000000) != 0 { return false; }
+    *((modulus_offset) as *u32) = raw_modulus;
+    *((modulus_length) as *u32) = raw_length;
+    *((exponent_output) as *u32) = exponent;
+    return true;
+}
+
 fn tls_x509_self_test() {
     let certificate: [u8; 17] = [
         0x30, 0x0f,
@@ -485,4 +555,28 @@ fn tls_x509_self_test() {
     g_tls_x509_rtc_ok = rtc_read && rtc_now >= 20200101000000
         && tls_x509_valid_at(20200101000000, 99991231235959, rtc_now)
         && !tls_x509_valid_at(rtc_now + 1, 99991231235959, rtc_now);
+
+    let rsa_spki: [u8; 294] = [0; 294];
+    rsa_spki[0] = 0x30; rsa_spki[1] = 0x82; rsa_spki[2] = 0x01; rsa_spki[3] = 0x22;
+    let algorithm: [u8; 15] = [
+        0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00
+    ];
+    for i: u32 in 0..15 { rsa_spki[4 + i] = algorithm[i]; }
+    rsa_spki[19] = 0x03; rsa_spki[20] = 0x82; rsa_spki[21] = 0x01; rsa_spki[22] = 0x0f;
+    rsa_spki[23] = 0;
+    rsa_spki[24] = 0x30; rsa_spki[25] = 0x82; rsa_spki[26] = 0x01; rsa_spki[27] = 0x0a;
+    rsa_spki[28] = 0x02; rsa_spki[29] = 0x82; rsa_spki[30] = 0x01; rsa_spki[31] = 0x01;
+    rsa_spki[32] = 0; for i: u32 in 0..256 { rsa_spki[33 + i] = (i + 1) as u8; }
+    rsa_spki[33] = 0x80; rsa_spki[288] = 1;
+    rsa_spki[289] = 0x02; rsa_spki[290] = 0x03; rsa_spki[291] = 0x01; rsa_spki[292] = 0x00; rsa_spki[293] = 0x01;
+    let modulus_offset: u32 = 0; let modulus_length: u32 = 0; let exponent: u32 = 0;
+    let rsa_ok: bool = tls_x509_spki_rsa(&rsa_spki as u64, 294,
+        &modulus_offset as u64, &modulus_length as u64, &exponent as u64);
+    g_tls_x509_rsa_edge_test[0] = rsa_spki[modulus_offset];
+    g_tls_x509_rsa_edge_test[1] = rsa_spki[modulus_offset + modulus_length - 1];
+    rsa_spki[293] = 2; // even exponent
+    g_tls_x509_rsa_spki_ok = rsa_ok && modulus_offset == 33 && modulus_length == 256
+        && exponent == 65537 && g_tls_x509_rsa_edge_test[0] == 0x80 && g_tls_x509_rsa_edge_test[1] == 1
+        && !tls_x509_spki_rsa(&rsa_spki as u64, 294,
+                              &modulus_offset as u64, &modulus_length as u64, &exponent as u64);
 }

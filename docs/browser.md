@@ -121,6 +121,10 @@ Certificate validity uses a stable double-read of the full CMOS date and time,
 covering BCD or binary RTCs and 12- or 24-hour mode. A missing/invalid century,
 an update in progress that never stabilizes, or an impossible calendar value
 fails closed instead of substituting a guessed date.
+RSA SubjectPublicKeyInfo parsing requires the `rsaEncryption` OID with canonical
+NULL parameters, a byte-aligned BIT STRING, a positive odd 2048- to 4096-bit
+modulus, and a positive odd bounded exponent. The long-form DER path is covered
+by a generated 2048-bit parser vector.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
