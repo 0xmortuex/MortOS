@@ -17,6 +17,13 @@ let g_browser_tcp_ack: u32 = 0;
 let g_browser_tcp_ipid: u16 = 0x4400;
 let g_browser_tcp_nonce: u32 = 0;
 let g_input_bounds_ok: bool = false;
+let g_browser_net_secure: bool = false;
+let g_browser_tls_stream: [u8; 32768] = [0; 32768];
+let g_browser_tls_stream_len: u32 = 0;
+let g_browser_tls_record: [u8; 16645] = [0; 16645];
+let g_browser_tls_probe_ok: bool = false;
+let g_browser_tls_probe_stage: u32 = 0;
+let g_browser_tls_probe_server_key: [u8; 32] = [0; 32];
 
 fn browser_net_lower(ch: u8) -> u8 { if ch >= 65 && ch <= 90 { return ch + 32; } return ch; }
 
@@ -43,8 +50,11 @@ fn browser_request_append(pos: u32, text: u64) -> u32 {
 
 fn browser_parse_url(url: u64) -> bool {
     browser_zero(&g_browser_net_host as u64, 64); browser_zero(&g_browser_net_path as u64, 96);
-    if !browser_prefix(url, "http://" as u64) { return false; }
-    let pos: u32 = 7; let hlen: u32 = 0; g_browser_net_port = 80;
+    let pos: u32 = 0; g_browser_net_secure = false;
+    if browser_prefix(url, "https://" as u64) { pos = 8; g_browser_net_port = 443; g_browser_net_secure = true; }
+    else if browser_prefix(url, "http://" as u64) { pos = 7; g_browser_net_port = 80; }
+    else { return false; }
+    let hlen: u32 = 0;
     while *((url + (pos as u64)) as *u8) != 0 && *((url + (pos as u64)) as *u8) != 47
         && *((url + (pos as u64)) as *u8) != 58 {
         if hlen + 1 >= 64 { return false; }
@@ -243,6 +253,132 @@ fn browser_tcp_receive() -> bool {
         }
     }
     return received;
+}
+
+fn browser_tls_stream_reset() { g_browser_tls_stream_len = 0; }
+
+fn browser_tls_receive_record() -> u32 {
+    let idle: u32 = 0;
+    while idle < 12000000 {
+        if g_browser_tls_stream_len >= 5 {
+            let encrypted_length: u32 = tls13_read_u16(&g_browser_tls_stream as u64, 3);
+            if encrypted_length > 16640 { return 0; }
+            let record_length: u32 = encrypted_length + 5;
+            if record_length > 16645 { return 0; }
+            if g_browser_tls_stream_len >= record_length {
+                for i: u32 in 0..record_length { g_browser_tls_record[i] = g_browser_tls_stream[i]; }
+                let remaining: u32 = g_browser_tls_stream_len - record_length;
+                for i: u32 in 0..remaining { g_browser_tls_stream[i] = g_browser_tls_stream[record_length + i]; }
+                g_browser_tls_stream_len = remaining; return record_length;
+            }
+        }
+        let n: u32 = rtl_poll_rx(&g_net_rx as u64);
+        if n == 0 { idle = idle + 1; }
+        else {
+            idle = 0; let rx: u64 = &g_net_rx as u64; browser_net_aux(rx, n);
+            let tcp: u64 = browser_tcp_segment(rx, n);
+            if tcp != 0 {
+                let flags: u8 = tcp_flags(tcp); if (flags & TCP_RST) != 0 { return 0; }
+                let ip: u64 = eth_payload(rx); let header: u32 = tcp_header_len(tcp);
+                let payload_length: u32 = (ip_total_len(ip) as u32) - ip_ihl_bytes(ip) - header;
+                let their_sequence: u32 = tcp_seq(tcp);
+                if payload_length > 0 && their_sequence == g_browser_tcp_ack {
+                    if payload_length > 32768 - g_browser_tls_stream_len { return 0; }
+                    for i: u32 in 0..payload_length {
+                        g_browser_tls_stream[g_browser_tls_stream_len + i] =
+                            *((tcp + (header as u64) + (i as u64)) as *u8);
+                    }
+                    g_browser_tls_stream_len = g_browser_tls_stream_len + payload_length;
+                    g_browser_tcp_ack = g_browser_tcp_ack + payload_length; browser_tcp_send(TCP_ACK, 0, 0);
+                } else if payload_length > 0 && their_sequence < g_browser_tcp_ack {
+                    browser_tcp_send(TCP_ACK, 0, 0);
+                }
+                if (flags & TCP_FIN) != 0 { return 0; }
+            }
+        }
+    }
+    return 0;
+}
+
+fn browser_network_open(url: u64, secure: bool) -> bool {
+    if !browser_parse_url(url) || g_browser_net_secure != secure {
+        browser_set_status("Address scheme does not match transport"); return false;
+    }
+    if !g_net_up {
+        browser_set_status("Requesting a DHCP lease"); browser_draw();
+        g_net_quiet = true; let up: bool = net_dhcp(); g_net_quiet = false;
+        if !up { browser_set_status("Network unavailable: DHCP failed"); return false; }
+    }
+    browser_set_status("Resolving host name"); browser_draw();
+    if !browser_dns_resolve(&g_browser_net_host as u64, &g_browser_net_ip as u64) { return false; }
+    let arp_ip: u64 = browser_route_ip(&g_browser_net_ip as u64);
+    if arp_ip == 0 { browser_set_status("DHCP did not provide a default gateway"); return false; }
+    browser_set_status("Resolving Ethernet route"); browser_draw();
+    if !browser_arp_resolve(arp_ip, &g_browser_net_mac as u64) {
+        browser_set_status("Gateway ARP timed out"); return false;
+    }
+    browser_set_status("Opening TCP connection"); browser_draw();
+    return browser_tcp_connect();
+}
+
+fn browser_tls_probe(url: u64) -> bool {
+    g_browser_tls_probe_ok = false; g_browser_tls_probe_stage = 0;
+    browser_zero(&g_browser_tls_probe_server_key as u64, 32);
+    if !g_tls_entropy_ready { g_browser_tls_probe_stage = 101; return false; }
+    if !g_tls_crypto_aead_ok { g_browser_tls_probe_stage = 102; return false; }
+    if !g_tls_crypto_x25519_ok { g_browser_tls_probe_stage = 103; return false; }
+    if !g_tls13_client_hello_ok { g_browser_tls_probe_stage = 104; return false; }
+    g_browser_tls_probe_stage = 110;
+    if !browser_network_open(url, true) { return false; }
+    g_browser_tls_probe_stage = 1;
+    let private_key: [u8; 32] = [0; 32]; let public_key: [u8; 32] = [0; 32];
+    let random: [u8; 32] = [0; 32]; let basepoint: [u8; 32] = [0; 32]; basepoint[0] = 9;
+    if !tls_entropy_fill(&private_key as u64, 32) || !tls_entropy_fill(&random as u64, 32) { return false; }
+    g_browser_tls_probe_stage = 2;
+    tls_x25519(&private_key as u64, &basepoint as u64, &public_key as u64);
+    let hello: [u8; 512] = [0; 512];
+    let hello_length: u32 = tls13_build_client_hello(
+        &g_browser_net_host as u64, str_len(&g_browser_net_host as *u8),
+        &random as u64, &public_key as u64, &hello as u64, 512);
+    if hello_length == 0 { browser_zero(&private_key as u64, 32); return false; }
+    g_browser_tls_probe_stage = 3;
+    browser_tls_stream_reset(); browser_set_status("Negotiating TLS 1.3"); browser_draw();
+    browser_tcp_send(TCP_PSH | TCP_ACK, &hello as u64, hello_length);
+    let server_record_length: u32 = browser_tls_receive_record();
+    if server_record_length > 0 { g_browser_tls_probe_stage = 4; }
+    if server_record_length == 0 || !tls13_parse_server_hello(
+        &g_browser_tls_record as u64, server_record_length, 0x1303,
+        &g_browser_tls_probe_server_key as u64) {
+        browser_zero(&private_key as u64, 32); return false;
+    }
+    if hello_length < 5 || server_record_length < 5 || server_record_length - 5 > 1024
+        || hello_length - 5 > 1024 - (server_record_length - 5) {
+        browser_zero(&private_key as u64, 32); return false;
+    }
+    g_browser_tls_probe_stage = 5;
+    let transcript: [u8; 1024] = [0; 1024]; let transcript_length: u32 = 0;
+    for i: u32 in 5..hello_length { transcript[transcript_length] = hello[i]; transcript_length = transcript_length + 1; }
+    for i: u32 in 5..server_record_length {
+        transcript[transcript_length] = g_browser_tls_record[i]; transcript_length = transcript_length + 1;
+    }
+    let transcript_hash: [u8; 32] = [0; 32]; let handshake_secret: [u8; 32] = [0; 32];
+    let client_traffic: [u8; 32] = [0; 32]; let server_traffic: [u8; 32] = [0; 32];
+    let client_key: [u8; 32] = [0; 32]; let server_key: [u8; 32] = [0; 32];
+    let client_iv: [u8; 12] = [0; 12]; let server_iv: [u8; 12] = [0; 12];
+    tls_sha256(&transcript as u64, transcript_length, &transcript_hash as u64);
+    let derived: bool = tls13_handshake_secret(
+        &private_key as u64, &g_browser_tls_probe_server_key as u64, &handshake_secret as u64)
+        && tls13_handshake_traffic(&handshake_secret as u64, &transcript_hash as u64,
+                                   &client_traffic as u64, &server_traffic as u64)
+        && tls13_traffic_key(&client_traffic as u64, &client_key as u64, 32, &client_iv as u64)
+        && tls13_traffic_key(&server_traffic as u64, &server_key as u64, 32, &server_iv as u64);
+    for i: u32 in 0..32 {
+        private_key[i] = 0; handshake_secret[i] = 0; client_traffic[i] = 0; server_traffic[i] = 0;
+        client_key[i] = 0; server_key[i] = 0;
+    }
+    for i: u32 in 0..12 { client_iv[i] = 0; server_iv[i] = 0; }
+    if derived { g_browser_tls_probe_stage = 6; }
+    g_browser_tls_probe_ok = derived; return derived;
 }
 
 fn browser_text_newline() {
@@ -513,20 +649,7 @@ fn browser_http_redirect_location() -> bool {
 }
 
 fn browser_http_fetch_inner(url: u64, redirects: u32) -> bool {
-    if !browser_parse_url(url) { browser_set_status("Invalid HTTP address"); return false; }
-    if !g_net_up {
-        browser_set_status("Requesting a DHCP lease"); browser_draw();
-        g_net_quiet = true; let up: bool = net_dhcp(); g_net_quiet = false;
-        if !up { browser_set_status("Network unavailable: DHCP failed"); return false; }
-    }
-    browser_set_status("Resolving host name"); browser_draw();
-    if !browser_dns_resolve(&g_browser_net_host as u64, &g_browser_net_ip as u64) { return false; }
-    let arp_ip: u64 = browser_route_ip(&g_browser_net_ip as u64);
-    if arp_ip == 0 { browser_set_status("DHCP did not provide a default gateway"); return false; }
-    browser_set_status("Resolving Ethernet route"); browser_draw();
-    if !browser_arp_resolve(arp_ip, &g_browser_net_mac as u64) { browser_set_status("Gateway ARP timed out"); return false; }
-    browser_set_status("Opening TCP connection"); browser_draw();
-    if !browser_tcp_connect() { return false; }
+    if !browser_network_open(url, false) { return false; }
     browser_zero(&g_browser_http_request as u64, 384); let req: u32 = 0;
     req = browser_request_append(req, "GET " as u64); req = browser_request_append(req, &g_browser_net_path as u64);
     req = browser_request_append(req, " HTTP/1.0\r\nHost: " as u64); req = browser_request_append(req, &g_browser_net_host as u64);

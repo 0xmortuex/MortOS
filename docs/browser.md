@@ -149,6 +149,12 @@ The outbound record path builds the sequence-number nonce, authenticated header,
 TLSInnerPlaintext content type, optional zero padding, ciphertext, and tag in a
 capacity-checked buffer. Its boot test round-trips a padded handshake record and
 also proves an undersized destination is rejected without an out-of-bounds write.
+The browser's real network path now recognizes `https://`, defaults to port 443,
+uses fresh RDRAND material for each X25519 keypair and ClientHello random, sends
+the ClientHello through RTL8139/TCP, reassembles a fragmented/coalesced TLS
+record stream, validates a live ChaCha20-Poly1305 ServerHello, and derives the
+live handshake traffic keys. It deliberately stops at the certificate trust
+gate and does not expose unauthenticated response content.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

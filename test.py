@@ -759,6 +759,8 @@ def browser_ui():
     """Load a host-served HTTP page and verify browser state and persistence."""
     from functools import partial
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    import socket
+    import ssl
 
     sys.path.insert(0, HERE)
     import build as kernel_build
@@ -780,6 +782,9 @@ def browser_ui():
     mouse_y_addr = _elf32_symbol(ELF, "m_g_mouse_y")
     private_addr = _elf32_symbol(ELF, "m_g_browser_private")
     suggestions_addr = _elf32_symbol(ELF, "m_g_browser_suggestion_count")
+    tls_probe_ok_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_ok")
+    tls_probe_stage_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_stage")
+    tls_server_key_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_server_key")
     state_addr = _elf32_symbol(ELF, "m_g_browser_state")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
@@ -851,9 +856,50 @@ def browser_ui():
             ("127.0.0.1", port), partial(VexHandler, directory=webroot))
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
+        openssl = (shutil.which("openssl")
+                   or r"C:\Program Files\Git\mingw64\bin\openssl.exe")
+        tls_key = os.path.join(webroot, "tls-key.pem")
+        tls_cert = os.path.join(webroot, "tls-cert.pem")
+        subprocess.run(
+            [openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-subj", "/CN=10.0.2.2", "-days", "1",
+             "-keyout", tls_key, "-out", tls_cert],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.minimum_version = ssl.TLSVersion.TLSv1_3
+        tls_context.maximum_version = ssl.TLSVersion.TLSv1_3
+        tls_context.load_cert_chain(tls_cert, tls_key)
+        tls_port = 18443
+        tls_ready = threading.Event()
+        tls_errors = []
+
+        def serve_tls_probe():
+            with socket.socket() as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(("127.0.0.1", tls_port))
+                listener.listen(1)
+                listener.settimeout(180)
+                tls_ready.set()
+                try:
+                    connection, _address = listener.accept()
+                    connection.settimeout(30)
+                    with connection:
+                        try:
+                            with tls_context.wrap_socket(connection, server_side=True):
+                                pass
+                        except (ssl.SSLError, TimeoutError, OSError) as exc:
+                            tls_errors.append(repr(exc))  # Vex intentionally stops at its trust gate.
+                except (TimeoutError, OSError) as exc:
+                    tls_errors.append(repr(exc))
+
+        tls_thread = threading.Thread(target=serve_tls_probe, daemon=True)
+        tls_thread.start()
+        if not tls_ready.wait(5):
+            raise RuntimeError("local TLS probe server did not start")
         handle = boot_iso(
             kernel_build.ISO, temp_disk,
-            ["-netdev", "user,id=vexnet", "-device", "rtl8139,netdev=vexnet",
+            ["-cpu", "max",
+             "-netdev", "user,id=vexnet", "-device", "rtl8139,netdev=vexnet",
              "-usb", "-device", "usb-mouse,id=vexmouse"])
         try:
             _wait_guest_u32(handle, ticks_addr, lambda value: value >= 100,
@@ -1046,11 +1092,30 @@ def browser_ui():
                     time.sleep(0.25)
             check("Unsupported binary responses are rejected safely",
                   "Unsupported HTTP content type" in binary_status)
+
+            send_key(handle, "slash")
+            secure_address = f"https://10.0.2.2:{tls_port}/"
+            for char in secure_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            tls_probe = _wait_guest_u32(
+                handle, tls_probe_ok_addr, lambda value: (value & 0xff) != 0,
+                timeout_s=30)
+            secure_status = _guest_bytes(
+                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            check("Vex negotiates a live TLS 1.3 ServerHello and derives handshake keys",
+                  (tls_probe & 0xff) != 0
+                  and any(_guest_bytes(handle, tls_server_key_addr, 32))
+                  and "certificate trust gate remains closed" in secure_status)
+            if (tls_probe & 0xff) == 0:
+                print("TLS probe stage:", _guest_u32(handle, tls_probe_stage_addr),
+                      "status:", secure_status, "server:", tls_errors)
         finally:
             shutdown(handle)
             server.shutdown()
             server.server_close()
             server_thread.join(timeout=5)
+            tls_thread.join(timeout=12)
 
     handle = boot_iso(kernel_build.ISO, temp_disk)
     try:
