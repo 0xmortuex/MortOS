@@ -500,11 +500,13 @@ fn tls_x509_find_san(certificate: u64, extensions_offset: u32, extensions_length
     return found;
 }
 
-fn tls_x509_basic_constraints(value: u64, value_length: u32, expected_ca: bool) -> bool {
+fn tls_x509_basic_constraints_limit(value: u64, value_length: u32, expected_ca: bool,
+                                    path_limit: u64) -> bool {
     let content_offset: u32 = 0; let content_length: u32 = 0;
     if tls_der_read(value, value_length, 0x30,
         &content_offset as u64, &content_length as u64) != value_length { return false; }
     let pos: u32 = content_offset; let end: u32 = content_offset + content_length; let ca: bool = false;
+    let limit: u32 = 0xffffffff; let have_limit: bool = false;
     let item_offset: u32 = 0; let item_length: u32 = 0;
     if pos < end && *((value + (pos as u64)) as *u8) == 0x01 {
         let total: u32 = tls_der_read(value + (pos as u64), end - pos, 0x01,
@@ -519,9 +521,24 @@ fn tls_x509_basic_constraints(value: u64, value_length: u32, expected_ca: bool) 
             &item_offset as u64, &item_length as u64);
         if total == 0 || item_length == 0 || item_length > 4
             || !tls_x509_integer_valid(value + ((pos + item_offset) as u64), item_length) { return false; }
+        limit = 0;
+        for i: u32 in 0..item_length {
+            limit = (limit << 8)
+                | (*((value + ((pos + item_offset + i) as u64)) as *u8) as u32);
+        }
+        if (limit & 0x80000000) != 0 { return false; }
+        have_limit = true;
         pos = pos + total;
     }
-    return pos == end && ca == expected_ca;
+    if pos != end || ca != expected_ca || (have_limit && !ca) { return false; }
+    *((path_limit) as *u32) = limit;
+    return true;
+}
+
+fn tls_x509_basic_constraints(value: u64, value_length: u32, expected_ca: bool) -> bool {
+    let path_limit: u32 = 0xffffffff;
+    return tls_x509_basic_constraints_limit(
+        value, value_length, expected_ca, &path_limit as u64);
 }
 
 fn tls_x509_key_usage(value: u64, value_length: u32, ca: bool) -> bool {
@@ -556,7 +573,7 @@ fn tls_x509_server_eku(value: u64, value_length: u32) -> bool {
 }
 
 fn tls_x509_extensions_policy(certificate: u64, extensions_offset: u32,
-                              extensions_length: u32, ca: bool) -> bool {
+                              extensions_length: u32, ca: bool, path_limit: u64) -> bool {
     let content_offset: u32 = 0; let content_length: u32 = 0;
     if extensions_length == 0 || tls_der_read(certificate + (extensions_offset as u64),
         extensions_length, 0x30, &content_offset as u64, &content_length as u64) != extensions_length { return false; }
@@ -593,7 +610,8 @@ fn tls_x509_extensions_policy(certificate: u64, extensions_offset: u32,
             extension_number = *((oid + 2) as *u8);
         } else if critical { return false; }
         if extension_number == 19 {
-            if have_basic || !tls_x509_basic_constraints(value, item_length, ca) { return false; }
+            if have_basic || !tls_x509_basic_constraints_limit(
+                value, item_length, ca, path_limit) { return false; }
             have_basic = true;
         } else if extension_number == 15 {
             if have_usage || !tls_x509_key_usage(value, item_length, ca) { return false; }
@@ -859,6 +877,9 @@ fn tls_x509_self_test() {
                               &modulus_offset as u64, &modulus_length as u64, &exponent as u64);
     let ca_constraints: [u8; 5] = [0x30, 0x03, 0x01, 0x01, 0xff];
     let leaf_constraints: [u8; 2] = [0x30, 0x00];
+    let ca_limit_zero: [u8; 8] = [0x30, 0x06, 0x01, 0x01, 0xff, 0x02, 0x01, 0x00];
+    let leaf_limit_zero: [u8; 5] = [0x30, 0x03, 0x02, 0x01, 0x00];
+    let parsed_path_limit: u32 = 0xffffffff;
     let ca_usage: [u8; 4] = [0x03, 0x02, 0x05, 0x04];
     let leaf_usage: [u8; 4] = [0x03, 0x02, 0x07, 0x80];
     let server_eku: [u8; 12] = [
@@ -869,6 +890,11 @@ fn tls_x509_self_test() {
     g_tls_x509_policy_ok = tls_x509_basic_constraints(&ca_constraints as u64, 5, true)
         && tls_x509_basic_constraints(&leaf_constraints as u64, 2, false)
         && !tls_x509_basic_constraints(&leaf_constraints as u64, 2, true)
+        && tls_x509_basic_constraints_limit(
+            &ca_limit_zero as u64, 8, true, &parsed_path_limit as u64)
+        && parsed_path_limit == 0
+        && !tls_x509_basic_constraints_limit(
+            &leaf_limit_zero as u64, 5, false, &parsed_path_limit as u64)
         && tls_x509_key_usage(&ca_usage as u64, 4, true)
         && tls_x509_key_usage(&leaf_usage as u64, 4, false)
         && !tls_x509_key_usage(&leaf_usage as u64, 4, true)

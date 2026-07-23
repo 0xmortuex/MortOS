@@ -27,8 +27,9 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
   ARP routing, TCP handshakes, HTTP/1.0 requests, and HTTP/1.1 chunked-transfer
   decoding over an RTL8139 interface.
 - TLS 1.3 with X25519, RSA-PSS authentication, ChaCha20-Poly1305 records,
-  explicit host/port certificate pins, encrypted HTTP requests, and
-  authenticated HTML/plain-text responses.
+  strict RSA certificate-chain validation, explicit host/port anchor pins,
+  imported CA roots, encrypted HTTP requests, and authenticated HTML/plain-text
+  responses.
 - Saving the current rendered document as `vex-page.txt` in the user's home
   directory.
 - Local pages for Home, About, History, Bookmarks, Downloads, Settings, and
@@ -55,6 +56,8 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 | `K` | Approve the currently verified but untrusted HTTPS certificate pin |
 | `C` | Clear history while on `vex://settings` |
 | `V` | Clear the saved HTTPS certificate pin on `vex://settings` |
+| `I` | Validate and import `vex-root.der` from the current home or `/` |
+| `U` | Clear all imported CA roots on `vex://settings` |
 
 ## Network path
 
@@ -77,10 +80,12 @@ checks persistence across a reboot.
 
 ## Security and current engine boundary
 
-Vex supports authenticated TLS 1.3 for explicitly pinned RSA certificates and
-never silently downgrades `https://`. It does not yet ship a public CA root
-store or general certificate-chain builder, so a first connection remains
-blocked behind explicit fingerprint approval. It also does not execute
+Vex supports authenticated TLS 1.3 for validated RSA certificate chains and
+never silently downgrades `https://`. Trust can come from an explicit
+host-and-port anchor pin or from one of up to eight user-imported CA roots.
+It does not yet ship a bundled public CA set, revocation service, or automatic
+root-update channel, so arbitrary public websites are not universally trusted
+out of the box. It also does not execute
 JavaScript, accept cookies, load images or media, apply CSS layout, submit
 forms, or provide a general-purpose DOM. Plain HTTP remains unencrypted and
 must not be used for passwords or other sensitive data.
@@ -172,26 +177,34 @@ SHA256-with-RSA signature is verified using the next certificate's key. The
 leaf must assert `CA:FALSE`, digitalSignature, serverAuth EKU, and a matching
 DNS or IPv4 SAN. Every issuer must assert `CA:TRUE` and keyCertSign. Duplicate
 role extensions and unrecognized critical extensions are rejected.
-The
-SHA-256 fingerprint of the final verified chain anchor can then be approved
+BasicConstraints `pathLenConstraint` is parsed as a canonical nonnegative
+integer and enforced against the number of subordinate CA certificates.
+The SHA-256 fingerprint of the final verified chain anchor can then be approved
 explicitly with `K`; Vex stores the host-and-port-scoped anchor pin in the user's
 MortFS state and compares it in constant time on later connections. Private
-mode cannot persist trust. On a pinned reconnect, Vex derives both application
+mode cannot persist trust. Alternatively, Settings can import a self-signed DER
+CA from `vex-root.der` in the user's home or filesystem root. Import re-runs
+canonical certificate parsing, RTC validity, CA BasicConstraints/keyCertSign,
+critical-extension, RSA issuer, and self-signature checks before storing only
+the SHA-256 anchor fingerprint in the bounded `.vex-roots` MortFS store.
+Malformed stores reset fail-closed; duplicate roots and stores beyond eight
+entries are rejected. On a trusted reconnect, Vex derives both application
 traffic secrets and keys, encrypts and sends client Finished, and retains
 sequence-zero application state for the HTTPS request. Vex encrypts the GET,
 accepts authenticated application records, safely ignores bounded NewSessionTicket
 handshake messages, accumulates the response within the HTTP receive limit, and
 passes it to the same content-type-aware text renderer used by HTTP. No
-application bytes are released before record authentication and pin validation.
+application bytes are released before record authentication and trust validation.
 Relative links from an authenticated HTTPS page retain the `https://` scheme,
 host, and non-default port rather than silently downgrading to HTTP.
-This enables pinned HTTPS, not automatic public-Web PKI. Chain construction,
+This enables pinned and explicitly provisioned-CA HTTPS, not automatic
+public-Web PKI. Chain construction,
 RSA issuer signatures, certificate roles, usages, critical-extension policy,
 and DNS/IPv4 SAN identity are enforced, including renewed leaf certificates
-under the same pinned anchor. A future public-root mode still needs an audited
-root store and revocation/update strategy. Until then, the host/port anchor pin
-is the trust decision and a changed anchor fails closed for renewed explicit
-approval.
+under the same trusted anchor. General public-Web compatibility still needs a
+maintained CA bundle, revocation/update policy, and additional certificate
+algorithms. Until then, an unmatched anchor fails closed for explicit approval
+or CA provisioning.
 
 Ephemeral TLS material is also fail-closed behind an x86 hardware-entropy gate.
 Mort checks CPUID for RDRAND, retries failed samples, and enables the gate only
@@ -219,4 +232,6 @@ script/style removal, links, redirects, chunked responses, local suggestions,
 keyboard and mouse tab controls, private mode, bookmarks, downloads,
 explicit normal-session recovery, screenshots, live ServerHello through
 Finished verification, private-mode pin refusal, pinned encrypted GET/response,
-and bookmark/pin persistence plus trust clearing after a full reboot.
+private-mode root-import refusal, CA import, a separately renewed leaf under
+the imported root, and bookmark/root persistence plus trust clearing after a
+full reboot.

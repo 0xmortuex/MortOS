@@ -11,8 +11,11 @@ let BROWSER_PIN_HOST_BASE: u32 = 896;
 let BROWSER_PIN_HASH_BASE: u32 = 960;
 let BROWSER_PIN_PORT_BASE: u32 = 992;
 let BROWSER_STATE_MAGIC: u32 = 0x31535856; // "VXS1"
+let BROWSER_ROOT_MAGIC: u32 = 0x31525856;  // "VXR1"
+let BROWSER_ROOT_MAX: u32 = 8;
 
 let g_browser_state: [u8; 1024] = [0; 1024];
+let g_browser_roots: [u8; 512] = [0; 512];
 let g_browser_url: [u8; 80] = [0; 80];
 let g_browser_input: [u8; 80] = [0; 80];
 let g_browser_find: [u8; 32] = [0; 32];
@@ -188,6 +191,109 @@ fn browser_pin_clear() {
     browser_draw();
 }
 
+fn browser_roots_reset() {
+    browser_zero(&g_browser_roots as u64, 512);
+    *(&g_browser_roots as *u32) = BROWSER_ROOT_MAGIC;
+}
+
+fn browser_root_count() -> u32 { return g_browser_roots[4] as u32; }
+fn browser_root_hash(index: u32) -> u64 {
+    return &g_browser_roots as u64 + 16 + ((index * 32) as u64);
+}
+
+fn browser_roots_load() {
+    browser_roots_reset();
+    if !g_fs_ok || g_cwd > 255 { return; }
+    let idx: u32 = fs_find_in(".vex-roots", g_cwd);
+    if idx == 64 { return; }
+    let base: u32 = fs_entry_addr(idx);
+    if fs_type(idx) != 0 || *((base + 28) as *u32) != 512
+        || !ata_read(*((base + 32) as *u32), &g_browser_roots as *u8)
+        || *(&g_browser_roots as *u32) != BROWSER_ROOT_MAGIC
+        || browser_root_count() > BROWSER_ROOT_MAX { browser_roots_reset(); }
+}
+
+fn browser_roots_save() -> bool {
+    if !g_fs_ok || g_cwd > 255 || browser_root_count() > BROWSER_ROOT_MAX { return false; }
+    let idx: u32 = fs_find_in(".vex-roots", g_cwd);
+    if idx == 64 { idx = fs_create_full(".vex-roots", g_cwd, 0); }
+    if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) { return false; }
+    let base: u32 = fs_entry_addr(idx);
+    if !ata_write(*((base + 32) as *u32), &g_browser_roots as *u8) { return false; }
+    *((base + 28) as *u32) = 512; *((base + 48) as *u32) = fs_now();
+    return fs_sync();
+}
+
+fn browser_root_contains(fingerprint: u64) -> bool {
+    for i: u32 in 0..BROWSER_ROOT_MAX {
+        if i < browser_root_count()
+            && tls_bytes_equal(browser_root_hash(i), fingerprint, 32) { return true; }
+    }
+    return false;
+}
+
+fn browser_root_import() {
+    if g_browser_private {
+        browser_set_status("Leave private mode before importing trust"); browser_draw(); return;
+    }
+    if !g_fs_ok || g_cwd > 255 {
+        browser_set_status("Root import needs a MortFS home"); browser_draw(); return;
+    }
+    let idx: u32 = fs_find_in("vex-root.der", g_cwd);
+    if idx == 64 && g_cwd != 255 { idx = fs_find_in("vex-root.der", 255); }
+    if idx == 64 || fs_type(idx) != 0 {
+        browser_set_status("Place vex-root.der in your home or /"); browser_draw(); return;
+    }
+    let size: u32 = *((fs_entry_addr(idx) + 28) as *u32);
+    if size < 256 || size > 4096 || fs_read_file(idx) != size {
+        browser_set_status("Root DER is empty, oversized, or unreadable"); browser_draw(); return;
+    }
+    let root: u64 = 0x00810000;
+    let tbs_offset: u32 = 0; let tbs_length: u32 = 0;
+    let signature_offset: u32 = 0; let signature_length: u32 = 0;
+    let validity_offset: u32 = 0; let validity_length: u32 = 0;
+    let spki_offset: u32 = 0; let spki_length: u32 = 0;
+    let extensions_offset: u32 = 0; let extensions_length: u32 = 0;
+    let not_before: u64 = 0; let not_after: u64 = 0; let now: u64 = 0;
+    let path_limit: u32 = 0xffffffff;
+    if !tls_x509_certificate_shape(root, size, &tbs_offset as u64, &tbs_length as u64,
+        &signature_offset as u64, &signature_length as u64)
+        || !tls_x509_tbs_fields(root, tbs_offset, tbs_length,
+            &validity_offset as u64, &validity_length as u64,
+            &spki_offset as u64, &spki_length as u64,
+            &extensions_offset as u64, &extensions_length as u64)
+        || !tls_x509_parse_validity(root + (validity_offset as u64), validity_length,
+                                    &not_before as u64, &not_after as u64)
+        || !tls_x509_rtc_snapshot(&now as u64) || !tls_x509_valid_at(not_before, not_after, now)
+        || !tls_x509_extensions_policy(
+            root, extensions_offset, extensions_length, true, &path_limit as u64)
+        || !tls_x509_verify_rsa_issuer(root, size, root, size) {
+        browser_set_status("Root rejected: CA policy or signature invalid"); browser_draw(); return;
+    }
+    let fingerprint: [u8; 32] = [0; 32]; tls_sha256(root, size, &fingerprint as u64);
+    if browser_root_contains(&fingerprint as u64) {
+        browser_set_status("Root is already trusted"); browser_draw(); return;
+    }
+    let count: u32 = browser_root_count();
+    if count >= BROWSER_ROOT_MAX {
+        browser_set_status("Trusted-root store is full (8 maximum)"); browser_draw(); return;
+    }
+    for i: u32 in 0..32 {
+        *((browser_root_hash(count) + (i as u64)) as *u8) = fingerprint[i];
+    }
+    g_browser_roots[4] = (count + 1) as u8;
+    if browser_roots_save() { browser_set_status("Validated CA root imported"); }
+    else { g_browser_roots[4] = count as u8; browser_set_status("Could not save trusted roots"); }
+    browser_draw();
+}
+
+fn browser_roots_clear() {
+    browser_roots_reset();
+    if browser_roots_save() { browser_set_status("All imported CA roots cleared"); }
+    else { browser_set_status("Could not update trusted roots"); }
+    browser_draw();
+}
+
 fn browser_state_reset() {
     browser_zero(&g_browser_state as u64, 1024);
     *(&g_browser_state as *u32) = BROWSER_STATE_MAGIC;
@@ -351,10 +457,12 @@ fn browser_load(url: u64, add_history: bool) {
         g_browser_loading = true; browser_set_title("Negotiating secure connection"); browser_set_status("Opening HTTPS"); browser_draw();
         g_browser_page = 7;
         if browser_tls_probe(url) {
-            if g_browser_tls_pin_matched {
+            if g_browser_tls_pin_matched || g_browser_tls_root_matched {
                 if g_browser_tls_http_ok {
                     g_browser_remote = true; g_browser_secure_page = true; g_browser_page = 8;
-                    browser_set_status("Authenticated HTTPS text document");
+                    if g_browser_tls_root_matched {
+                        browser_set_status("CA-authenticated HTTPS text document");
+                    } else { browser_set_status("Pinned HTTPS text document"); }
                 } else {
                     browser_set_title("Secure transfer failed");
                     browser_set_status("TLS authenticated, but HTTPS response failed");
@@ -522,7 +630,7 @@ fn browser_draw_home() {
     draw_text_abs("5 Bookmarks", 344, 382, 0xc8d0d4, 0x0b0f14);
     draw_text_abs("6 History", 504, 382, 0xc8d0d4, 0x0b0f14);
     draw_text_abs("7 Downloads", 632, 382, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("HTTP and pinned HTTPS pages render through the safe text engine.", 208, 430, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("HTTP and authenticated HTTPS render through the safe text engine.", 208, 430, 0x7a8b93, 0x0b0f14);
     draw_text_abs("No telemetry, remote suggestions, cookies, scripts, or trackers.", 208, 454, 0x7a8b93, 0x0b0f14);
     if *((browser_last_url()) as *u8) != 0 {
         draw_text_abs("9 Restore last normal page:", 208, 494, 0x4fd1c5, 0x0b0f14);
@@ -598,10 +706,12 @@ fn browser_draw_settings_page() {
     draw_text_abs("HTTPS trust pin", 208, 470, 0x8fa1aa, 0x0b0f14);
     if browser_pin_valid() { draw_text_abs(browser_pin_host() as *u8, 400, 470, 0x4fd1c5, 0x0b0f14); }
     else { draw_text_abs("None saved", 400, 470, 0xffffff, 0x0b0f14); }
-    draw_text_abs("State", 208, 502, 0x8fa1aa, 0x0b0f14);
-    if g_browser_state_saved { draw_text_abs("Saved to MortFS", 400, 502, 0xffffff, 0x0b0f14); }
-    else { draw_text_abs("Session only", 400, 502, 0xffffff, 0x0b0f14); }
-    draw_text_abs("P: private   C: clear history   V: clear HTTPS pin", 208, 538, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("Imported CA roots", 208, 498, 0x8fa1aa, 0x0b0f14);
+    num_to_str(browser_root_count(), g_numbuf); draw_text_abs(g_numbuf, 400, 498, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("State", 208, 522, 0x8fa1aa, 0x0b0f14);
+    if g_browser_state_saved { draw_text_abs("Saved to MortFS", 400, 522, 0xffffff, 0x0b0f14); }
+    else { draw_text_abs("Session only", 400, 522, 0xffffff, 0x0b0f14); }
+    draw_text_abs("I:import root  U:clear roots  V:clear pin  C:history", 208, 546, 0x7a8b93, 0x0b0f14);
 }
 
 fn browser_draw_links() {
@@ -630,7 +740,11 @@ fn browser_draw_network() {
     else { draw_text_abs("Not assigned", 400, 428, 0xffffff, 0x0b0f14); }
     draw_text_abs("Transport", 208, 460, 0x8fa1aa, 0x0b0f14); draw_text_abs("Ethernet / IPv4 / TCP", 400, 460, 0xffffff, 0x0b0f14);
     draw_text_abs("Secure transport", 208, 492, 0x8fa1aa, 0x0b0f14);
-    if g_browser_tls_http_ok { draw_text_abs("TLS 1.3 / pinned / authenticated", 400, 492, 0x4fd1c5, 0x0b0f14); }
+    if g_browser_tls_http_ok && g_browser_tls_root_matched {
+        draw_text_abs("TLS 1.3 / trusted CA / authenticated", 400, 492, 0x4fd1c5, 0x0b0f14);
+    }
+    else if g_browser_tls_http_ok { draw_text_abs("TLS 1.3 / pinned / authenticated", 400, 492, 0x4fd1c5, 0x0b0f14); }
+    else if g_browser_tls_root_matched { draw_text_abs("TLS 1.3 / trusted CA handshake", 400, 492, 0x4fd1c5, 0x0b0f14); }
     else if g_browser_tls_pin_matched { draw_text_abs("TLS 1.3 / pinned handshake", 400, 492, 0x4fd1c5, 0x0b0f14); }
     else if g_browser_tls_probe_ok { draw_text_abs("TLS 1.3 / trust approval required", 400, 492, 0xffb454, 0x0b0f14); }
     else { draw_text_abs("TLS 1.3 ready / no active session", 400, 492, 0x8fa1aa, 0x0b0f14); }
@@ -674,7 +788,7 @@ fn browser_draw_suggestions() {
 
 fn browser_draw() {
     if !g_gfx { return; }
-    if g_browser_loaded_dir != g_cwd { browser_state_load(); }
+    if g_browser_loaded_dir != g_cwd { browser_state_load(); browser_roots_load(); }
     if g_browser_tab_count == 0 {
         g_browser_tab_count = 1; g_browser_active_tab = 0;
         browser_copy(browser_tab_slot(0), "vex://home" as u64, 80);
@@ -901,5 +1015,7 @@ fn browser_on_key(sc: u8) {
     if sc == 37 { browser_pin_approve(); return; } // K
     if sc == 46 && g_browser_page == 5 { browser_clear_history(); return; } // C in settings
     if sc == 47 && g_browser_page == 5 { browser_pin_clear(); return; } // V in settings
+    if sc == 23 && g_browser_page == 5 { browser_root_import(); return; } // I in settings
+    if sc == 22 && g_browser_page == 5 { browser_roots_clear(); return; } // U in settings
     if sc == 1 { browser_home(); return; }
 }

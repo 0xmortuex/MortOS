@@ -33,6 +33,7 @@ let g_browser_tls_pending_host: [u8; 64] = [0; 64];
 let g_browser_tls_pending_port: u16 = 0;
 let g_browser_tls_pending: bool = false;
 let g_browser_tls_pin_matched: bool = false;
+let g_browser_tls_root_matched: bool = false;
 let g_browser_tls_application_ready: bool = false;
 let g_browser_tls_client_app_key: [u8; 32] = [0; 32];
 let g_browser_tls_server_app_key: [u8; 32] = [0; 32];
@@ -390,6 +391,7 @@ fn browser_tls_leaf_rsa(message: u64, message_length: u32,
         let current_spki_offset: u32 = 0; let current_spki_length: u32 = 0;
         let current_extensions_offset: u32 = 0; let current_extensions_length: u32 = 0;
         let current_not_before: u64 = 0; let current_not_after: u64 = 0;
+        let current_path_limit: u32 = 0xffffffff;
         if !tls_x509_certificate_shape(current, current_length,
             &current_tbs_offset as u64, &current_tbs_length as u64,
             &current_signature_offset as u64, &current_signature_length as u64)
@@ -400,8 +402,11 @@ fn browser_tls_leaf_rsa(message: u64, message_length: u32,
             || !tls_x509_parse_validity(current + (current_validity_offset as u64),
                 current_validity_length, &current_not_before as u64, &current_not_after as u64)
             || !tls_x509_valid_at(current_not_before, current_not_after, chain_now)
-            || !tls_x509_extensions_policy(current, current_extensions_offset,
-                                            current_extensions_length, index > 0) { return false; }
+            || !tls_x509_extensions_policy(
+                current, current_extensions_offset, current_extensions_length,
+                index > 0, &current_path_limit as u64)
+            || (index > 0 && current_path_limit != 0xffffffff
+                && index - 1 > current_path_limit) { return false; }
         if index == 0 {
             let san_offset: u32 = 0; let san_length: u32 = 0;
             if !tls_x509_find_san(current, current_extensions_offset, current_extensions_length,
@@ -619,6 +624,7 @@ fn browser_tls_http_exchange() -> bool {
 fn browser_tls_probe(url: u64) -> bool {
     g_browser_tls_probe_ok = false; g_browser_tls_probe_stage = 0;
     g_browser_tls_pending = false; g_browser_tls_pin_matched = false;
+    g_browser_tls_root_matched = false;
     g_browser_tls_http_ok = false;
     browser_tls_application_clear();
     browser_zero(&g_browser_tls_probe_server_key as u64, 32);
@@ -681,7 +687,9 @@ fn browser_tls_probe(url: u64) -> bool {
     if g_browser_tls_probe_ok {
         g_browser_tls_pin_matched = browser_pin_matches(
             &g_browser_net_host as u64, g_browser_net_port, &g_browser_tls_leaf_fingerprint as u64);
-        if g_browser_tls_pin_matched {
+        g_browser_tls_root_matched =
+            browser_root_contains(&g_browser_tls_leaf_fingerprint as u64);
+        if g_browser_tls_pin_matched || g_browser_tls_root_matched {
             if browser_tls_finish_client(&handshake_secret as u64, &client_traffic as u64,
                                          &client_key as u64, &client_iv as u64) {
                 g_browser_tls_probe_stage = 9;

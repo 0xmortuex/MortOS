@@ -790,10 +790,11 @@ def browser_ui():
     tls_probe_stage_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_stage")
     tls_server_key_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_server_key")
     tls_http_ok_addr = _elf32_symbol(ELF, "m_g_browser_tls_http_ok")
+    tls_root_matched_addr = _elf32_symbol(ELF, "m_g_browser_tls_root_matched")
     state_addr = _elf32_symbol(ELF, "m_g_browser_state")
+    roots_addr = _elf32_symbol(ELF, "m_g_browser_roots")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
-    shutil.copyfile(kernel_build.DISK, temp_disk)
     results = []
 
     def check(name, ok):
@@ -915,9 +916,28 @@ def browser_ui():
             for certificate_path in (tls_leaf_renewed, tls_root_cert):
                 with open(certificate_path, "rb") as certificate_stream:
                     output.write(certificate_stream.read())
+        tls_key_ca = os.path.join(webroot, "tls-leaf-ca-key.pem")
+        tls_csr_ca = os.path.join(webroot, "tls-leaf-ca.csr")
+        tls_leaf_ca = os.path.join(webroot, "tls-leaf-ca-cert.pem")
+        tls_chain_ca = os.path.join(webroot, "tls-chain-ca.pem")
+        subprocess.run(
+            [openssl, "req", "-new", "-newkey", "rsa:2048", "-nodes",
+             "-subj", "/CN=10.0.2.2", "-keyout", tls_key_ca, "-out", tls_csr_ca],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            [openssl, "x509", "-req", "-in", tls_csr_ca,
+             "-CA", tls_root_cert, "-CAkey", tls_root_key,
+             "-days", "1", "-sha256", "-extfile", tls_extensions,
+             "-out", tls_leaf_ca],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(tls_chain_ca, "wb") as output:
+            for certificate_path in (tls_leaf_ca, tls_root_cert):
+                with open(certificate_path, "rb") as certificate_stream:
+                    output.write(certificate_stream.read())
         tls_contexts = []
         for certificate_path, key_path in (
-                (tls_chain, tls_key), (tls_chain_renewed, tls_key_renewed)):
+                (tls_chain, tls_key), (tls_chain_renewed, tls_key_renewed),
+                (tls_chain_ca, tls_key_ca)):
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.minimum_version = ssl.TLSVersion.TLSv1_3
             context.maximum_version = ssl.TLSVersion.TLSv1_3
@@ -927,6 +947,11 @@ def browser_ui():
             [openssl, "x509", "-in", tls_root_cert, "-outform", "DER"],
             stderr=subprocess.DEVNULL)
         expected_anchor_hash = hashlib.sha256(root_der).digest()
+        root_der_path = os.path.join(webroot, "vex-root.der")
+        with open(root_der_path, "wb") as stream:
+            stream.write(root_der)
+        import mkfs
+        mkfs.make(temp_disk, bins=[(root_der_path, "vex-root.der")])
         tls_port = 18443
         tls_ready = threading.Event()
         tls_complete = threading.Event()
@@ -939,10 +964,10 @@ def browser_ui():
             with socket.socket() as listener:
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind(("127.0.0.1", tls_port))
-                listener.listen(2)
+                listener.listen(3)
                 listener.settimeout(180)
                 tls_ready.set()
-                for _attempt in range(2):
+                for _attempt in range(3):
                     try:
                         connection, _address = listener.accept()
                         connection.settimeout(30)
@@ -1081,6 +1106,13 @@ def browser_ui():
             private = _wait_guest_u32(
                 handle, private_addr, lambda value: (value & 0xff) != 0)
             check("Private browsing mode toggles on", (private & 0xff) != 0)
+            send_key(handle, "8")
+            send_key(handle, "i")
+            private_root_status = _guest_bytes(
+                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            check("Private mode refuses to import persistent CA trust",
+                  (_guest_bytes(handle, roots_addr + 4, 1)[0] == 0
+                   and "Leave private mode" in private_root_status))
 
             send_key(handle, "slash")
             redirect_address = f"http://10.0.2.2:{port}/redirected"
@@ -1255,7 +1287,51 @@ def browser_ui():
                    and b"Host: 10.0.2.2" in tls_requests[0]
                    and tls_marker in https_text
                    and _guest_u32(handle, links_addr) >= 1
-                   and "Authenticated HTTPS" in completed_status))
+                   and "Pinned HTTPS" in completed_status))
+
+            send_key(handle, "8")
+            send_key(handle, "v")
+            _wait_guest_u32(
+                handle, state_addr + 7, lambda value: (value & 0xff) == 0,
+                timeout_s=10)
+            send_key(handle, "i")
+            imported_roots = _wait_guest_u32(
+                handle, roots_addr + 4, lambda value: (value & 0xff) == 1,
+                timeout_s=10)
+            import_status = ""
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and "root imported" not in import_status:
+                import_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "root imported" not in import_status:
+                    time.sleep(0.1)
+            check("Settings validates and imports a self-signed CA from MortFS",
+                  ((imported_roots & 0xff) == 1
+                   and _guest_bytes(handle, roots_addr + 16, 32) == expected_anchor_hash
+                   and "root imported" in import_status))
+            send_key(handle, "slash")
+            for char in secure_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            ca_stage = _wait_guest_u32(
+                handle, tls_probe_stage_addr, lambda value: value == 10,
+                timeout_s=40)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and len(tls_requests) < 2:
+                time.sleep(0.1)
+            ca_status = _guest_bytes(
+                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            ca_length = _guest_u32(handle, content_len_addr)
+            ca_text = _guest_bytes(
+                handle, content_addr, min(max(ca_length, 1), 512)).decode("ascii", "replace")
+            check("Imported CA authenticates a third independently renewed leaf",
+                  (ca_stage == 10
+                   and (_guest_u32(handle, tls_root_matched_addr) & 0xff) != 0
+                   and (_guest_u32(handle, tls_http_ok_addr) & 0xff) != 0
+                   and len(tls_requests) == 2
+                   and tls_requests[1].startswith(b"GET / HTTP/1.0\r\n")
+                   and tls_marker in ca_text
+                   and "CA-authenticated HTTPS" in ca_status))
         finally:
             shutdown(handle)
             server.shutdown()
@@ -1271,16 +1347,18 @@ def browser_ui():
         send_key(handle, "f3")
         _wait_guest_u32(handle, app_addr, lambda value: value == 2, timeout_s=10)
         state = _guest_bytes(handle, state_addr, 8)
-        check("Browser bookmarks and certificate pin survive a full reboot",
-              state[6] >= 1 and state[7] == 1)
+        check("Browser bookmarks and imported CA roots survive a full reboot",
+              state[6] >= 1 and state[7] == 0
+              and _guest_bytes(handle, roots_addr + 4, 1)[0] == 1
+              and _guest_bytes(handle, roots_addr + 16, 32) == expected_anchor_hash)
         send_key(handle, "8")
-        send_key(handle, "v")
-        cleared_pin = _wait_guest_u32(
-            handle, state_addr + 7, lambda value: (value & 0xff) == 0,
+        send_key(handle, "u")
+        cleared_roots = _wait_guest_u32(
+            handle, roots_addr + 4, lambda value: (value & 0xff) == 0,
             timeout_s=10)
-        check("Browser Settings can clear the persisted HTTPS trust pin",
-              (cleared_pin & 0xff) == 0
-              and not any(_guest_bytes(handle, state_addr + 960, 32)))
+        check("Browser Settings can clear all persisted CA roots",
+              (cleared_roots & 0xff) == 0
+              and not any(_guest_bytes(handle, roots_addr + 16, 256)))
     finally:
         shutdown(handle)
         try:

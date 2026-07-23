@@ -19,7 +19,8 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 `F3` opens the native **Vex browser**, which uses that same stack as an HTTP
 client. It has tabs, persistent history and bookmarks, local address
 suggestions, private mode, find, link navigation, redirects, chunked-transfer
-decoding, and MortFS downloads. See [the browser guide](docs/browser.md) for its
+decoding, MortFS downloads, and authenticated TLS 1.3 with host pins or
+validated imported CA roots. See [the browser guide](docs/browser.md) for its
 controls, architecture, tests, and honest engine limits.
 
 ![MORT OS networking: net leases 10.0.2.15 over DHCP, httpd serves on port 80](docs/mortos-net.png)
