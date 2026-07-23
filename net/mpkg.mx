@@ -1,4 +1,4 @@
-// net/mpkg.mx — mpkg, the MORT OS package manager client.
+// net/mpkg.mx - mpkg, the MORT OS package manager client.
 //
 // apt/npm for MORT OS. Fetches a package index and packages over HTTP from the
 // mort-repo server (github.com/0xmortuex/mort-repo, served with serve.py) and
@@ -7,7 +7,7 @@
 // Self-contained: it brings up its own short-lived TCP connection using the
 // shared packet builders (eth/ip/tcp/arp) and the RTL8139 driver, so it does NOT
 // depend on the browser's networking. The connection is a minimal active-open
-// HTTP/1.0 client (SYN, GET, receive-to-FIN, close) — enough for a trusted repo
+// HTTP/1.0 client (SYN, GET, receive-to-FIN, close) - enough for a trusted repo
 // on the local host through QEMU SLIRP (gateway 10.0.2.2).
 //
 // Commands: mpkg update | list | search <t> | install <name> | remove <name>.
@@ -158,7 +158,7 @@ fn mpkg_fetch(path: u64) -> bool {
                         let their_seq: u32 = tcp_seq(tcp);
                         let their_ack: u32 = tcp_ack(tcp);
                         let hdr: u32 = tcp_header_len(tcp);
-                        // Guarded segment length (no underflow — the browser bug).
+                        // Guarded segment length (no underflow - the browser bug).
                         let used: u32 = ip_ihl_bytes(ip) + hdr;
                         let iptl: u32 = ip_total_len(ip) as u32;
                         let seg_len: u32 = 0;
@@ -293,7 +293,7 @@ fn mpkg_is_pkg_line(start: u32, end: u32) -> bool {
 fn mpkg_need_index() -> bool {
     if !g_mpkg_have_index {
         feed();
-        print_string("mpkg: no index — run 'mpkg update' first", g_row, 12);
+        print_string("mpkg: no index - run 'mpkg update' first", g_row, 12);
         return false;
     }
     return true;
@@ -450,7 +450,7 @@ fn mpkg_do_install(pkg: u64) {
     if !mpkg_need_index() { return; }
     if g_uid != 0 {
         feed();
-        print_string("mpkg: install needs root — try: sudo mpkg install <name>", g_row, 12);
+        print_string("mpkg: install needs root - try: sudo mpkg install <name>", g_row, 12);
         return;
     }
     let file: [u8; 48] = [0; 48];
@@ -519,7 +519,7 @@ fn mpkg_do_install(pkg: u64) {
 fn mpkg_do_remove(pkg: u64) {
     if g_uid != 0 {
         feed();
-        print_string("mpkg: remove needs root — try: sudo mpkg remove <name>", g_row, 12);
+        print_string("mpkg: remove needs root - try: sudo mpkg remove <name>", g_row, 12);
         return;
     }
     // Resolve /bin/<pkg>.bin and delete it.
@@ -545,7 +545,7 @@ fn mpkg_do_remove(pkg: u64) {
 
 fn mpkg_usage() {
     feed();
-    print_string("mpkg — the MORT OS package manager", g_row, 10);
+    print_string("mpkg - the MORT OS package manager", g_row, 10);
     feed();
     print_string("  mpkg update            refresh the package index", g_row, 7);
     feed();
