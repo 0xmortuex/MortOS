@@ -437,6 +437,8 @@ def smoke(disk_img=None):
     x509_message_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_certificate_message_ok")
     x509_signature_addr = _elf32_symbol(ELF, "m_g_tls_x509_signature_test")
     x509_hostname_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_hostname_ok")
+    x509_fields_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_fields_ok")
+    x509_time_addr = _elf32_symbol(ELF, "m_g_tls_x509_time_test")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -525,6 +527,10 @@ def smoke(disk_img=None):
               and _guest_bytes(handle, x509_signature_addr, 2) == b"\xaa\xbb", handle)
         check("Mort matches exact and single-label wildcard certificate DNS names",
               (_guest_u32(handle, x509_hostname_ok_addr) & 0xff) != 0, handle)
+        check("Mort extracts X.509 validity, SPKI, extensions, and SAN fields",
+              (_guest_u32(handle, x509_fields_ok_addr) & 0xff) != 0
+              and int.from_bytes(_guest_bytes(handle, x509_time_addr, 8), "little") == 20260722000000,
+              handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",

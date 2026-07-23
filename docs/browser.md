@@ -112,6 +112,11 @@ Subject Alternative Name DNS matching is ASCII case-insensitive, rejects
 malformed names and embedded wildcards, and permits a wildcard only as the
 complete left-most label matching exactly one host label. Broad `*.com`-style
 patterns are rejected.
+TBSCertificate traversal validates the optional version, canonical positive
+serial number, required field order, validity sequence, SubjectPublicKeyInfo,
+and explicitly tagged extensions. UTCTime and GeneralizedTime are normalized
+with leap-year/calendar validation, and the SAN extension is located by OID
+without trusting nested lengths.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

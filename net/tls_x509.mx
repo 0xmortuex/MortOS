@@ -6,6 +6,8 @@ let g_tls_x509_der_ok: bool = false;
 let g_tls_x509_certificate_message_ok: bool = false;
 let g_tls_x509_signature_test: [u8; 2] = [0; 2];
 let g_tls_x509_hostname_ok: bool = false;
+let g_tls_x509_fields_ok: bool = false;
+let g_tls_x509_time_test: [u8; 8] = [0; 8];
 
 fn tls_der_read(input: u64, available: u32, expected_tag: u8,
                 content_offset: u64, content_length: u64) -> u32 {
@@ -175,6 +177,183 @@ fn tls_x509_general_names_match(general_names: u64, general_names_length: u32,
     return false;
 }
 
+fn tls_x509_integer_valid(integer: u64, length: u32) -> bool {
+    if length == 0 || (*((integer + 0) as *u8) & 0x80) != 0 { return false; }
+    if length > 1 && *((integer + 0) as *u8) == 0 && (*((integer + 1) as *u8) & 0x80) == 0 { return false; }
+    return true;
+}
+
+fn tls_x509_time_digit(ch: u8) -> u32 {
+    if ch < 48 || ch > 57 { return 10; }
+    return (ch - 48) as u32;
+}
+
+fn tls_x509_time_pair(input: u64, offset: u32) -> u32 {
+    let a: u32 = tls_x509_time_digit(*((input + (offset as u64)) as *u8));
+    let b: u32 = tls_x509_time_digit(*((input + ((offset + 1) as u64)) as *u8));
+    if a > 9 || b > 9 { return 100; }
+    return a * 10 + b;
+}
+
+fn tls_x509_leap_year(year: u32) -> bool {
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+fn tls_x509_parse_time(input: u64, length: u32, tag: u8, output: u64) -> bool {
+    let year: u32 = 0; let month_offset: u32 = 0;
+    if tag == 0x17 {
+        if length != 13 { return false; }
+        let short_year: u32 = tls_x509_time_pair(input, 0); if short_year > 99 { return false; }
+        if short_year >= 50 { year = 1900 + short_year; } else { year = 2000 + short_year; }
+        month_offset = 2;
+    } else if tag == 0x18 {
+        if length != 15 { return false; }
+        let century: u32 = tls_x509_time_pair(input, 0); let short_year: u32 = tls_x509_time_pair(input, 2);
+        if century > 99 || short_year > 99 { return false; }
+        year = century * 100 + short_year; month_offset = 4;
+    } else { return false; }
+    if *((input + ((length - 1) as u64)) as *u8) != 90 { return false; } // Zulu only
+    let month: u32 = tls_x509_time_pair(input, month_offset);
+    let day: u32 = tls_x509_time_pair(input, month_offset + 2);
+    let hour: u32 = tls_x509_time_pair(input, month_offset + 4);
+    let minute: u32 = tls_x509_time_pair(input, month_offset + 6);
+    let second: u32 = tls_x509_time_pair(input, month_offset + 8);
+    if month == 0 || month > 12 || hour > 23 || minute > 59 || second > 59 { return false; }
+    let days: u32 = 31;
+    if month == 4 || month == 6 || month == 9 || month == 11 { days = 30; }
+    if month == 2 { days = 28; if tls_x509_leap_year(year) { days = 29; } }
+    if day == 0 || day > days { return false; }
+    *((output) as *u64) = (year as u64) * 10000000000 + (month as u64) * 100000000
+        + (day as u64) * 1000000 + (hour as u64) * 10000 + (minute as u64) * 100 + (second as u64);
+    return true;
+}
+
+fn tls_x509_parse_validity(validity: u64, validity_length: u32,
+                           not_before: u64, not_after: u64) -> bool {
+    let outer_offset: u32 = 0; let outer_length: u32 = 0;
+    let outer_total: u32 = tls_der_read(validity, validity_length, 0x30,
+        &outer_offset as u64, &outer_length as u64);
+    if outer_total == 0 || outer_total != validity_length { return false; }
+    let pos: u32 = outer_offset; let end: u32 = outer_offset + outer_length;
+    let item_offset: u32 = 0; let item_length: u32 = 0; let tag: u8 = *((validity + (pos as u64)) as *u8);
+    let item_total: u32 = tls_der_read(validity + (pos as u64), end - pos, tag,
+        &item_offset as u64, &item_length as u64);
+    if item_total == 0 || !tls_x509_parse_time(validity + ((pos + item_offset) as u64),
+                                               item_length, tag, not_before) { return false; }
+    pos = pos + item_total; if pos >= end { return false; }
+    tag = *((validity + (pos as u64)) as *u8);
+    item_total = tls_der_read(validity + (pos as u64), end - pos, tag,
+        &item_offset as u64, &item_length as u64);
+    if item_total == 0 || pos + item_total != end
+        || !tls_x509_parse_time(validity + ((pos + item_offset) as u64),
+                                item_length, tag, not_after) { return false; }
+    return *((not_before) as *u64) <= *((not_after) as *u64);
+}
+
+fn tls_x509_tbs_fields(certificate: u64, tbs_offset: u32, tbs_length: u32,
+                       validity_offset: u64, validity_length: u64,
+                       spki_offset: u64, spki_length: u64,
+                       extensions_offset: u64, extensions_length: u64) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    if tls_der_read(certificate + (tbs_offset as u64), tbs_length, 0x30,
+                    &content_offset as u64, &content_length as u64) != tbs_length { return false; }
+    let pos: u32 = tbs_offset + content_offset; let end: u32 = pos + content_length;
+    let item_offset: u32 = 0; let item_length: u32 = 0; let item_total: u32 = 0;
+
+    if pos < end && *((certificate + (pos as u64)) as *u8) == 0xa0 {
+        item_total = tls_der_read(certificate + (pos as u64), end - pos, 0xa0,
+            &item_offset as u64, &item_length as u64);
+        if item_total == 0 { return false; }
+        let version_offset: u32 = 0; let version_length: u32 = 0;
+        if tls_der_read(certificate + ((pos + item_offset) as u64), item_length, 0x02,
+                        &version_offset as u64, &version_length as u64) != item_length
+            || version_length != 1 || *((certificate + ((pos + item_offset + version_offset) as u64)) as *u8) > 2 {
+            return false;
+        }
+        pos = pos + item_total;
+    }
+
+    item_total = tls_der_read(certificate + (pos as u64), end - pos, 0x02,
+        &item_offset as u64, &item_length as u64);
+    if item_total == 0 || !tls_x509_integer_valid(certificate + ((pos + item_offset) as u64), item_length) { return false; }
+    pos = pos + item_total;
+    for field: u32 in 0..2 { // signature AlgorithmIdentifier, then issuer Name
+        item_total = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+            &item_offset as u64, &item_length as u64);
+        if item_total == 0 { return false; } pos = pos + item_total;
+    }
+    item_total = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+        &item_offset as u64, &item_length as u64);
+    if item_total == 0 { return false; }
+    *((validity_offset) as *u32) = pos; *((validity_length) as *u32) = item_total; pos = pos + item_total;
+    for field: u32 in 0..2 { // subject Name, then SubjectPublicKeyInfo
+        item_total = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+            &item_offset as u64, &item_length as u64);
+        if item_total == 0 { return false; }
+        if field == 1 { *((spki_offset) as *u32) = pos; *((spki_length) as *u32) = item_total; }
+        pos = pos + item_total;
+    }
+
+    *((extensions_offset) as *u32) = 0; *((extensions_length) as *u32) = 0;
+    while pos < end {
+        let tag: u8 = *((certificate + (pos as u64)) as *u8);
+        if tag != 0x81 && tag != 0x82 && tag != 0xa3 { return false; }
+        item_total = tls_der_read(certificate + (pos as u64), end - pos, tag,
+            &item_offset as u64, &item_length as u64);
+        if item_total == 0 { return false; }
+        if tag == 0xa3 {
+            if *((extensions_length) as *u32) != 0 { return false; }
+            let sequence_offset: u32 = 0; let sequence_length: u32 = 0;
+            if tls_der_read(certificate + ((pos + item_offset) as u64), item_length, 0x30,
+                            &sequence_offset as u64, &sequence_length as u64) != item_length { return false; }
+            *((extensions_offset) as *u32) = pos + item_offset;
+            *((extensions_length) as *u32) = item_length;
+        }
+        pos = pos + item_total;
+    }
+    return pos == end;
+}
+
+fn tls_x509_find_san(certificate: u64, extensions_offset: u32, extensions_length: u32,
+                     san_offset: u64, san_length: u64) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    if extensions_length == 0 || tls_der_read(certificate + (extensions_offset as u64),
+        extensions_length, 0x30, &content_offset as u64, &content_length as u64) != extensions_length { return false; }
+    let pos: u32 = extensions_offset + content_offset; let end: u32 = pos + content_length; let found: bool = false;
+    while pos < end {
+        let ext_offset: u32 = 0; let ext_length: u32 = 0;
+        let ext_total: u32 = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+            &ext_offset as u64, &ext_length as u64);
+        if ext_total == 0 { return false; }
+        let scan: u32 = pos + ext_offset; let ext_end: u32 = scan + ext_length;
+        let item_offset: u32 = 0; let item_length: u32 = 0;
+        let oid_total: u32 = tls_der_read(certificate + (scan as u64), ext_end - scan, 0x06,
+            &item_offset as u64, &item_length as u64);
+        if oid_total == 0 { return false; }
+        let is_san: bool = item_length == 3
+            && *((certificate + ((scan + item_offset) as u64)) as *u8) == 0x55
+            && *((certificate + ((scan + item_offset + 1) as u64)) as *u8) == 0x1d
+            && *((certificate + ((scan + item_offset + 2) as u64)) as *u8) == 0x11;
+        scan = scan + oid_total;
+        if scan < ext_end && *((certificate + (scan as u64)) as *u8) == 0x01 {
+            let bool_total: u32 = tls_der_read(certificate + (scan as u64), ext_end - scan, 0x01,
+                &item_offset as u64, &item_length as u64);
+            if bool_total == 0 || item_length != 1 { return false; }
+            let value: u8 = *((certificate + ((scan + item_offset) as u64)) as *u8);
+            if value != 0 && value != 0xff { return false; } scan = scan + bool_total;
+        }
+        let value_total: u32 = tls_der_read(certificate + (scan as u64), ext_end - scan, 0x04,
+            &item_offset as u64, &item_length as u64);
+        if value_total == 0 || scan + value_total != ext_end { return false; }
+        if is_san {
+            if found { return false; } found = true;
+            *((san_offset) as *u32) = scan + item_offset; *((san_length) as *u32) = item_length;
+        }
+        pos = pos + ext_total;
+    }
+    return found;
+}
+
 fn tls_x509_self_test() {
     let certificate: [u8; 17] = [
         0x30, 0x0f,
@@ -225,4 +404,34 @@ fn tls_x509_self_test() {
         && !tls_x509_dns_name_matches("www.*.test" as u64, 10, "www.mort.test" as u64, 13)
         && !tls_x509_dns_name_matches("www..test" as u64, 9, "www..test" as u64, 9)
         && !tls_x509_dns_name_matches("-bad.test" as u64, 9, "-bad.test" as u64, 9);
+
+    let tbs: [u8; 84] = [
+        0x30, 0x52, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01, 0x01,
+        0x30, 0x03, 0x06, 0x01, 0x2a, 0x30, 0x00,
+        0x30, 0x1e,
+        0x17, 0x0d, 0x32, 0x36, 0x30, 0x37, 0x32, 0x32, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5a,
+        0x17, 0x0d, 0x32, 0x37, 0x30, 0x37, 0x32, 0x32, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5a,
+        0x30, 0x00, 0x30, 0x03, 0x03, 0x01, 0x00,
+        0xa3, 0x1a, 0x30, 0x18, 0x30, 0x16, 0x06, 0x03, 0x55, 0x1d, 0x11, 0x04, 0x0f,
+        0x30, 0x0d, 0x82, 0x0b, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d
+    ];
+    let validity_offset: u32 = 0; let validity_length: u32 = 0;
+    let spki_offset: u32 = 0; let spki_length: u32 = 0;
+    let extensions_offset: u32 = 0; let extensions_length: u32 = 0;
+    let fields_ok: bool = tls_x509_tbs_fields(&tbs as u64, 0, 84,
+        &validity_offset as u64, &validity_length as u64, &spki_offset as u64, &spki_length as u64,
+        &extensions_offset as u64, &extensions_length as u64);
+    let not_before: u64 = 0; let not_after: u64 = 0;
+    let validity_ok: bool = fields_ok && tls_x509_parse_validity(
+        &tbs as u64 + (validity_offset as u64), validity_length, &not_before as u64, &not_after as u64);
+    let san_offset: u32 = 0; let san_length: u32 = 0;
+    let san_ok: bool = fields_ok && tls_x509_find_san(
+        &tbs as u64, extensions_offset, extensions_length, &san_offset as u64, &san_length as u64)
+        && tls_x509_general_names_match(&tbs as u64 + (san_offset as u64), san_length,
+                                        "example.com" as u64, 11);
+    *(&g_tls_x509_time_test as *u64) = not_before;
+    g_tls_x509_fields_ok = fields_ok && validity_ok && san_ok
+        && validity_offset == 17 && validity_length == 32 && spki_offset == 51 && spki_length == 5
+        && not_before == 20260722000000 && not_after == 20270722000000
+        && !tls_x509_parse_time("230229000000Z" as u64, 13, 0x17, &not_before as u64);
 }
