@@ -1809,8 +1809,44 @@ def browser_ui():
               (cleared_roots & 0xff) == 0
               and _guest_u32(handle, roots_addr + 16) == 0
               and _guest_u32(handle, roots_addr + 4148) == 0)
+        send_key(handle, "ctrl-k")
+        _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+        for char in "clear downloads":
+            send_key(handle, key_name(char))
+        send_key(handle, "ret")
+        cleared_downloads = _wait_guest_u32(
+            handle, download_count_addr, lambda value: value == 0)
+        send_key(handle, "ctrl-k")
+        _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+        for char in "clear sessions":
+            send_key(handle, key_name(char))
+        send_key(handle, "ret")
+        cleared_sessions = _wait_guest_u32(
+            handle, session_count_addr, lambda value: value == 0)
+        send_key(handle, "ctrl-k")
+        _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+        for char in "clear site settings":
+            send_key(handle, key_name(char))
+        send_key(handle, "ret")
+        cleared_sites = _wait_guest_u32(
+            handle, site_pref_count_addr, lambda value: value == 0)
+        check("Vex clears download history, named sessions, and site controls",
+              (cleared_downloads == 0 and cleared_sessions == 0
+               and cleared_sites == 0))
     finally:
         shutdown(handle)
+        try:
+            download_store = read_mortfs_file(temp_disk, ".vex-downloads")
+            session_store = read_mortfs_file(temp_disk, ".vex-sessions")
+            site_store = read_mortfs_file(temp_disk, ".vex-sites")
+            check("Browser-data clears are durable without deleting downloaded files",
+                  (len(download_store) == 512 and download_store[4] == 0
+                   and len(session_store) == 2048 and session_store[4] == 0
+                   and len(site_store) == 1024 and site_store[4] == 0
+                   and read_mortfs_file(temp_disk, "bad_name.bin") == binary_body
+                   and read_mortfs_file(temp_disk, "secure.bin") == tls_binary_body))
+        except Exception:
+            check("Browser-data clears are durable without deleting downloaded files", False)
         try:
             os.remove(temp_disk)
         except OSError:

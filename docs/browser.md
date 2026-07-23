@@ -62,6 +62,10 @@ upstream/native boundary.
 - An eight-record, newest-first download manager persisted in
   `.vex-downloads`, with exact filename, byte count, text/binary kind, and
   HTTP/HTTPS metadata. Private-mode saves are deliberately not indexed.
+- Browser-data controls clear history, download metadata, named sessions, or
+  per-site profiles independently. Clearing download history deliberately
+  keeps the downloaded MortFS files; all clear operations persist immediately
+  and private mode cannot perform them.
 - Local pages for Home, About, History, Bookmarks, Downloads, Saved Sessions,
   Settings, and Network status.
 
@@ -93,6 +97,7 @@ upstream/native boundary.
 | `I` | Validate and import `vex-root.der` from the current home or `/` |
 | `A` | Atomically import concatenated DER roots from `vex-roots.der` |
 | `U` | Clear all imported CA roots on `vex://settings` |
+| `J` / `Y` / `O` | Clear download history / named sessions / site profiles in Settings |
 
 ## Network path
 

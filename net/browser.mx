@@ -660,6 +660,17 @@ fn browser_downloads_add(name: u64, length: u32, secure: bool, binary: bool) {
     browser_downloads_save();
 }
 
+fn browser_downloads_clear() {
+    if g_browser_private {
+        browser_set_status("Leave private mode before clearing download history"); browser_draw(); return;
+    }
+    browser_downloads_reset();
+    if browser_downloads_save() {
+        browser_set_status("Download history cleared; saved files kept");
+    } else { browser_set_status("Could not clear download history"); }
+    browser_draw();
+}
+
 fn browser_session_record(index: u32) -> u64 {
     return &g_browser_sessions as u64
         + 16 + ((index * BROWSER_SESSION_RECORD_SIZE) as u64);
@@ -826,6 +837,16 @@ fn browser_session_delete_named(name: u64) {
     browser_draw();
 }
 
+fn browser_sessions_clear() {
+    if g_browser_private {
+        browser_set_status("Leave private mode before clearing sessions"); browser_draw(); return;
+    }
+    browser_sessions_reset();
+    if browser_sessions_save() { browser_set_status("All named Vex sessions cleared"); }
+    else { browser_set_status("Could not clear named sessions"); }
+    browser_draw();
+}
+
 fn browser_site_record(index: u32) -> u64 {
     return &g_browser_site_prefs as u64
         + 16 + ((index * BROWSER_SITE_RECORD_SIZE) as u64);
@@ -958,6 +979,16 @@ fn browser_site_links_toggle() {
     } else {
         browser_set_status("Extracted page links blocked for this site");
     }
+    browser_draw();
+}
+
+fn browser_sites_clear() {
+    if g_browser_private {
+        browser_set_status("Leave private mode before clearing site controls"); browser_draw(); return;
+    }
+    browser_sites_reset(); g_browser_reader = false; g_browser_site_links_allowed = true;
+    if browser_sites_save() { browser_set_status("All per-site controls cleared"); }
+    else { browser_set_status("Could not clear per-site controls"); }
     browser_draw();
 }
 
@@ -1502,7 +1533,8 @@ fn browser_draw_settings_page() {
     else { draw_text_abs("None saved", 400, 498, 0xffffff, 0x0b0f14); }
     draw_text_abs("Imported CA roots", 208, 522, 0x8fa1aa, 0x0b0f14);
     num_to_str(browser_root_count(), g_numbuf); draw_text_abs(g_numbuf, 400, 522, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("I:root A:bundle U:clear roots V:clear pin C:history", 208, 554, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("C:history J:downloads Y:sessions O:sites", 208, 550, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("I:root A:bundle U:roots V:pin", 208, 574, 0x7a8b93, 0x0b0f14);
 }
 
 fn browser_draw_links() {
@@ -1689,6 +1721,10 @@ fn browser_command_execute() {
     if browser_streq(cmd, "private" as u64) { browser_toggle_private(); return; }
     if browser_streq(cmd, "reader" as u64) { browser_reader_toggle(); return; }
     if browser_streq(cmd, "site links" as u64) { browser_site_links_toggle(); return; }
+    if browser_streq(cmd, "clear history" as u64) { browser_clear_history(); return; }
+    if browser_streq(cmd, "clear downloads" as u64) { browser_downloads_clear(); return; }
+    if browser_streq(cmd, "clear sessions" as u64) { browser_sessions_clear(); return; }
+    if browser_streq(cmd, "clear site settings" as u64) { browser_sites_clear(); return; }
     if browser_streq(cmd, "workspace personal" as u64) { browser_workspace_activate(0); return; }
     if browser_streq(cmd, "workspace work" as u64) { browser_workspace_activate(1); return; }
     if browser_streq(cmd, "workspace school" as u64) { browser_workspace_activate(2); return; }
@@ -2021,6 +2057,9 @@ fn browser_on_key(sc: u8) {
     if sc == 49 { browser_load("vex://network" as u64, true); return; } // N
     if sc == 37 { browser_pin_approve(); return; } // K
     if sc == 46 && g_browser_page == 5 { browser_clear_history(); return; } // C in settings
+    if sc == 36 && g_browser_page == 5 { browser_downloads_clear(); return; } // J
+    if sc == 21 && g_browser_page == 5 { browser_sessions_clear(); return; } // Y
+    if sc == 24 && g_browser_page == 5 { browser_sites_clear(); return; } // O
     if sc == 47 && g_browser_page == 5 { browser_pin_clear(); return; } // V in settings
     if sc == 23 && g_browser_page == 5 { browser_root_import(); return; } // I in settings
     if sc == 30 && g_browser_page == 5 { browser_root_bundle_import(); return; } // A in settings
