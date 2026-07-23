@@ -919,6 +919,30 @@ fn browser_chunk_size_add(current: u32, digit: u32) -> u32 {
     return current * 16 + digit;
 }
 
+fn browser_http_status_code(data: u64, length: u32) -> u32 {
+    // Accept only an HTTP/1.0 or HTTP/1.1 status line with exactly three
+    // decimal status digits and the mandatory spaces around the status code.
+    // Returning an out-of-band value keeps malformed bytes out of arithmetic.
+    if length < 13
+        || *((data + 0) as *u8) != 72 || *((data + 1) as *u8) != 84
+        || *((data + 2) as *u8) != 84 || *((data + 3) as *u8) != 80
+        || *((data + 4) as *u8) != 47 || *((data + 5) as *u8) != 49
+        || *((data + 6) as *u8) != 46
+        || (*((data + 7) as *u8) != 48 && *((data + 7) as *u8) != 49)
+        || *((data + 8) as *u8) != 32 || *((data + 12) as *u8) != 32 {
+        return 0xffffffff;
+    }
+    let hundreds: u8 = *((data + 9) as *u8);
+    let tens: u8 = *((data + 10) as *u8);
+    let ones: u8 = *((data + 11) as *u8);
+    if hundreds < 49 || hundreds > 53
+        || tens < 48 || tens > 57 || ones < 48 || ones > 57 {
+        return 0xffffffff;
+    }
+    return ((hundreds - 48) as u32) * 100
+        + ((tens - 48) as u32) * 10 + ((ones - 48) as u32);
+}
+
 fn browser_headers_chunked(body: u32) -> bool {
     let pos: u32 = 0;
     while pos + 18 < body {
@@ -981,17 +1005,23 @@ fn input_bounds_self_test() {
     let history_ok: bool = browser_history_state_valid(0, 0, 0)
         && browser_history_state_valid(6, 5, 4)
         && !browser_history_state_valid(1, 255, 0);
+    let status_ok: bool =
+        browser_http_status_code("HTTP/1.1 200 OK\r\n" as u64, 17) == 200
+        && browser_http_status_code("HTTP/1.0 599 Error\r\n" as u64, 20) == 599
+        && browser_http_status_code("HTTP/1.1 2A0 Bad\r\n" as u64, 20) == 0xffffffff
+        && browser_http_status_code("HTTP/2.0 200 Bad\r\n" as u64, 20) == 0xffffffff
+        && browser_http_status_code("HTTP/1.1 200Bad\r\n" as u64, 19) == 0xffffffff;
     let usb_ok: bool = usb_descriptor_fits(9, 9, 18)
         && !usb_descriptor_fits(60, 9, 64);
-    g_input_bounds_ok = chunk_ok && tcp_ok && history_ok && usb_ok;
+    g_input_bounds_ok = chunk_ok && tcp_ok && history_ok && status_ok && usb_ok;
 }
 
 fn browser_http_parse() -> bool {
-    if g_browser_http_raw_len < 12 || !browser_match_ci(&g_browser_http_raw as u64, 0, g_browser_http_raw_len, "HTTP/" as u64) {
+    let code: u32 = browser_http_status_code(
+        &g_browser_http_raw as u64, g_browser_http_raw_len);
+    if code == 0xffffffff {
         browser_set_status("Invalid HTTP response"); return false;
     }
-    let code: u32 = ((g_browser_http_raw[9] as u32) - 48) * 100
-        + ((g_browser_http_raw[10] as u32) - 48) * 10 + ((g_browser_http_raw[11] as u32) - 48);
     let body: u32 = 0; let pos: u32 = 0;
     while pos + 3 < g_browser_http_raw_len && body == 0 {
         if g_browser_http_raw[pos] == 13 && g_browser_http_raw[pos + 1] == 10
@@ -1012,9 +1042,9 @@ fn browser_http_parse() -> bool {
 
 fn browser_http_redirect_location() -> bool {
     browser_zero(&g_browser_http_redirect as u64, 80);
-    if g_browser_http_raw_len < 12 { return false; }
-    let code: u32 = ((g_browser_http_raw[9] as u32) - 48) * 100
-        + ((g_browser_http_raw[10] as u32) - 48) * 10 + ((g_browser_http_raw[11] as u32) - 48);
+    let code: u32 = browser_http_status_code(
+        &g_browser_http_raw as u64, g_browser_http_raw_len);
+    if code == 0xffffffff { return false; }
     if code < 300 || code >= 400 { return false; }
     let pos: u32 = 12;
     while pos + 9 < g_browser_http_raw_len {

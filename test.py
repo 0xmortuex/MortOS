@@ -858,6 +858,14 @@ def browser_ui():
             protocol_version = "HTTP/1.1"
 
             def do_GET(self):
+                if self.path == "/malformed-status":
+                    self.connection.sendall(
+                        b"HTTP/1.1 2A0 Invalid\r\n"
+                        b"Content-Type: text/html\r\n"
+                        b"Content-Length: 32\r\n\r\n"
+                        b"<h1>MUST-NOT-BE-RENDERED</h1>")
+                    self.close_connection = True
+                    return
                 if self.path == "/chunked":
                     chunks = [b"<!doctype html><title>Chunked</title><h1>",
                               chunked_marker.encode("ascii"), b"</h1>"]
@@ -1280,6 +1288,25 @@ def browser_ui():
                   chunked_marker in chunked_text)
 
             send_key(handle, "slash")
+            malformed_address = f"http://10.0.2.2:{port}/malformed-status"
+            for char in malformed_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            malformed_status = ""
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and "Invalid HTTP response" not in malformed_status:
+                malformed_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "Invalid HTTP response" not in malformed_status:
+                    time.sleep(0.25)
+            malformed_content = _guest_bytes(
+                handle, content_addr, min(_guest_u32(handle, content_len_addr), 256))
+            check("Malformed HTTP status digits are rejected before body rendering",
+                  ("Invalid HTTP response" in malformed_status
+                   and (_guest_u32(handle, remote_addr) & 0xff) == 0
+                   and b"MUST-NOT-BE-RENDERED" not in malformed_content))
+
+            send_key(handle, "slash")
             plain_address = f"http://10.0.2.2:{port}/plain"
             for char in plain_address:
                 send_key(handle, key_name(char))
@@ -1565,6 +1592,10 @@ def browser_ui():
         send_key(handle, "esc")
         send_key(handle, "f3")
         _wait_guest_u32(handle, app_addr, lambda value: value == 2, timeout_s=10)
+        restored_workspace = _wait_guest_u32(
+            handle, workspace_addr, lambda value: value == 2, timeout_s=10)
+        restored_downloads = _wait_guest_u32(
+            handle, download_count_addr, lambda value: value == 3, timeout_s=10)
         state = _guest_bytes(handle, state_addr, 9)
         check("Browser bookmarks and imported CA roots survive a full reboot",
               state[6] >= 1 and state[7] == 0
@@ -1572,9 +1603,9 @@ def browser_ui():
               and _guest_bytes(handle, roots_addr + 20, 32) == expected_anchor_hash
               and _guest_bytes(handle, roots_addr + 4152, 32) == expected_bundle_hash)
         check("Active Vex workspace survives a full reboot",
-              state[8] == 2 and _guest_u32(handle, workspace_addr) == 2)
+              state[8] == 2 and restored_workspace == 2)
         check("Vex download manager survives a full reboot",
-              (_guest_u32(handle, download_count_addr) == 3
+              (restored_downloads == 3
                and _guest_bytes(
                    handle, download_index_addr + 96, 24).split(b"\0", 1)[0]
                == b"secure.bin"))

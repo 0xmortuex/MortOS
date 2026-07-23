@@ -37,6 +37,9 @@ upstream/native boundary.
 - DHCP lease parsing for address/subnet/router/DNS, DNS A queries, subnet-aware
   ARP routing, TCP handshakes, HTTP/1.0 requests, and HTTP/1.1 chunked-transfer
   decoding over an RTL8139 interface.
+- Strict HTTP/1.0 and HTTP/1.1 status-line parsing rejects unsupported
+  versions, non-decimal codes, and missing separators before redirects or
+  response bodies are accepted.
 - TLS 1.3 with X25519, RSA-PSS authentication, ChaCha20-Poly1305 records,
   strict RSA certificate-chain validation, explicit host/port anchor pins,
   imported CA roots, encrypted HTTP requests, and authenticated HTML/plain-text
