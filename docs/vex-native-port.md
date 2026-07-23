@@ -18,6 +18,7 @@ a native Mort subsystem:
 | Workspaces | Personal, Work, School, and Dev stacks with automatic full-stack recovery |
 | Address / command surface | `Ctrl+K` actions, local suggestions, and `vex://` / HTTP / HTTPS navigation |
 | History, bookmarks, sessions | Searchable history plus named tab snapshots in per-user MortFS records |
+| Notes and Read Later | Eight bounded notes and eight queued web URLs in a private-safe native Library |
 | Private browsing | No persistent history, session recovery, pins, or CA imports |
 | Downloads manager | Eight persistent exact-byte MortFS records with type and transport metadata |
 | Network and TLS | `mortnet`, RTL8139, DNS, TCP, and the Mort TLS 1.3 client |
@@ -34,7 +35,8 @@ or Chromium engine is embedded.
 
 1. Shared identity, vertical tabs, library navigation, and command/address UI.
 2. Isolated workspaces and persisted workspace selection.
-3. Multi-item download manager, named sessions, and searchable history.
+3. Multi-item download manager, named sessions, searchable history, and an
+   on-device Notes / Read Later Library.
 4. Reading mode, per-site preferences, and native-renderer content controls.
 5. Further web compatibility only after memory isolation, process support, and
    a substantially richer rendering engine exist.

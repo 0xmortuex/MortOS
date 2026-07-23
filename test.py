@@ -809,6 +809,9 @@ def browser_ui():
     site_links_addr = _elf32_symbol(ELF, "m_g_browser_site_links_allowed")
     workspace_store_addr = _elf32_symbol(ELF, "m_g_browser_workspace_store")
     recent_count_addr = _elf32_symbol(ELF, "m_g_browser_recent_count")
+    library_addr = _elf32_symbol(ELF, "m_g_browser_library")
+    note_count_addr = _elf32_symbol(ELF, "m_g_browser_note_count")
+    read_later_count_addr = _elf32_symbol(ELF, "m_g_browser_read_later_count")
     list_sel_addr = _elf32_symbol(ELF, "m_g_browser_list_sel")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
@@ -1249,6 +1252,33 @@ def browser_ui():
                    and (_guest_u32(handle, reader_addr) & 0xff) != 0
                    and _guest_bytes(handle, site_prefs_addr + 83, 1)[0] == 3))
 
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "note Focus research":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            saved_notes = _wait_guest_u32(
+                handle, note_count_addr, lambda value: value == 1)
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "read later":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            saved_later = _wait_guest_u32(
+                handle, read_later_count_addr, lambda value: value == 1)
+            check("Vex Library saves a native note and the active page for later",
+                  (saved_notes == 1 and saved_later == 1
+                   and _guest_u32(handle, library_addr) == 0x314C5856
+                   and _guest_bytes(
+                       handle, library_addr + 16, 24).split(b"\0", 1)[0]
+                   == b"Focus research"
+                   and _guest_bytes(
+                       handle, library_addr + 40, 136).split(b"\0", 1)[0]
+                   == b"Focus research"
+                   and _guest_bytes(
+                       handle, library_addr + 1296, 80).split(b"\0", 1)[0]
+                   == address.encode("ascii")))
+
             remembered = ""
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and remembered != address:
@@ -1331,6 +1361,22 @@ def browser_ui():
             check("Private tabs cannot enter the persistent session library",
                   (_guest_u32(handle, session_count_addr) == 1
                    and "Private tabs cannot be saved" in private_session_status))
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "note secret":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "read later":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            private_library_status = _guest_bytes(
+                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            check("Private pages cannot persist Notes or Read Later entries",
+                  (_guest_u32(handle, note_count_addr) == 1
+                   and _guest_u32(handle, read_later_count_addr) == 1
+                   and "Private pages cannot enter Read Later" in private_library_status))
             send_key(handle, "8")
             send_key(handle, "i")
             private_root_status = _guest_bytes(
@@ -1786,6 +1832,10 @@ def browser_ui():
             handle, site_pref_count_addr, lambda value: value == 1, timeout_s=10)
         restored_recent = _wait_guest_u32(
             handle, recent_count_addr, lambda value: value == 2, timeout_s=10)
+        restored_notes = _wait_guest_u32(
+            handle, note_count_addr, lambda value: value == 1, timeout_s=10)
+        restored_later = _wait_guest_u32(
+            handle, read_later_count_addr, lambda value: value == 1, timeout_s=10)
         state = _guest_bytes(handle, state_addr, 9)
         check("Browser bookmarks and imported CA roots survive a full reboot",
               state[6] >= 1 and state[7] == 0
@@ -1825,6 +1875,14 @@ def browser_ui():
                    handle, site_prefs_addr + 16, 64).split(b"\0", 1)[0]
                == b"10.0.2.2"
                and _guest_bytes(handle, site_prefs_addr + 83, 1)[0] == 3))
+        check("Vex notes and Read Later survive a full reboot",
+              (restored_notes == 1 and restored_later == 1
+               and _guest_bytes(
+                   handle, library_addr + 16, 24).split(b"\0", 1)[0]
+               == b"Focus research"
+               and _guest_bytes(
+                   handle, library_addr + 1296, 80).split(b"\0", 1)[0]
+               == address.encode("ascii")))
         send_key(handle, "8")
         send_key(handle, "a")
         rejected_bundle_status = ""
@@ -1868,19 +1926,32 @@ def browser_ui():
         send_key(handle, "ret")
         cleared_sites = _wait_guest_u32(
             handle, site_pref_count_addr, lambda value: value == 0)
-        check("Vex clears download history, named sessions, and site controls",
+        send_key(handle, "ctrl-k")
+        _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+        for char in "clear library":
+            send_key(handle, key_name(char))
+        send_key(handle, "ret")
+        cleared_notes = _wait_guest_u32(
+            handle, note_count_addr, lambda value: value == 0)
+        cleared_later = _wait_guest_u32(
+            handle, read_later_count_addr, lambda value: value == 0)
+        check("Vex clears download history, sessions, site controls, and Library data",
               (cleared_downloads == 0 and cleared_sessions == 0
-               and cleared_sites == 0))
+               and cleared_sites == 0 and cleared_notes == 0
+               and cleared_later == 0))
     finally:
         shutdown(handle)
         try:
             download_store = read_mortfs_file(temp_disk, ".vex-downloads")
             session_store = read_mortfs_file(temp_disk, ".vex-sessions")
             site_store = read_mortfs_file(temp_disk, ".vex-sites")
+            library_store = read_mortfs_file(temp_disk, ".vex-library")
             check("Browser-data clears are durable without deleting downloaded files",
                   (len(download_store) == 512 and download_store[4] == 0
                    and len(session_store) == 2048 and session_store[4] == 0
                    and len(site_store) == 1024 and site_store[4] == 0
+                   and len(library_store) == 2048
+                   and library_store[4] == 0 and library_store[5] == 0
                    and read_mortfs_file(temp_disk, "bad_name.bin") == binary_body
                    and read_mortfs_file(temp_disk, "secure.bin") == tls_binary_body))
         except Exception:

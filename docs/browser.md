@@ -36,6 +36,10 @@ upstream/native boundary.
 - Automatic `.vex-workspaces` recovery for every workspace's tab URLs, titles,
   tab count, and active tab, plus a four-item recently closed stack. Normal
   changes sync immediately; private navigation is excluded.
+- A native Vex Library persisted in `.vex-library`: up to eight short
+  Markdown-style notes and eight HTTP/HTTPS Read Later entries. `note TEXT`
+  saves a note, `read later` queues the active page, and queued pages reopen
+  from the local Library page. Private pages cannot change the store.
 - A distraction-reduced reading layout toggled with `M`, plus eight per-origin
   profiles in `.vex-sites` that remember reading mode and whether extracted
   links are exposed. Private mode may use reading mode transiently but never
@@ -65,12 +69,12 @@ upstream/native boundary.
 - An eight-record, newest-first download manager persisted in
   `.vex-downloads`, with exact filename, byte count, text/binary kind, and
   HTTP/HTTPS metadata. Private-mode saves are deliberately not indexed.
-- Browser-data controls clear history, download metadata, named sessions, or
-  per-site profiles independently. Clearing download history deliberately
-  keeps the downloaded MortFS files; all clear operations persist immediately
-  and private mode cannot perform them.
+- Browser-data controls clear history, download metadata, named sessions,
+  per-site profiles, or Notes and Read Later independently. Clearing download
+  history deliberately keeps the downloaded MortFS files; all clear operations
+  persist immediately and private mode cannot perform them.
 - Local pages for Home, About, History, Bookmarks, Downloads, Saved Sessions,
-  Settings, and Network status.
+  Library, Settings, and Network status.
 
 ## Controls
 
@@ -79,6 +83,7 @@ upstream/native boundary.
 | `F3` | Open Vex from anywhere in the desktop |
 | `Ctrl+K` | Open the Vex command bar |
 | `S` | Open Saved Sessions |
+| `Q` | Open the Notes and Read Later Library |
 | `/` | Edit the address; Up/Down chooses a local suggestion |
 | Left / Right | Back / forward |
 | Up / Down | Scroll the page or move through a list |
@@ -102,6 +107,10 @@ upstream/native boundary.
 | `A` | Atomically import concatenated DER roots from `vex-roots.der` |
 | `U` | Clear all imported CA roots on `vex://settings` |
 | `J` / `Y` / `O` | Clear download history / named sessions / site profiles in Settings |
+| `E` | Clear Notes and Read Later on `vex://settings` |
+
+The command bar also accepts `library`, `note TEXT`, `read later`, and
+`clear library`.
 
 ## Network path
 
@@ -297,7 +306,8 @@ loading, HTML and literal plain-text rendering, bounded HTTP and authenticated
 HTTPS binary staging with byte-exact MortFS saves,
 script/style removal, links, redirects, chunked responses, local suggestions,
 keyboard and mouse tab controls, private mode, bookmarks, downloads,
-explicit normal-session recovery, screenshots, live ServerHello through
+Notes and Read Later persistence/private isolation, explicit normal-session
+recovery, screenshots, live ServerHello through
 Finished verification, private-mode pin refusal, pinned encrypted GET/response,
 private-mode root-import refusal, CA import, a separately renewed leaf under
 the imported root with that root omitted by the server, and bookmark/root

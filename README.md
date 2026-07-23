@@ -21,7 +21,8 @@ client. It has automatically restored isolated workspaces, named tab sessions,
 reopen-closed-tab, searchable persistent history and bookmarks, a command bar,
 local address suggestions, private mode,
 reading mode, per-origin link controls, find, link navigation, redirects,
-chunked-transfer decoding, a persistent byte-exact download manager, and
+chunked-transfer decoding, persistent Notes and Read Later, a byte-exact
+download manager, and
 authenticated TLS 1.3 with host pins or validated imported CA roots. See
 [the browser guide](docs/browser.md) for its
 controls, architecture, tests, and honest engine limits.
