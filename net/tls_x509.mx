@@ -5,6 +5,7 @@
 let g_tls_x509_der_ok: bool = false;
 let g_tls_x509_certificate_message_ok: bool = false;
 let g_tls_x509_signature_test: [u8; 2] = [0; 2];
+let g_tls_x509_hostname_ok: bool = false;
 
 fn tls_der_read(input: u64, available: u32, expected_tag: u8,
                 content_offset: u64, content_length: u64) -> u32 {
@@ -91,6 +92,89 @@ fn tls13_parse_certificate_message(message: u64, message_length: u32,
     return pos == end && count > 0;
 }
 
+fn tls_x509_dns_lower(ch: u8) -> u8 {
+    if ch >= 65 && ch <= 90 { return ch + 32; }
+    return ch;
+}
+
+fn tls_x509_dns_char(ch: u8) -> bool {
+    let lower: u8 = tls_x509_dns_lower(ch);
+    return (lower >= 97 && lower <= 122) || (ch >= 48 && ch <= 57) || ch == 45 || ch == 46;
+}
+
+fn tls_x509_dns_equal(a: u64, b: u64, length: u32) -> bool {
+    let diff: u8 = 0;
+    for i: u32 in 0..length {
+        diff = diff | (tls_x509_dns_lower(*((a + (i as u64)) as *u8))
+            ^ tls_x509_dns_lower(*((b + (i as u64)) as *u8)));
+    }
+    return diff == 0;
+}
+
+fn tls_x509_dns_name_matches(pattern: u64, pattern_length: u32,
+                             host: u64, host_length: u32) -> bool {
+    if pattern_length == 0 || pattern_length > 253 || host_length == 0 || host_length > 253 { return false; }
+    for i: u32 in 0..pattern_length {
+        let ch: u8 = *((pattern + (i as u64)) as *u8);
+        if ch == 42 {
+            if i != 0 || pattern_length < 5 || *((pattern + 1) as *u8) != 46 { return false; }
+        } else if !tls_x509_dns_char(ch) { return false; }
+        if ch == 46 {
+            if i == 0 || i + 1 == pattern_length || *((pattern + ((i - 1) as u64)) as *u8) == 46
+                || *((pattern + ((i - 1) as u64)) as *u8) == 45
+                || *((pattern + ((i + 1) as u64)) as *u8) == 45 { return false; }
+        }
+        if ch == 45 && (i == 0 || i + 1 == pattern_length
+            || *((pattern + ((i - 1) as u64)) as *u8) == 46
+            || *((pattern + ((i + 1) as u64)) as *u8) == 46) { return false; }
+    }
+    for i: u32 in 0..host_length {
+        let ch: u8 = *((host + (i as u64)) as *u8);
+        if !tls_x509_dns_char(ch) { return false; }
+        if ch == 46 {
+            if i == 0 || i + 1 == host_length || *((host + ((i - 1) as u64)) as *u8) == 46
+                || *((host + ((i - 1) as u64)) as *u8) == 45
+                || *((host + ((i + 1) as u64)) as *u8) == 45 { return false; }
+        }
+        if ch == 45 && (i == 0 || i + 1 == host_length
+            || *((host + ((i - 1) as u64)) as *u8) == 46
+            || *((host + ((i + 1) as u64)) as *u8) == 46) { return false; }
+    }
+
+    if *((pattern + 0) as *u8) != 42 {
+        return pattern_length == host_length && tls_x509_dns_equal(pattern, host, host_length);
+    }
+    let suffix_length: u32 = pattern_length - 2; let suffix_has_dot: bool = false;
+    for i: u32 in 0..suffix_length {
+        if *((pattern + ((2 + i) as u64)) as *u8) == 46 { suffix_has_dot = true; }
+    }
+    if !suffix_has_dot || host_length <= suffix_length + 1 { return false; }
+    let separator: u32 = host_length - suffix_length - 1;
+    if *((host + (separator as u64)) as *u8) != 46 { return false; }
+    for i: u32 in 0..separator { if *((host + (i as u64)) as *u8) == 46 { return false; } }
+    return tls_x509_dns_equal(pattern + 2, host + ((separator + 1) as u64), suffix_length);
+}
+
+fn tls_x509_general_names_match(general_names: u64, general_names_length: u32,
+                                host: u64, host_length: u32) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    let total: u32 = tls_der_read(general_names, general_names_length, 0x30,
+        &content_offset as u64, &content_length as u64);
+    if total == 0 || total != general_names_length { return false; }
+    let pos: u32 = content_offset; let end: u32 = content_offset + content_length;
+    while pos < end {
+        let tag: u8 = *((general_names + (pos as u64)) as *u8);
+        let item_offset: u32 = 0; let item_length: u32 = 0;
+        let item_total: u32 = tls_der_read(general_names + (pos as u64), end - pos, tag,
+            &item_offset as u64, &item_length as u64);
+        if item_total == 0 { return false; }
+        if tag == 0x82 && tls_x509_dns_name_matches(
+            general_names + ((pos + item_offset) as u64), item_length, host, host_length) { return true; }
+        pos = pos + item_total;
+    }
+    return false;
+}
+
 fn tls_x509_self_test() {
     let certificate: [u8; 17] = [
         0x30, 0x0f,
@@ -126,4 +210,19 @@ fn tls_x509_self_test() {
     g_tls_x509_certificate_message_ok = message_ok && certificate_offset == 11
         && certificate_size == 17 && malformed_rejected
         && tls_bytes_equal(&g_tls_x509_signature_test as u64, &certificate as u64 + 15, 2);
+
+    let names: [u8; 28] = [
+        0x30, 0x1a,
+        0x82, 0x0b, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d,
+        0x82, 0x0b, 0x2a, 0x2e, 0x6d, 0x6f, 0x72, 0x74, 0x2e, 0x74, 0x65, 0x73, 0x74
+    ];
+    g_tls_x509_hostname_ok = tls_x509_general_names_match(
+        &names as u64, 28, "EXAMPLE.COM" as u64, 11)
+        && tls_x509_general_names_match(&names as u64, 28, "api.mort.test" as u64, 13)
+        && !tls_x509_general_names_match(&names as u64, 28, "deep.api.mort.test" as u64, 18)
+        && !tls_x509_general_names_match(&names as u64, 28, "mort.test" as u64, 9)
+        && !tls_x509_dns_name_matches("*.com" as u64, 5, "example.com" as u64, 11)
+        && !tls_x509_dns_name_matches("www.*.test" as u64, 10, "www.mort.test" as u64, 13)
+        && !tls_x509_dns_name_matches("www..test" as u64, 9, "www..test" as u64, 9)
+        && !tls_x509_dns_name_matches("-bad.test" as u64, 9, "-bad.test" as u64, 9);
 }

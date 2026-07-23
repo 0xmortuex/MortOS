@@ -108,6 +108,10 @@ The certificate path begins with a canonical DER reader and bounded TLS 1.3
 Certificate-list parser. Indefinite or non-minimal lengths, truncation, trailing
 bytes, oversized chains, malformed BIT STRING signatures, and entry/extension
 length mismatches are rejected before higher-level X.509 processing.
+Subject Alternative Name DNS matching is ASCII case-insensitive, rejects
+malformed names and embedded wildcards, and permits a wildcard only as the
+complete left-most label matching exactly one host label. Broad `*.com`-style
+patterns are rejected.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
