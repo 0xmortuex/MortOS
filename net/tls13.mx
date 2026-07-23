@@ -69,6 +69,26 @@ let TLS13_CERT_VERIFY_HASH1: [u8; 32] = [
     0xbe, 0xed, 0x95, 0xaf, 0x40, 0x4e, 0x23, 0xdd, 0x55, 0x3e, 0xbc, 0xfb, 0x4a, 0x00, 0xb8, 0xdb,
     0xbf, 0x22, 0x44, 0xdb, 0x2a, 0x9a, 0xa3, 0x9a, 0x37, 0x92, 0x56, 0x51, 0x26, 0x7c, 0x14, 0x1f
 ];
+let TLS13_MASTER_SECRET1: [u8; 32] = [
+    0x18, 0xdf, 0x06, 0x84, 0x3d, 0x13, 0xa0, 0x8b, 0xf2, 0xa4, 0x49, 0x84, 0x4c, 0x5f, 0x8a, 0x47,
+    0x80, 0x01, 0xbc, 0x4d, 0x4c, 0x62, 0x79, 0x84, 0xd5, 0xa4, 0x1d, 0xa8, 0xd0, 0x40, 0x29, 0x19
+];
+let TLS13_SERVER_FINISHED_TRANSCRIPT1: [u8; 32] = [
+    0x96, 0x08, 0x10, 0x2a, 0x0f, 0x1c, 0xcc, 0x6d, 0xb6, 0x25, 0x0b, 0x7b, 0x7e, 0x41, 0x7b, 0x1a,
+    0x00, 0x0e, 0xaa, 0xda, 0x3d, 0xaa, 0xe4, 0x77, 0x7a, 0x76, 0x86, 0xc9, 0xff, 0x83, 0xdf, 0x13
+];
+let TLS13_CLIENT_APP_TRAFFIC1: [u8; 32] = [
+    0x9e, 0x40, 0x64, 0x6c, 0xe7, 0x9a, 0x7f, 0x9d, 0xc0, 0x5a, 0xf8, 0x88, 0x9b, 0xce, 0x65, 0x52,
+    0x87, 0x5a, 0xfa, 0x0b, 0x06, 0xdf, 0x00, 0x87, 0xf7, 0x92, 0xeb, 0xb7, 0xc1, 0x75, 0x04, 0xa5
+];
+let TLS13_SERVER_APP_TRAFFIC1: [u8; 32] = [
+    0xa1, 0x1a, 0xf9, 0xf0, 0x55, 0x31, 0xf8, 0x56, 0xad, 0x47, 0x11, 0x6b, 0x45, 0xa9, 0x50, 0x32,
+    0x82, 0x04, 0xb4, 0xf4, 0x4b, 0xfb, 0x6b, 0x3a, 0x4b, 0x4f, 0x1f, 0x3f, 0xcb, 0x63, 0x16, 0x43
+];
+let TLS13_CLIENT_FINISHED1: [u8; 32] = [
+    0xa8, 0xec, 0x43, 0x6d, 0x67, 0x76, 0x34, 0xae, 0x52, 0x5a, 0xc1, 0xfc, 0xeb, 0xe1, 0x1a, 0x03,
+    0x9e, 0xc1, 0x76, 0x94, 0xfa, 0xc6, 0xe9, 0x85, 0x27, 0xb6, 0x42, 0xf2, 0xed, 0xd5, 0xce, 0x61
+];
 
 let g_tls13_key_schedule_ok: bool = false;
 let g_tls13_client_hello_ok: bool = false;
@@ -94,6 +114,11 @@ let g_tls13_reassembly_type_test: u8 = 0;
 let g_tls13_reassembly_payload_test: [u8; 3] = [0; 3];
 let g_tls13_certificate_verify_ok: bool = false;
 let g_tls13_certificate_verify_hash_test: [u8; 32] = [0; 32];
+let g_tls13_application_keys_ok: bool = false;
+let g_tls13_master_secret_test: [u8; 32] = [0; 32];
+let g_tls13_client_app_test: [u8; 32] = [0; 32];
+let g_tls13_server_app_test: [u8; 32] = [0; 32];
+let g_tls13_client_finished_test: [u8; 32] = [0; 32];
 
 fn tls13_write_u16(output: u64, position: u32, value: u32) {
     *((output + (position as u64)) as *u8) = (value >> 8) as u8;
@@ -229,6 +254,21 @@ fn tls13_traffic_key(traffic_secret: u64, key: u64, key_length: u32, iv: u64) ->
     if key_length != 16 && key_length != 32 { return false; }
     return tls13_expand_label(traffic_secret, "key" as u64, 3, "" as u64, 0, key, key_length)
         && tls13_expand_label(traffic_secret, "iv" as u64, 2, "" as u64, 0, iv, 12);
+}
+
+fn tls13_master_secret(handshake_secret: u64, output: u64) -> bool {
+    let derived: [u8; 32] = [0; 32]; let zeros: [u8; 32] = [0; 32];
+    return tls13_expand_label(handshake_secret, "derived" as u64, 7,
+                              &TLS_SHA256_EMPTY as u64, 32, &derived as u64, 32)
+        && tls_hkdf_extract(&derived as u64, 32, &zeros as u64, 32, output);
+}
+
+fn tls13_application_traffic(master_secret: u64, transcript_hash: u64,
+                             client_traffic: u64, server_traffic: u64) -> bool {
+    return tls13_expand_label(master_secret, "c ap traffic" as u64, 12,
+                              transcript_hash, 32, client_traffic, 32)
+        && tls13_expand_label(master_secret, "s ap traffic" as u64, 12,
+                              transcript_hash, 32, server_traffic, 32);
 }
 
 fn tls13_record_nonce(write_iv: u64, sequence: u64, nonce: u64) {
@@ -440,4 +480,20 @@ fn tls13_self_test() {
         && tls_bytes_equal(&g_tls13_certificate_verify_hash_test as u64, &TLS13_CERT_VERIFY_HASH1 as u64, 32)
         && !tls13_parse_certificate_verify(&certificate_verify as u64, 136, 0x0804,
                                            &bad_offset as u64, &bad_length as u64);
+    let client_app_key: [u8; 16] = [0; 16]; let client_app_iv: [u8; 12] = [0; 12];
+    let server_app_key: [u8; 16] = [0; 16]; let server_app_iv: [u8; 12] = [0; 12];
+    let application_ok: bool = tls13_master_secret(
+        &TLS13_HANDSHAKE_SECRET1 as u64, &g_tls13_master_secret_test as u64)
+        && tls13_application_traffic(&g_tls13_master_secret_test as u64,
+            &TLS13_SERVER_FINISHED_TRANSCRIPT1 as u64,
+            &g_tls13_client_app_test as u64, &g_tls13_server_app_test as u64)
+        && tls13_traffic_key(&g_tls13_client_app_test as u64, &client_app_key as u64, 16, &client_app_iv as u64)
+        && tls13_traffic_key(&g_tls13_server_app_test as u64, &server_app_key as u64, 16, &server_app_iv as u64)
+        && tls13_finished_calculate(&TLS13_CLIENT_HS_TRAFFIC1 as u64,
+            &TLS13_SERVER_FINISHED_TRANSCRIPT1 as u64, &g_tls13_client_finished_test as u64);
+    g_tls13_application_keys_ok = application_ok
+        && tls_bytes_equal(&g_tls13_master_secret_test as u64, &TLS13_MASTER_SECRET1 as u64, 32)
+        && tls_bytes_equal(&g_tls13_client_app_test as u64, &TLS13_CLIENT_APP_TRAFFIC1 as u64, 32)
+        && tls_bytes_equal(&g_tls13_server_app_test as u64, &TLS13_SERVER_APP_TRAFFIC1 as u64, 32)
+        && tls_bytes_equal(&g_tls13_client_finished_test as u64, &TLS13_CLIENT_FINISHED1 as u64, 32);
 }

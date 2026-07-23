@@ -434,6 +434,11 @@ def smoke(disk_img=None):
     reassembly_payload_addr = _elf32_symbol(ELF, "m_g_tls13_reassembly_payload_test")
     certificate_verify_ok_addr = _elf32_symbol(ELF, "m_g_tls13_certificate_verify_ok")
     certificate_verify_hash_addr = _elf32_symbol(ELF, "m_g_tls13_certificate_verify_hash_test")
+    application_keys_ok_addr = _elf32_symbol(ELF, "m_g_tls13_application_keys_ok")
+    master_secret_addr = _elf32_symbol(ELF, "m_g_tls13_master_secret_test")
+    client_app_addr = _elf32_symbol(ELF, "m_g_tls13_client_app_test")
+    server_app_addr = _elf32_symbol(ELF, "m_g_tls13_server_app_test")
+    client_finished_addr = _elf32_symbol(ELF, "m_g_tls13_client_finished_test")
     input_bounds_ok_addr = _elf32_symbol(ELF, "m_g_input_bounds_ok")
     x509_der_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_der_ok")
     x509_message_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_certificate_message_ok")
@@ -533,6 +538,16 @@ def smoke(disk_img=None):
               (_guest_u32(handle, certificate_verify_ok_addr) & 0xff) != 0
               and _guest_bytes(handle, certificate_verify_hash_addr, 32) == bytes.fromhex(
                   "beed95af404e23dd553ebcfb4a00b8dbbf2244db2a9aa39a37925651267c141f"), handle)
+        check("Mort derives RFC 8448 application secrets and client Finished",
+              (_guest_u32(handle, application_keys_ok_addr) & 0xff) != 0
+              and _guest_bytes(handle, master_secret_addr, 32) == bytes.fromhex(
+                  "18df06843d13a08bf2a449844c5f8a478001bc4d4c627984d5a41da8d0402919")
+              and _guest_bytes(handle, client_app_addr, 32) == bytes.fromhex(
+                  "9e40646ce79a7f9dc05af8889bce6552875afa0b06df0087f792ebb7c17504a5")
+              and _guest_bytes(handle, server_app_addr, 32) == bytes.fromhex(
+                  "a11af9f05531f856ad47116b45a950328204b4f44bfb6b3a4b4f1f3fcb631643")
+              and _guest_bytes(handle, client_finished_addr, 32) == bytes.fromhex(
+                  "a8ec436d677634ae525ac1fcebe11a039ec17694fac6e98527b642f2edd5ce61"), handle)
         check("Network, persisted-state, and USB parser bounds checks reject hostile lengths",
               (_guest_u32(handle, input_bounds_ok_addr) & 0xff) != 0, handle)
         check("Mort parses canonical DER and bounded TLS Certificate lists",

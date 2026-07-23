@@ -140,6 +140,11 @@ The TLS CertificateVerify parser enforces the negotiated
 TLS 1.3 server verification input (`64 * 0x20`, context string, separator, and
 transcript hash), reproduces RFC 8448's message digest, and validates its actual
 CertificateVerify signature end to end.
+After the authenticated server Finished message, Mort derives the master secret,
+client/server application traffic secrets, directional write material, and the
+client Finished value. The master, both application secrets, and client Finished
+are checked byte-for-byte against RFC 8448 before application records are
+eligible to be sent.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
