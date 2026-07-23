@@ -145,6 +145,10 @@ client/server application traffic secrets, directional write material, and the
 client Finished value. The master, both application secrets, and client Finished
 are checked byte-for-byte against RFC 8448 before application records are
 eligible to be sent.
+The outbound record path builds the sequence-number nonce, authenticated header,
+TLSInnerPlaintext content type, optional zero padding, ciphertext, and tag in a
+capacity-checked buffer. Its boot test round-trips a padded handshake record and
+also proves an undersized destination is rejected without an out-of-bounds write.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

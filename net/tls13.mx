@@ -119,6 +119,8 @@ let g_tls13_master_secret_test: [u8; 32] = [0; 32];
 let g_tls13_client_app_test: [u8; 32] = [0; 32];
 let g_tls13_server_app_test: [u8; 32] = [0; 32];
 let g_tls13_client_finished_test: [u8; 32] = [0; 32];
+let g_tls13_record_encrypt_scratch: [u8; 16624] = [0; 16624];
+let g_tls13_encrypt_record_ok: bool = false;
 
 fn tls13_write_u16(output: u64, position: u32, value: u32) {
     *((output + (position as u64)) as *u8) = (value >> 8) as u8;
@@ -303,6 +305,29 @@ fn tls13_decrypt_record(key: u64, write_iv: u64, sequence: u64,
     *((content_type) as *u8) = kind;
     for i: u32 in (end - 1)..ciphertext_length { *((plaintext + (i as u64)) as *u8) = 0; }
     return end - 1;
+}
+
+fn tls13_encrypt_record(key: u64, write_iv: u64, sequence: u64,
+                        content: u64, content_length: u32, content_type: u8,
+                        padding_length: u32, record: u64, record_capacity: u32) -> u32 {
+    if content_length > 16384 || padding_length > 255
+        || content_length > 16623 - padding_length { return 0; }
+    let inner_length: u32 = content_length + 1 + padding_length;
+    let encrypted_length: u32 = inner_length + 16; let record_length: u32 = encrypted_length + 5;
+    if record_length > record_capacity { return 0; }
+    for i: u32 in 0..content_length {
+        g_tls13_record_encrypt_scratch[i] = *((content + (i as u64)) as *u8);
+    }
+    g_tls13_record_encrypt_scratch[content_length] = content_type;
+    for i: u32 in 0..padding_length { g_tls13_record_encrypt_scratch[content_length + 1 + i] = 0; }
+    *((record + 0) as *u8) = 23; *((record + 1) as *u8) = 3; *((record + 2) as *u8) = 3;
+    tls13_write_u16(record, 3, encrypted_length);
+    let nonce: [u8; 12] = [0; 12]; let tag: [u8; 16] = [0; 16];
+    tls13_record_nonce(write_iv, sequence, &nonce as u64);
+    if !tls_chacha20_poly1305_encrypt(key, &nonce as u64, record, 5,
+        &g_tls13_record_encrypt_scratch as u64, inner_length, record + 5, &tag as u64) { return 0; }
+    for i: u32 in 0..16 { *((record + ((5 + inner_length + i) as u64)) as *u8) = tag[i]; }
+    return record_length;
 }
 
 fn tls13_finished_calculate(handshake_traffic_secret: u64, transcript_hash: u64,
@@ -496,4 +521,17 @@ fn tls13_self_test() {
         && tls_bytes_equal(&g_tls13_client_app_test as u64, &TLS13_CLIENT_APP_TRAFFIC1 as u64, 32)
         && tls_bytes_equal(&g_tls13_server_app_test as u64, &TLS13_SERVER_APP_TRAFFIC1 as u64, 32)
         && tls_bytes_equal(&g_tls13_client_finished_test as u64, &TLS13_CLIENT_FINISHED1 as u64, 32);
+    let encrypted_record: [u8; 64] = [0; 64]; let decrypted_record: [u8; 32] = [0; 32];
+    let encrypted_record_length: u32 = tls13_encrypt_record(
+        &TLS_AEAD_KEY1 as u64, &TLS_AEAD_NONCE1 as u64, 7,
+        "finished" as u64, 8, 22, 3, &encrypted_record as u64, 64);
+    let decrypted_type: u8 = 0;
+    let decrypted_length: u32 = tls13_decrypt_record(
+        &TLS_AEAD_KEY1 as u64, &TLS_AEAD_NONCE1 as u64, 7,
+        &encrypted_record as u64, encrypted_record_length,
+        &decrypted_record as u64, 32, &decrypted_type as u64);
+    g_tls13_encrypt_record_ok = encrypted_record_length == 33 && decrypted_length == 8
+        && decrypted_type == 22 && tls_bytes_equal(&decrypted_record as u64, "finished" as u64, 8)
+        && tls13_encrypt_record(&TLS_AEAD_KEY1 as u64, &TLS_AEAD_NONCE1 as u64, 7,
+                                "finished" as u64, 8, 22, 3, &encrypted_record as u64, 32) == 0;
 }

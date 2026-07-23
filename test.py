@@ -439,6 +439,7 @@ def smoke(disk_img=None):
     client_app_addr = _elf32_symbol(ELF, "m_g_tls13_client_app_test")
     server_app_addr = _elf32_symbol(ELF, "m_g_tls13_server_app_test")
     client_finished_addr = _elf32_symbol(ELF, "m_g_tls13_client_finished_test")
+    encrypt_record_ok_addr = _elf32_symbol(ELF, "m_g_tls13_encrypt_record_ok")
     input_bounds_ok_addr = _elf32_symbol(ELF, "m_g_input_bounds_ok")
     x509_der_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_der_ok")
     x509_message_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_certificate_message_ok")
@@ -548,6 +549,8 @@ def smoke(disk_img=None):
                   "a11af9f05531f856ad47116b45a950328204b4f44bfb6b3a4b4f1f3fcb631643")
               and _guest_bytes(handle, client_finished_addr, 32) == bytes.fromhex(
                   "a8ec436d677634ae525ac1fcebe11a039ec17694fac6e98527b642f2edd5ce61"), handle)
+        check("Mort encrypts padded TLS 1.3 records with bounded output",
+              (_guest_u32(handle, encrypt_record_ok_addr) & 0xff) != 0, handle)
         check("Network, persisted-state, and USB parser bounds checks reject hostile lengths",
               (_guest_u32(handle, input_bounds_ok_addr) & 0xff) != 0, handle)
         check("Mort parses canonical DER and bounded TLS Certificate lists",
