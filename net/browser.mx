@@ -21,6 +21,9 @@ let BROWSER_DOWNLOAD_RECORD_SIZE: u32 = 40;
 let BROWSER_SESSION_MAGIC: u32 = 0x31535356; // "VSS1"
 let BROWSER_SESSION_MAX: u32 = 4;
 let BROWSER_SESSION_RECORD_SIZE: u32 = 448;
+let BROWSER_SITE_MAGIC: u32 = 0x31505356; // "VSP1"
+let BROWSER_SITE_MAX: u32 = 8;
+let BROWSER_SITE_RECORD_SIZE: u32 = 72;
 let BROWSER_ROOT_LEGACY_MAGIC: u32 = 0x31525856; // "VXR1" hash-only records
 let BROWSER_ROOT_V2_MAGIC: u32 = 0x32525856;     // "VXR2" eight DER anchors
 let BROWSER_ROOT_MAGIC: u32 = 0x33525856;        // "VXR3" fifteen DER anchors
@@ -46,6 +49,10 @@ let g_browser_download_index: [u8; 512] = [0; 512];
 let g_browser_download_count: u32 = 0;
 let g_browser_sessions: [u8; 2048] = [0; 2048];
 let g_browser_session_count: u32 = 0;
+let g_browser_site_prefs: [u8; 1024] = [0; 1024];
+let g_browser_site_pref_count: u32 = 0;
+let g_browser_reader: bool = false;
+let g_browser_site_links_allowed: bool = true;
 let g_browser_input_len: u32 = 0;
 let g_browser_find_len: u32 = 0;
 let g_browser_mode: u32 = 0;       // 0 page, 1 address, 2 find
@@ -173,7 +180,7 @@ fn browser_links_reset() {
 }
 
 fn browser_link_add(text: u64, length: u32) {
-    if g_browser_link_count >= 6 || length == 0 { return; }
+    if !g_browser_site_links_allowed || g_browser_link_count >= 6 || length == 0 { return; }
     let slot: u64 = browser_link_slot(g_browser_link_count); browser_zero(slot, 80);
     let take: u32 = length; if take > 78 { take = 78; }
     for i: u32 in 0..take { *((slot + (i as u64)) as *u8) = *((text + (i as u64)) as *u8); }
@@ -819,6 +826,141 @@ fn browser_session_delete_named(name: u64) {
     browser_draw();
 }
 
+fn browser_site_record(index: u32) -> u64 {
+    return &g_browser_site_prefs as u64
+        + 16 + ((index * BROWSER_SITE_RECORD_SIZE) as u64);
+}
+
+fn browser_sites_reset() {
+    browser_zero(&g_browser_site_prefs as u64, 1024);
+    *(&g_browser_site_prefs as *u32) = BROWSER_SITE_MAGIC;
+    g_browser_site_pref_count = 0;
+}
+
+fn browser_sites_save() -> bool {
+    if !g_fs_ok || g_cwd > 255 { return false; }
+    let idx: u32 = fs_find_in(".vex-sites", g_cwd);
+    if idx == 64 { idx = fs_create_full(".vex-sites", g_cwd, 0); }
+    if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) { return false; }
+    let base: u32 = fs_entry_addr(idx); let start: u32 = *((base + 32) as *u32);
+    if start == 0 { return false; }
+    *((&g_browser_site_prefs as u64 + 4) as *u8) = g_browser_site_pref_count as u8;
+    if !ata_write(start, &g_browser_site_prefs as *u8)
+        || !ata_write(start + 1, (&g_browser_site_prefs as u64 + 512) as *u8) {
+        return false;
+    }
+    *((base + 28) as *u32) = 1024; *((base + 48) as *u32) = fs_now();
+    return fs_sync();
+}
+
+fn browser_sites_load() {
+    browser_sites_reset();
+    if !g_fs_ok || g_cwd > 255 { return; }
+    let idx: u32 = fs_find_in(".vex-sites", g_cwd);
+    if idx == 64 { browser_sites_save(); return; }
+    let base: u32 = fs_entry_addr(idx);
+    if fs_type(idx) != 0 || *((base + 28) as *u32) < 1024 { return; }
+    let start: u32 = *((base + 32) as *u32);
+    if !ata_read(start, &g_browser_site_prefs as *u8)
+        || !ata_read(start + 1, (&g_browser_site_prefs as u64 + 512) as *u8) {
+        browser_sites_reset(); return;
+    }
+    if *(&g_browser_site_prefs as *u32) != BROWSER_SITE_MAGIC {
+        browser_sites_reset(); return;
+    }
+    let count: u32 = *((&g_browser_site_prefs as u64 + 4) as *u8) as u32;
+    if count > BROWSER_SITE_MAX { browser_sites_reset(); return; }
+    for index: u32 in 0..count {
+        let record: u64 = browser_site_record(index);
+        *((record + 63) as *u8) = 0;
+        let secure: u8 = *((record + 66) as *u8);
+        let flags: u8 = *((record + 67) as *u8);
+        if *(record as *u8) == 0 || *((record + 64) as *u16) == 0
+            || secure > 1 || flags > 3 {
+            browser_sites_reset(); return;
+        }
+    }
+    g_browser_site_pref_count = count;
+}
+
+fn browser_site_find_current() -> u32 {
+    let secure_value: u8 = 0; if g_browser_net_secure { secure_value = 1; }
+    for index: u32 in 0..g_browser_site_pref_count {
+        let record: u64 = browser_site_record(index);
+        if browser_streq(record, &g_browser_net_host as u64)
+            && *((record + 64) as *u16) == g_browser_net_port as u16
+            && *((record + 66) as *u8) == secure_value {
+            return index;
+        }
+    }
+    return BROWSER_SITE_MAX;
+}
+
+fn browser_site_apply() {
+    g_browser_reader = false; g_browser_site_links_allowed = true;
+    let index: u32 = browser_site_find_current();
+    if index == BROWSER_SITE_MAX { return; }
+    let flags: u8 = *((browser_site_record(index) + 67) as *u8);
+    g_browser_reader = (flags & 1) != 0;
+    g_browser_site_links_allowed = (flags & 2) != 0;
+}
+
+fn browser_site_store_current() -> bool {
+    if g_browser_private || g_browser_net_host[0] == 0 || g_browser_net_port == 0 {
+        return false;
+    }
+    let target: u32 = browser_site_find_current();
+    if target == BROWSER_SITE_MAX {
+        if g_browser_site_pref_count >= BROWSER_SITE_MAX { return false; }
+        target = g_browser_site_pref_count;
+        g_browser_site_pref_count = g_browser_site_pref_count + 1;
+    }
+    let record: u64 = browser_site_record(target);
+    browser_zero(record, BROWSER_SITE_RECORD_SIZE);
+    browser_copy(record, &g_browser_net_host as u64, 64);
+    *((record + 64) as *u16) = g_browser_net_port as u16;
+    let secure_value: u8 = 0; if g_browser_net_secure { secure_value = 1; }
+    *((record + 66) as *u8) = secure_value;
+    let flags: u8 = 0;
+    if g_browser_reader { flags = flags | 1; }
+    if g_browser_site_links_allowed { flags = flags | 2; }
+    *((record + 67) as *u8) = flags;
+    return browser_sites_save();
+}
+
+fn browser_reader_toggle() {
+    if !g_browser_remote || g_browser_binary_ready {
+        browser_set_status("Reading mode needs a loaded text page"); browser_draw(); return;
+    }
+    g_browser_reader = !g_browser_reader;
+    if g_browser_private {
+        browser_set_status("Private reading mode changed for this page only");
+    } else if browser_site_store_current() {
+        if g_browser_reader { browser_set_status("Reading mode saved for this site"); }
+        else { browser_set_status("Standard layout saved for this site"); }
+    } else { browser_set_status("Could not save this site's reading preference"); }
+    browser_draw();
+}
+
+fn browser_site_links_toggle() {
+    if !g_browser_remote || g_browser_binary_ready {
+        browser_set_status("Site controls need a loaded text page"); browser_draw(); return;
+    }
+    if g_browser_private {
+        browser_set_status("Leave private mode before changing site controls"); browser_draw(); return;
+    }
+    g_browser_site_links_allowed = !g_browser_site_links_allowed;
+    if !g_browser_site_links_allowed { browser_links_reset(); }
+    if !browser_site_store_current() {
+        browser_set_status("Could not save site content controls");
+    } else if g_browser_site_links_allowed {
+        browser_set_status("Page links allowed; reload to rebuild link list");
+    } else {
+        browser_set_status("Extracted page links blocked for this site");
+    }
+    browser_draw();
+}
+
 fn browser_history_state_valid(count: u32, index: u32, bookmarks: u32) -> bool {
     if count > BROWSER_HISTORY_MAX || bookmarks > BROWSER_BOOKMARK_MAX { return false; }
     if count == 0 { return index == 0; }
@@ -915,6 +1057,7 @@ fn browser_local_page(url: u64) -> u32 {
 fn browser_load(url: u64, add_history: bool) {
     browser_set_url(url); g_browser_scroll = 0; g_browser_remote = false;
     g_browser_secure_page = false; g_browser_content_len = 0;
+    g_browser_reader = false; g_browser_site_links_allowed = true;
     g_browser_binary_ready = false; g_browser_binary_len = 0;
     browser_zero(&g_browser_binary_name as u64, 24);
     if browser_prefix(url, "vex://" as u64) {
@@ -1000,7 +1143,11 @@ fn browser_forward() {
     } else { browser_set_status("No later page"); browser_draw(); }
 }
 
-fn browser_reload() { browser_load(&g_browser_url as u64, false); }
+fn browser_reload() {
+    let current: [u8; 80] = [0; 80];
+    browser_copy(&current as u64, &g_browser_url as u64, 80);
+    browser_load(&current as u64, false);
+}
 
 fn browser_workspace_name(index: u32) -> *u8 {
     if index == 0 { return "Personal"; }
@@ -1346,16 +1493,16 @@ fn browser_draw_settings_page() {
     draw_text_abs("History", 208, 342, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local only / 6 entries", 400, 342, 0xffffff, 0x0b0f14);
     draw_text_abs("Bookmarks", 208, 374, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local only / 4 entries", 400, 374, 0xffffff, 0x0b0f14);
     draw_text_abs("Address suggestions", 208, 406, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local history + bookmarks", 400, 406, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("Session recovery", 208, 438, 0x8fa1aa, 0x0b0f14); draw_text_abs("Manual / normal mode only", 400, 438, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("HTTPS trust pin", 208, 470, 0x8fa1aa, 0x0b0f14);
-    if browser_pin_valid() { draw_text_abs(browser_pin_host() as *u8, 400, 470, 0x4fd1c5, 0x0b0f14); }
-    else { draw_text_abs("None saved", 400, 470, 0xffffff, 0x0b0f14); }
-    draw_text_abs("Imported CA roots", 208, 498, 0x8fa1aa, 0x0b0f14);
-    num_to_str(browser_root_count(), g_numbuf); draw_text_abs(g_numbuf, 400, 498, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("State", 208, 522, 0x8fa1aa, 0x0b0f14);
-    if g_browser_state_saved { draw_text_abs("Saved to MortFS", 400, 522, 0xffffff, 0x0b0f14); }
-    else { draw_text_abs("Session only", 400, 522, 0xffffff, 0x0b0f14); }
-    draw_text_abs("I:root  A:bundle  U:clear roots  V:clear pin  C:history", 208, 546, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("Active content", 208, 438, 0x8fa1aa, 0x0b0f14);
+    draw_text_abs("Scripts / cookies / storage blocked", 400, 438, 0x55d6a0, 0x0b0f14);
+    draw_text_abs("Saved site controls", 208, 470, 0x8fa1aa, 0x0b0f14);
+    num_to_str(g_browser_site_pref_count, g_numbuf); draw_text_abs(g_numbuf, 400, 470, 0xd4a574, 0x0b0f14);
+    draw_text_abs("HTTPS trust pin", 208, 498, 0x8fa1aa, 0x0b0f14);
+    if browser_pin_valid() { draw_text_abs(browser_pin_host() as *u8, 400, 498, 0x4fd1c5, 0x0b0f14); }
+    else { draw_text_abs("None saved", 400, 498, 0xffffff, 0x0b0f14); }
+    draw_text_abs("Imported CA roots", 208, 522, 0x8fa1aa, 0x0b0f14);
+    num_to_str(browser_root_count(), g_numbuf); draw_text_abs(g_numbuf, 400, 522, 0x4fd1c5, 0x0b0f14);
+    draw_text_abs("I:root A:bundle U:clear roots V:clear pin C:history", 208, 554, 0x7a8b93, 0x0b0f14);
 }
 
 fn browser_draw_links() {
@@ -1403,13 +1550,24 @@ fn browser_draw_error() {
 }
 
 fn browser_draw_remote_text() {
+    let text_x: u32 = 204; let text_y: u32 = 266;
+    let line_height: u32 = 22; let max_lines: u32 = 13;
+    if g_browser_reader {
+        fill_round_rect(224, 256, 664, 336, 12, 0x14110e);
+        draw_text_abs("READING MODE", 244, 268, 0xd4a574, 0x14110e);
+        draw_text_abs("M: standard layout", 704, 268, 0x887765, 0x14110e);
+        text_x = 244; text_y = 300; line_height = 26; max_lines = 11;
+    }
     let line: u32 = 0; let pos: u32 = 0; let shown: u32 = 0;
-    while pos < g_browser_content_len && shown < 13 {
+    while pos < g_browser_content_len && shown < max_lines {
         let start: u32 = pos;
         while pos < g_browser_content_len && g_browser_content[pos] != 10 { pos = pos + 1; }
         if line >= g_browser_scroll {
             let saved: u8 = g_browser_content[pos]; g_browser_content[pos] = 0;
-            draw_text_abs((&g_browser_content as u64 + (start as u64)) as *u8, 204, 266 + shown * 22, 0xc8d0d4, 0x0b0f14);
+            let background: u32 = 0x0b0f14; if g_browser_reader { background = 0x14110e; }
+            draw_text_abs(
+                (&g_browser_content as u64 + (start as u64)) as *u8,
+                text_x, text_y + shown * line_height, 0xd8d0c4, background);
             g_browser_content[pos] = saved; shown = shown + 1;
         }
         if pos < g_browser_content_len { pos = pos + 1; }
@@ -1448,7 +1606,7 @@ fn browser_draw_command() {
     draw_text_abs("home              new tab", 322, 306, 0xe7daca, 0x17130f);
     draw_text_abs("bookmarks         history", 322, 334, 0xe7daca, 0x17130f);
     draw_text_abs("downloads         sessions", 322, 362, 0xe7daca, 0x17130f);
-    draw_text_abs("settings          workspace work", 322, 390, 0xe7daca, 0x17130f);
+    draw_text_abs("reader            site links", 322, 390, 0xe7daca, 0x17130f);
     draw_text_abs("session save NAME / open NAME", 322, 418, 0xe7daca, 0x17130f);
     draw_text_abs("Enter runs   Esc closes", 322, 462, 0x887765, 0x17130f);
 }
@@ -1456,7 +1614,8 @@ fn browser_draw_command() {
 fn browser_draw() {
     if !g_gfx { return; }
     if g_browser_loaded_dir != g_cwd {
-        browser_state_load(); browser_roots_load(); browser_downloads_load(); browser_sessions_load();
+        browser_state_load(); browser_roots_load(); browser_downloads_load();
+        browser_sessions_load(); browser_sites_load();
     }
     if g_browser_tab_count == 0 {
         g_browser_tab_count = 1; g_browser_active_tab = 0;
@@ -1492,7 +1651,7 @@ fn browser_draw() {
             draw_text_abs(&g_browser_find as *u8, 252, 624, 0xffffff, 0x17130f);
         }
     } else { draw_text_abs(&g_browser_status as *u8, 204, 624, 0xa89882, 0x17130f); }
-    draw_text_abs("Ctrl+K:command /:address B:mark F:find D:save T:new Tab:tab W:workspace", 196, 648, 0x685b4d, 0x0b0f14);
+    draw_text_abs("Ctrl+K:command /:address M:reader L:links D:save T:new Tab:tab W:space", 196, 648, 0x685b4d, 0x0b0f14);
 }
 
 fn browser_begin_address() {
@@ -1528,6 +1687,8 @@ fn browser_command_execute() {
     if browser_streq(cmd, "network" as u64) { browser_load("vex://network" as u64, true); return; }
     if browser_streq(cmd, "new tab" as u64) { browser_new_tab(); return; }
     if browser_streq(cmd, "private" as u64) { browser_toggle_private(); return; }
+    if browser_streq(cmd, "reader" as u64) { browser_reader_toggle(); return; }
+    if browser_streq(cmd, "site links" as u64) { browser_site_links_toggle(); return; }
     if browser_streq(cmd, "workspace personal" as u64) { browser_workspace_activate(0); return; }
     if browser_streq(cmd, "workspace work" as u64) { browser_workspace_activate(1); return; }
     if browser_streq(cmd, "workspace school" as u64) { browser_workspace_activate(2); return; }
@@ -1844,12 +2005,18 @@ fn browser_on_key(sc: u8) {
     if sc == 48 { browser_bookmark_add(); return; } // B
     if sc == 33 { g_browser_mode = 2; g_browser_find_len = 0; browser_zero(&g_browser_find as u64, 32); browser_draw(); return; } // F
     if sc == 32 { browser_save_page(); return; } // D
-    if sc == 38 { g_browser_links_open = true; g_browser_link_sel = 0; browser_draw(); return; } // L
+    if sc == 38 {
+        if !g_browser_site_links_allowed {
+            browser_set_status("Extracted links are blocked for this site"); browser_draw(); return;
+        }
+        g_browser_links_open = true; g_browser_link_sel = 0; browser_draw(); return;
+    } // L
     if sc == 20 { browser_new_tab(); return; } // T
     if sc == 45 { browser_close_tab(); return; } // X
     if sc == 15 { browser_switch_tab(); return; } // Tab
     if sc == 17 { browser_workspace_cycle(); return; } // W
     if sc == 25 { browser_toggle_private(); return; } // P
+    if sc == 50 { browser_reader_toggle(); return; } // M
     if sc == 31 { browser_load("vex://sessions" as u64, true); return; } // S
     if sc == 49 { browser_load("vex://network" as u64, true); return; } // N
     if sc == 37 { browser_pin_approve(); return; } // K

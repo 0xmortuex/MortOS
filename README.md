@@ -19,9 +19,9 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 `F3` opens the native **Vex browser**, which uses that same stack as an HTTP
 client. It has isolated workspaces, named tab sessions, searchable persistent
 history and bookmarks, a command bar, local address suggestions, private mode,
-find, link navigation, redirects, chunked-transfer decoding, a persistent
-byte-exact download manager, and authenticated TLS 1.3 with host pins or
-validated imported CA roots. See
+reading mode, per-origin link controls, find, link navigation, redirects,
+chunked-transfer decoding, a persistent byte-exact download manager, and
+authenticated TLS 1.3 with host pins or validated imported CA roots. See
 [the browser guide](docs/browser.md) for its
 controls, architecture, tests, and honest engine limits.
 

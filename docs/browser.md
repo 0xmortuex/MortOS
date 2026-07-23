@@ -33,6 +33,10 @@ upstream/native boundary.
 - Four named workspace snapshots persisted in `.vex-sessions`. Each restores
   up to four tab URLs, titles, and the active tab through `session save NAME`,
   `session open NAME`, and `session delete NAME` in the command bar.
+- A distraction-reduced reading layout toggled with `M`, plus eight per-origin
+  profiles in `.vex-sites` that remember reading mode and whether extracted
+  links are exposed. Private mode may use reading mode transiently but never
+  writes or changes site profiles.
 - Private mode, which prevents new visits from entering persistent history.
 - Content-Type-aware rendering for HTML and literal plain-text responses.
   Script/style bodies are never executed or displayed. Other response types
@@ -72,6 +76,7 @@ upstream/native boundary.
 | `9` | Restore the last normal HTTP page from Home |
 | `B` | Bookmark the current page |
 | `F` | Find page text, or search entries on the History page |
+| `M` | Toggle the reading layout for the current text page |
 | `L` | Open the extracted-links panel |
 | `D` | Save the rendered document to MortFS |
 | `T` / `X` | New tab / close tab |
@@ -116,13 +121,17 @@ JavaScript, accept cookies, load images or media, apply CSS layout, submit
 forms, or provide a general-purpose DOM. Plain HTTP remains unencrypted and
 must not be used for passwords or other sensitive data.
 
+The per-origin controls are limited to capabilities the native renderer truly
+owns: reading layout and extracted-link exposure. They are not cosmetic
+JavaScript/cookie toggles; those active-content systems do not exist at all.
+
 Non-text HTTP and authenticated HTTPS bodies are kept out of the renderer and
 copied into a separate zero-padded 12 KiB staging buffer. The proposed filename
 comes only from the final URL path segment and is restricted to ASCII letters,
 digits, dot, dash, and underscore; empty or special `.`/`..` names fall back to
 `vex-download.bin`. Pressing `D` writes the exact bounded payload to a normal
 MortFS file after capacity and permission checks. The Downloads page reports
-the saved name and byte count for the current session.
+the eight newest saved names, byte counts, types, and transports across reboots.
 
 The TLS foundation is being built as independently testable Mort primitives.
 SHA-256, HMAC-SHA256, HKDF-SHA256, X25519, ChaCha20, Poly1305, and their

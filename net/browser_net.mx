@@ -500,6 +500,7 @@ fn browser_network_open(url: u64, secure: bool) -> bool {
     if !browser_parse_url(url) || g_browser_net_secure != secure {
         browser_set_status("Address scheme does not match transport"); return false;
     }
+    browser_site_apply();
     if !g_net_up {
         browser_set_status("Requesting a DHCP lease"); browser_draw();
         g_net_quiet = true; let up: bool = net_dhcp(); g_net_quiet = false;

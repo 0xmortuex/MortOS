@@ -803,6 +803,10 @@ def browser_ui():
     download_count_addr = _elf32_symbol(ELF, "m_g_browser_download_count")
     sessions_addr = _elf32_symbol(ELF, "m_g_browser_sessions")
     session_count_addr = _elf32_symbol(ELF, "m_g_browser_session_count")
+    site_prefs_addr = _elf32_symbol(ELF, "m_g_browser_site_prefs")
+    site_pref_count_addr = _elf32_symbol(ELF, "m_g_browser_site_pref_count")
+    reader_addr = _elf32_symbol(ELF, "m_g_browser_reader")
+    site_links_addr = _elf32_symbol(ELF, "m_g_browser_site_links_allowed")
     list_sel_addr = _elf32_symbol(ELF, "m_g_browser_list_sel")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
@@ -1192,6 +1196,39 @@ def browser_ui():
                   "hidden-script" not in text_content and "hidden-style" not in text_content)
             links = _wait_guest_u32(handle, links_addr, lambda value: value >= 1)
             check("HTTP anchor is extracted as a navigable link", links >= 1)
+            send_key(handle, "m")
+            reader = _wait_guest_u32(
+                handle, reader_addr, lambda value: (value & 0xff) != 0)
+            site_profiles = _wait_guest_u32(
+                handle, site_pref_count_addr, lambda value: value == 1)
+            check("Reading mode uses and persists the current origin profile",
+                  ((reader & 0xff) != 0 and site_profiles == 1
+                   and _guest_bytes(handle, site_prefs_addr + 83, 1)[0] == 3))
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "site links":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            blocked_links = _wait_guest_u32(
+                handle, site_links_addr, lambda value: (value & 0xff) == 0)
+            check("Per-site content controls can block extracted page links",
+                  ((blocked_links & 0xff) == 0
+                   and _guest_u32(handle, links_addr) == 0
+                   and _guest_bytes(handle, site_prefs_addr + 83, 1)[0] == 1))
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "site links":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            _wait_guest_u32(
+                handle, site_links_addr, lambda value: (value & 0xff) != 0)
+            send_key(handle, "4")
+            restored_links = _wait_guest_u32(
+                handle, links_addr, lambda value: value >= 1, timeout_s=25)
+            check("Reload reapplies saved reading and link controls for the origin",
+                  (restored_links >= 1
+                   and (_guest_u32(handle, reader_addr) & 0xff) != 0
+                   and _guest_bytes(handle, site_prefs_addr + 83, 1)[0] == 3))
 
             remembered = ""
             deadline = time.monotonic() + 5
@@ -1669,6 +1706,8 @@ def browser_ui():
             handle, download_count_addr, lambda value: value == 3, timeout_s=10)
         restored_sessions = _wait_guest_u32(
             handle, session_count_addr, lambda value: value == 1, timeout_s=10)
+        restored_site_profiles = _wait_guest_u32(
+            handle, site_pref_count_addr, lambda value: value == 1, timeout_s=10)
         state = _guest_bytes(handle, state_addr, 9)
         check("Browser bookmarks and imported CA roots survive a full reboot",
               state[6] >= 1 and state[7] == 0
@@ -1687,6 +1726,12 @@ def browser_ui():
                and _guest_bytes(
                    handle, sessions_addr + 16, 24).split(b"\0", 1)[0]
                == b"focus"))
+        check("Per-origin reading and content controls survive a full reboot",
+              (restored_site_profiles == 1
+               and _guest_bytes(
+                   handle, site_prefs_addr + 16, 64).split(b"\0", 1)[0]
+               == b"10.0.2.2"
+               and _guest_bytes(handle, site_prefs_addr + 83, 1)[0] == 3))
         send_key(handle, "8")
         send_key(handle, "a")
         rejected_bundle_status = ""

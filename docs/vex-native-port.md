@@ -22,6 +22,7 @@ a native Mort subsystem:
 | Downloads manager | Eight persistent exact-byte MortFS records with type and transport metadata |
 | Network and TLS | `mortnet`, RTL8139, DNS, TCP, and the Mort TLS 1.3 client |
 | Web content | Fail-closed HTML-to-text engine; scripts and styles never execute |
+| Reading and site controls | Persistent per-origin reading layout and extracted-link policy |
 | Settings and trust | Native Vex pages backed by MortFS CA roots and host pins |
 
 This makes it a real platform port: it follows Vex's identity, information
@@ -34,8 +35,7 @@ or Chromium engine is embedded.
 1. Shared identity, vertical tabs, library navigation, and command/address UI.
 2. Isolated workspaces and persisted workspace selection.
 3. Multi-item download manager, named sessions, and searchable history.
-4. Reading mode, per-site preferences, and content controls supported by the
-   native renderer.
+4. Reading mode, per-site preferences, and native-renderer content controls.
 5. Further web compatibility only after memory isolation, process support, and
    a substantially richer rendering engine exist.
 
