@@ -1,10 +1,10 @@
 # MORT OS
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
-![arch](https://img.shields.io/badge/arch-x86%20(32--bit)-lightgrey)
+![arch](https://img.shields.io/badge/arch-x86%20%2B%20x86--64-lightgrey)
 ![lang](https://img.shields.io/badge/kernel%20written%20in-Mort-8b5cf6)
 
-**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and paints a **graphical MortuexOS desktop with multiple apps** — a Terminal, a Files manager, and the native port of the canonical Vex browser, switched with `F1`/`F2`/`F3` or the floating dock, all drawn to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — it **runs real, interactive compiled programs** (a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls), and it **speaks TCP/IP**: the [mortnet](https://github.com/0xmortuex/mortnet) stack is vendored into the kernel, so MORT OS gets its own IP over DHCP and **runs a web server**. Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the RTL8139 network driver, the shell — is written in Mort.
+**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** The current graphical desktop boots on QEMU and real hardware in 32-bit protected mode. A parallel, boot-tested x86-64 kernel now provides the migration foundation for running the **actual canonical Vex application** through a MortOS Chromium/Electron platform port. The framebuffer browser is a compatibility prototype, not the canonical Vex executable. MortOS also has a persistent filesystem, interactive compiled Mort programs, and its own TCP/IP stack.
 
 ## Session &amp; power
 
@@ -43,7 +43,8 @@ controls, architecture, tests, and honest engine limits.
 
 ## What it does
 
-- **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager** with the MortuexOS iris identity, rounded floating windows, a searchable home surface, and a persistent app dock. `F1`/`F2`/`F3` still switch between **Terminal**, **Files**, and the native **Vex port** (real HTTP over Mort networking, canonical vertical tabs, history, bookmarks, safe text rendering, TLS, and downloads). Falls back to VGA text mode when no framebuffer is present.
+- **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager** with the MortuexOS iris identity, rounded floating windows, a searchable home surface, and a persistent app dock. `F1`/`F2`/`F3` switch between **Terminal**, **Files**, and the legacy framebuffer web prototype. Falls back to VGA text mode when no framebuffer is present.
+- **A real x86-64 migration kernel** — `python build.py check64` builds a genuine ELF64 Mort kernel payload plus the required Multiboot trampoline; `python test_x86_64.py` boots it and proves execution reached Mort code in long mode. This is the base for isolated userspace and the canonical Vex Chromium/Electron port.
 - **A real Settings control center** — `F4` opens searchable system settings for personalization, display, clock, storage, Ethernet, apps, privacy, power, detected hardware, accessibility, diagnostics, and maintenance. Preferences persist per user in MortFS. See [the Settings guide](docs/settings.md).
 
 ![MORT OS Files app](docs/app-files.png)

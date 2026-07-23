@@ -1,0 +1,190 @@
+// MORT OS x86-64 kernel entry.
+//
+// This is the first compatibility-preserving step toward the native Vex
+// platform. The assembly stub only changes CPU mode; kernel policy and runtime
+// code begin here in Mort.
+
+// The bootstrap identity-maps the first GiB. Track that region in 4 KiB
+// frames; later paging stages can extend this without changing the allocator
+// contract. One bit per frame = 32 KiB for 262,144 frames.
+let g_frame_bitmap64: [u8; 32768] = [0xFF; 32768];
+let g_frame_limit64: u32 = 0;
+let g_frame_free64: u32 = 0;
+
+fn serial_init64() {
+    outb(0x3F9, 0);       // disable UART interrupts
+    outb(0x3FB, 0x80);    // enable divisor latch
+    outb(0x3F8, 3);       // 38400 baud
+    outb(0x3F9, 0);
+    outb(0x3FB, 3);       // 8 data bits, no parity, one stop bit
+    outb(0x3FA, 0xC7);    // FIFO on, clear queues, 14-byte threshold
+    outb(0x3FC, 0x0B);    // IRQs enabled, RTS/DSR set
+}
+
+fn serial_put64(value: u8) {
+    let spins: u32 = 0;
+    while spins < 1000000 {
+        if (inb(0x3FD) & 0x20) != 0 {
+            outb(0x3F8, value);
+            return;
+        }
+        spins = spins + 1;
+    }
+}
+
+fn serial_write64(text: *u8) {
+    let address: u64 = text as u64;
+    let value: u8 = *(address as *u8);
+    while value != 0 {
+        serial_put64(value);
+        address = address + 1;
+        value = *(address as *u8);
+    }
+}
+
+fn frame_byte64(index: u32) -> *u8 {
+    let offset: u64 = (index / 8) as u64;
+    return ((&g_frame_bitmap64 as u64) + offset) as *u8;
+}
+
+fn frame_mark_used64(index: u32) {
+    if index >= g_frame_limit64 {
+        return;
+    }
+    let mask: u8 = (1 << (index % 8)) as u8;
+    let cell: *u8 = frame_byte64(index);
+    if ((*cell) & mask) == 0 {
+        *cell = (*cell) | mask;
+        if g_frame_free64 > 0 {
+            g_frame_free64 = g_frame_free64 - 1;
+        }
+    }
+}
+
+fn frame_mark_free64(index: u32) {
+    if index >= g_frame_limit64 {
+        return;
+    }
+    let mask: u8 = (1 << (index % 8)) as u8;
+    let cell: *u8 = frame_byte64(index);
+    if ((*cell) & mask) != 0 {
+        *cell = (*cell) & (0xFF ^ mask);
+        g_frame_free64 = g_frame_free64 + 1;
+    }
+}
+
+fn frame_alloc64() -> u64 {
+    let index: u32 = 0;
+    while index < g_frame_limit64 {
+        let mask: u8 = (1 << (index % 8)) as u8;
+        if ((*frame_byte64(index)) & mask) == 0 {
+            frame_mark_used64(index);
+            return (index as u64) * 4096;
+        }
+        index = index + 1;
+    }
+    return 0;
+}
+
+fn frame_free64(address: u64) {
+    if (address & 0xFFF) != 0 {
+        return;
+    }
+    frame_mark_free64((address / 4096) as u32);
+}
+
+fn phys_init64(multiboot_info: u64) -> bool {
+    if multiboot_info == 0 {
+        return false;
+    }
+    let flags: u32 = *((multiboot_info + 0) as *u32);
+    if (flags & 0x40) == 0 {                    // Multiboot memory map present
+        return false;
+    }
+
+    let i: u32 = 0;
+    while i < 32768 {
+        g_frame_bitmap64[i] = 0xFF;
+        i = i + 1;
+    }
+    g_frame_limit64 = 262144;                  // first 1 GiB / 4 KiB
+    g_frame_free64 = 0;
+
+    let map_length: u32 = *((multiboot_info + 44) as *u32);
+    let map_address: u64 = (*((multiboot_info + 48) as *u32)) as u64;
+    let offset: u32 = 0;
+    while offset < map_length {
+        let entry: u64 = map_address + (offset as u64);
+        let remaining: u32 = map_length - offset;
+        if remaining < 4 {
+            return false;
+        }
+        let size: u32 = *((entry + 0) as *u32);
+        if size < 20 || size > remaining - 4 {
+            return false;
+        }
+        let base: u64 = *((entry + 4) as *u64);
+        let length: u64 = *((entry + 12) as *u64);
+        let kind: u32 = *((entry + 20) as *u32);
+
+        if kind == 1 && length != 0 && base < 0x40000000 {
+            let first: u64 = ((base + 4095) / 4096) * 4096;
+            let last: u64 = base + length;
+            if last < base || last > 0x40000000 {
+                last = 0x40000000;              // wrapped or beyond mapped cap
+            }
+            let cursor: u64 = first;
+            if cursor < 0x00800000 {
+                cursor = 0x00800000;            // reserve bootstrap + payload
+            }
+            while cursor < last {
+                frame_mark_free64((cursor / 4096) as u32);
+                cursor = cursor + 4096;
+            }
+        }
+        offset = offset + size + 4;
+    }
+    return g_frame_free64 > 0;
+}
+
+fn phys_self_test64() -> bool {
+    let before: u32 = g_frame_free64;
+    let first: u64 = frame_alloc64();
+    let second: u64 = frame_alloc64();
+    if first == 0 || second == 0 || first == second {
+        return false;
+    }
+    if (first & 0xFFF) != 0 || (second & 0xFFF) != 0 {
+        return false;
+    }
+    frame_free64(first);
+    frame_free64(second);
+    return g_frame_free64 == before;
+}
+
+fn kmain64(multiboot_info: u64) {
+    serial_init64();
+    serial_write64("MORT64: long mode active\r\n");
+    serial_write64("MORT64: kernel entry is compiled from Mort\r\n");
+    if multiboot_info != 0 {
+        serial_write64("MORT64: Multiboot handoff received\r\n");
+    } else {
+        serial_write64("MORT64 ERROR: missing Multiboot handoff\r\n");
+    }
+    if phys_init64(multiboot_info) {
+        serial_write64("MORT64: Multiboot memory map accepted\r\n");
+        if phys_self_test64() {
+            serial_write64("MORT64: physical frame allocator passed\r\n");
+        } else {
+            serial_write64("MORT64 ERROR: physical frame allocator failed\r\n");
+        }
+    } else {
+        serial_write64("MORT64 ERROR: physical memory map unavailable\r\n");
+    }
+    serial_write64("MORT64: bootstrap foundation ready\r\n");
+
+    asm("cli");
+    while true {
+        asm("hlt");
+    }
+}

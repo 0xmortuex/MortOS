@@ -1,13 +1,10 @@
-# Vex browser
+# Legacy framebuffer browser
 
-Vex is MortuexOS's native port of the canonical
-[`0xmortuex/Vex`](https://github.com/0xmortuex/Vex) browser. Its gold-diamond
-identity, vertical-tab model, library navigation, privacy model, and workflows
-come from Vex; its browser shell, state management, HTTP client, TCP connection
-handling, HTML-to-text renderer, and MortFS integration are implemented in Mort
-and run inside the kernel. It does not embed Chromium, WebKit, Gecko, libc, or
-a host-side proxy. See [the port mapping](vex-native-port.md) for the exact
-upstream/native boundary.
+This page documents the legacy framebuffer web compatibility prototype. It is
+not the canonical [`0xmortuex/Vex`](https://github.com/0xmortuex/Vex) browser,
+because it does not execute Vex's Electron/Chromium application source. See
+[the canonical Vex port plan](vex-native-port.md) and
+[the historical prototype mapping](vex-compatibility-prototype.md).
 
 ## What works
 

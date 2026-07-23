@@ -9,16 +9,20 @@
     python build.py run-iso   # build the ISO, then boot it in QEMU (-cdrom)
     python build.py disk      # create build/disk.img (MortFS) iff missing
     python build.py prog      # compile programs/*.mx -> build/*.bin
+    python build.py build64   # build parallel x86-64 migration kernel
+    python build.py check64   # verify the x86-64 ELF + Multiboot header
+    python build.py run64     # boot the x86-64 migration kernel in QEMU
 
 The kernel is written in Mort (kmain.mx). This script compiles it to freestanding
 C with the Mort compiler, cross-compiles that plus the boot stub to 32-bit x86
 with the Zig backend, and links them with linker.ld into a multiboot ELF.
 
-The Mort compiler lives in its own repo. This script looks for it in $MORT_HOME,
-then in a sibling ../Mort checkout, then in ./.mort — and if none of those
-exist, it clones it into ./.mort automatically.
+The Mort compiler lives in its own repo. This script honors an explicit
+$MORT_HOME override; otherwise it uses the pinned repo-local ./.mort toolchain.
+If the cache is absent, the proven compiler tag is cloned automatically.
 """
 import os
+import hashlib
 import shutil
 import struct
 import subprocess
@@ -27,20 +31,42 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = HERE
 MORT_REPO = "https://github.com/0xmortuex/Mort"
+MORT_KERNEL_VERSION = "0.18.0"
+MORT_KERNEL_TAG = "v0.18.0"
 
 
 def _find_mort():
-    candidates = [
-        os.environ.get("MORT_HOME"),
-        os.path.join(os.path.dirname(HERE), "Mort"),
-        os.path.join(HERE, ".mort"),
-    ]
-    for c in candidates:
-        if c and os.path.isfile(os.path.join(c, "mortc.py")):
-            return c
+    override = os.environ.get("MORT_HOME")
+    if override:
+        if os.path.isfile(os.path.join(override, "mortc.py")):
+            return override
+        sys.exit(f"MORT_HOME does not contain mortc.py: {override}")
+
     dest = os.path.join(HERE, ".mort")
-    print(f"Mort compiler not found -- cloning {MORT_REPO} into .mort/ ...")
-    subprocess.run(["git", "clone", "--depth", "1", MORT_REPO, dest], check=True)
+    if os.path.isfile(os.path.join(dest, "mortc.py")):
+        version_file = os.path.join(dest, "mort", "__init__.py")
+        version = ""
+        if os.path.isfile(version_file):
+            with open(version_file, encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("__version__"):
+                        parts = line.split('"')
+                        if len(parts) >= 2:
+                            version = parts[1]
+                        break
+        if version != MORT_KERNEL_VERSION:
+            sys.exit(
+                f"repo-local Mort is {version or 'unknown'}, but the kernel "
+                f"requires {MORT_KERNEL_VERSION}. Run: "
+                f"git -C .mort checkout --detach {MORT_KERNEL_TAG}")
+        return dest
+
+    print(f"Mort compiler not found -- cloning {MORT_REPO} {MORT_KERNEL_TAG} "
+          "into .mort/ ...")
+    subprocess.run([
+        "git", "clone", "--branch", MORT_KERNEL_TAG, "--depth", "1",
+        MORT_REPO, dest,
+    ], check=True)
     return dest
 
 
@@ -49,8 +75,13 @@ sys.path.insert(0, _find_mort())
 import mortc  # noqa: E402
 
 TARGET = "x86-freestanding-none"           # 32-bit x86, bare metal
+TARGET64 = "x86_64-freestanding-none"      # 64-bit x86, bare metal
 BUILD = os.path.join(HERE, "build")
 ELF = os.path.join(BUILD, "kernel.elf")
+BUILD64 = os.path.join(BUILD, "x86_64")
+ELF64 = os.path.join(BUILD64, "kernel.elf")          # bootable ELF32 trampoline
+PAYLOAD64 = os.path.join(BUILD64, "kernel64.elf")   # genuine ELF64 Mort kernel
+PAYLOAD64_BIN = os.path.join(BUILD64, "payload.bin")
 DISK = os.path.join(BUILD, "disk.img")
 
 # User programs: compiled from programs/*.mx into flat binaries the kernel
@@ -153,6 +184,127 @@ def build():
         "-o", ELF, boot_o, kmain_o, runtime_o, idt_o,
     ], check=True)
     print(f"built {os.path.relpath(ELF, ROOT)}")
+
+
+def build64():
+    """Build the parallel x86-64 migration kernel.
+
+    Multiboot still enters through a small 32-bit assembly trampoline. It
+    enables long mode and calls a Mort-compiled 64-bit kernel entry. Keeping
+    this separate from ``build`` preserves the working 32-bit desktop while
+    drivers and userspace move across in tested slices.
+    """
+    os.makedirs(BUILD64, exist_ok=True)
+    cc = _zig()
+    arch = os.path.join(HERE, "arch", "x86_64")
+
+    with open(os.path.join(arch, "kernel64.mx"), encoding="utf-8") as fh:
+        c_source = mortc.compile_to_c(fh.read(), freestanding=True)
+    kernel_c = os.path.join(BUILD64, "kernel64.c")
+    with open(kernel_c, "w", encoding="utf-8") as fh:
+        fh.write(c_source)
+
+    c_flags = [
+        "-target", TARGET64, "-ffreestanding", "-fno-builtin",
+        "-fno-stack-protector", "-fno-pie", "-fno-asynchronous-unwind-tables",
+        "-fno-unwind-tables", "-mno-red-zone", "-mno-sse", "-mno-sse2",
+        "-mno-mmx", "-O2",
+    ]
+    asm_flags = ["-target", TARGET64, "-fno-pie"]
+    kernel_o = os.path.join(BUILD64, "kernel64.o")
+    runtime_o = os.path.join(BUILD64, "runtime.o")
+    entry_o = os.path.join(BUILD64, "entry64.o")
+    boot_o = os.path.join(BUILD64, "boot.o")
+
+    subprocess.run([*cc, *c_flags, "-c", kernel_c, "-o", kernel_o], check=True)
+    subprocess.run([*cc, *c_flags, "-c", os.path.join(HERE, "runtime.c"),
+                    "-o", runtime_o], check=True)
+    subprocess.run([*cc, *asm_flags, "-c", os.path.join(arch, "entry64.s"),
+                    "-o", entry_o], check=True)
+    subprocess.run([
+        *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",
+        "-Wl,-T," + os.path.join(arch, "linker.ld"),
+        "-Wl,--build-id=none", "-Wl,-e,_payload_start",
+        "-o", PAYLOAD64, entry_o, kernel_o, runtime_o,
+    ], check=True)
+
+    objcopy = cc[:-1] + ["objcopy"]
+    subprocess.run([*objcopy, "-O", "binary", PAYLOAD64, PAYLOAD64_BIN], check=True)
+
+    # QEMU's direct Multiboot loader requires an i386 ELF container. Its only
+    # job is to enter long mode and jump to the embedded ELF64 payload. Zig's
+    # compiler cache does not track .incbin contents, so generate a wrapper
+    # whose text includes the payload digest and necessarily invalidates the
+    # cached assembly object when the 64-bit kernel changes.
+    with open(PAYLOAD64_BIN, "rb") as fh:
+        payload_digest = hashlib.sha256(fh.read()).hexdigest()
+    with open(os.path.join(arch, "boot.s"), encoding="utf-8") as fh:
+        boot_source = fh.read()
+    generated_boot = os.path.join(BUILD64, "bootstrap.generated.s")
+    with open(generated_boot, "w", encoding="utf-8") as fh:
+        fh.write(f"/* embedded payload sha256: {payload_digest} */\n")
+        fh.write(boot_source)
+
+    asm32_flags = ["-target", TARGET, "-fno-pie"]
+    subprocess.run([*cc, *asm32_flags, "-c", generated_boot,
+                    "-o", boot_o], cwd=HERE, check=True)
+    subprocess.run([
+        *cc, "-target", TARGET, "-nostdlib", "-static", "-no-pie",
+        "-Wl,-T," + os.path.join(arch, "bootstrap.ld"),
+        "-Wl,--build-id=none", "-Wl,-e,_start64",
+        "-o", ELF64, boot_o,
+    ], check=True)
+    print(f"built {os.path.relpath(PAYLOAD64, ROOT)} (ELF64 Mort kernel)")
+    print(f"built {os.path.relpath(ELF64, ROOT)} (Multiboot trampoline + payload)")
+
+
+def check64():
+    """Validate the parallel kernel without weakening the 32-bit checks."""
+    build64()
+    with open(PAYLOAD64, "rb") as fh:
+        payload = fh.read()
+    with open(ELF64, "rb") as fh:
+        bootstrap = fh.read()
+
+    def require(cond, msg):
+        if not cond:
+            sys.exit(f"x86-64 kernel check FAILED: {msg}")
+
+    require(payload[:4] == b"\x7fELF", "payload is not an ELF file")
+    require(payload[4] == 2, "kernel payload is not ELFCLASS64")
+    machine = struct.unpack("<H", payload[18:20])[0]
+    require(machine == 0x3E, f"expected EM_X86_64 (0x3e), got {hex(machine)}")
+    entry = struct.unpack("<Q", payload[24:32])[0]
+    require(entry == 0x200000,
+            f"ELF64 payload entry is {hex(entry)}, expected 0x200000")
+
+    magic_value = 0x1BADB002
+    require(bootstrap[:4] == b"\x7fELF", "bootstrap is not an ELF file")
+    require(bootstrap[4] == 1, "Multiboot bootstrap is not ELFCLASS32")
+    bootstrap_machine = struct.unpack("<H", bootstrap[18:20])[0]
+    require(bootstrap_machine == 0x03, "Multiboot bootstrap is not EM_386")
+    head = bootstrap[:8192]
+    offset = -1
+    for i in range(0, len(head) - 11, 4):
+        if struct.unpack("<I", head[i:i + 4])[0] == magic_value:
+            offset = i
+            break
+    require(offset >= 0, "Multiboot header not found in the first 8 KiB")
+    magic, flags, checksum = struct.unpack("<III", head[offset:offset + 12])
+    require(flags == 0x3,
+            f"unexpected Multiboot flags {hex(flags)} (want ALIGN|MEMINFO = 0x3)")
+    require((magic + flags + checksum) & 0xFFFFFFFF == 0,
+            "Multiboot checksum is invalid")
+
+    with open(PAYLOAD64_BIN, "rb") as fh:
+        payload_bin = fh.read()
+    require(payload_bin and payload_bin in bootstrap,
+            "ELF64 payload is not embedded in the Multiboot image")
+
+    print(f"OK: genuine ELF64 Mort payload at 0x200000")
+    print(f"OK: ELF32 Multiboot trampoline; valid header at file offset {offset}")
+    print("OK: ELF64 payload embedded in the bootable image")
+    print("Boot it with:  python build.py run64")
 
 
 def check():
@@ -400,6 +552,34 @@ def _find_qemu():
     return None
 
 
+def _find_qemu64():
+    found = shutil.which("qemu-system-x86_64")
+    if found:
+        return found
+    import glob
+    for pattern in (
+        r"C:\Program Files\qemu\qemu-system-x86_64.exe",
+        r"C:\Program Files*\qemu*\qemu-system-x86_64.exe",
+    ):
+        hits = glob.glob(pattern)
+        if hits:
+            return hits[0]
+    return None
+
+
+def run64():
+    build64()
+    qemu = _find_qemu64()
+    if not qemu:
+        sys.exit("qemu-system-x86_64 not found — install QEMU to boot MORT64.")
+    print("Booting the MORT OS x86-64 migration kernel. "
+          "Serial boot status is printed in this terminal; Ctrl+C stops QEMU.")
+    subprocess.run([
+        qemu, "-machine", "q35", "-m", "256M", "-display", "none",
+        "-serial", "stdio", "-monitor", "none", "-kernel", ELF64,
+    ])
+
+
 def _run(fullscreen):
     build()
     ensure_disk()
@@ -429,8 +609,11 @@ def run_windowed():
     _run(fullscreen=False)
 
 
-COMMANDS = {"build": build, "check": check, "run": run, "window": run_windowed,
-            "iso": iso, "run-iso": run_iso, "disk": disk, "prog": prog}
+COMMANDS = {
+    "build": build, "check": check, "run": run, "window": run_windowed,
+    "iso": iso, "run-iso": run_iso, "disk": disk, "prog": prog,
+    "build64": build64, "check64": check64, "run64": run64,
+}
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "build"

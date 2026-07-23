@@ -1,72 +1,90 @@
-# Vex native port
+# Canonical Vex on MortOS
 
-MortuexOS does not ship a browser that merely borrows the Vex name. The
-canonical product and design source is
-[`0xmortuex/Vex`](https://github.com/0xmortuex/Vex), version 2.28.1. The native
-port was initially aligned against upstream commit `1b10ec5`.
+The goal is to run the canonical
+[`0xmortuex/Vex`](https://github.com/0xmortuex/Vex) application on MortOS with
+its current renderer, CSS, JavaScript, behavior, and Chromium web content. A
+look-alike written against the old kernel framebuffer does not satisfy this
+goal.
 
-The upstream desktop application uses Electron, Chromium, Node.js, webviews,
-and operating-system services supplied by Windows. Those binaries cannot run
-unchanged inside a 32-bit freestanding hobby kernel. MortuexOS therefore ports
-Vex at the product and workflow layer while replacing each host dependency with
-a native Mort subsystem:
+The audited application baseline is Vex 2.28.1 at commit `1b10ec5`. Its entry
+point is `src/main.js`; its package starts Electron directly. The current
+Windows package is only one host build. MortOS will become another host target:
+`x86_64-mortos`.
 
-| Canonical Vex concept | MortuexOS implementation |
-| --- | --- |
-| Vex gold diamond and browser chrome | Rasterized by the Mort framebuffer UI |
-| Vertical tabs and new-tab workflow | Four isolated bounded tab stacks, persistent recently closed tabs, pins, color groups, duplication, and reordering |
-| Workspaces | Personal, Work, School, and Dev stacks with automatic full-stack recovery |
-| Address / command surface | `Ctrl+K` actions, local suggestions, and `vex://` / HTTP / HTTPS navigation |
-| History, bookmarks, sessions | Searchable history plus named tab snapshots in per-user MortFS records |
-| Notes and Read Later | Eight bounded notes and eight queued web URLs in a private-safe native Library |
-| Private browsing | No persistent history, session recovery, pins, or CA imports |
-| Downloads manager | Eight persistent exact-byte MortFS records with type and transport metadata |
-| Network and TLS | `mortnet`, RTL8139, DNS, TCP, and the Mort TLS 1.3 client |
-| Web content | Fail-closed HTML-to-text engine; scripts and styles never execute |
-| Reading and site controls | Persistent per-origin reading layout and extracted-link policy |
-| Settings and trust | Native Vex pages backed by MortFS CA roots and host pins |
-| Screenshots | Bounded 256×192 grayscale BMP capture of the live framebuffer |
+## What “the actual Vex” means
 
-This makes it a real platform port: it follows Vex's identity, information
-architecture, and user workflows, while the executable implementation is
-necessarily kernel-native. It does **not** claim that the Electron executable
-or Chromium engine is embedded.
+- The canonical Vex repository remains the application source of truth.
+- `src/renderer/**`, including the existing HTML, CSS, and JavaScript UI, is
+  loaded rather than redrawn in Mort kernel UI code.
+- Real Chromium renderer processes display pages and execute web content.
+- Vex's Electron main/preload/renderer separation and IPC security boundaries
+  are preserved.
+- MortOS-specific work belongs below Vex, in the OS, C library, Node, Chromium,
+  and Electron ports. Application changes are limited to platform build
+  support or genuinely platform-specific behavior.
+- The old `net/browser.mx` implementation is a compatibility prototype, not
+  the canonical browser.
 
-## Porting order
+## Current verified foundation
 
-1. Shared identity, vertical tabs, library navigation, and command/address UI.
-2. Isolated workspaces and persisted workspace selection.
-3. Multi-item download manager, named sessions, searchable history, and an
-   on-device Notes / Read Later Library.
-4. Reading mode, per-site preferences, and native-renderer content controls.
-5. Further web compatibility only after memory isolation, process support, and
-   a substantially richer rendering engine exist.
+`python build.py check64` builds two related artifacts:
 
-Features that depend directly on Chromium extensions, JavaScript web apps,
-DRM media, Electron webviews, or Node modules remain upstream-only until
-MortuexOS has equivalent safe platform primitives.
+- `build/x86_64/kernel64.elf`: a genuine x86-64 ELF64 kernel payload whose
+  entry calls Mort-generated code.
+- `build/x86_64/kernel.elf`: the small ELF32 Multiboot trampoline required by
+  QEMU's direct loader, with the ELF64 payload embedded at 2 MiB.
 
-## Audited upstream boundary
+`python test_x86_64.py` boots the image, enables PAE and long mode, installs an
+identity map, crosses the 32-to-64-bit boundary, and verifies serial output
+from `arch/x86_64/kernel64.mx`.
 
-The following is an explicit capability audit against the canonical Vex
-2.28.1 tree, not a list of hidden toggles.
+This is only the architectural bootstrap. It does not yet run Vex.
 
-| Upstream capability family | Native status | Missing platform prerequisite |
+## Port layers
+
+| Layer | Required result | Status |
 | --- | --- | --- |
-| Vertical tabs, workspaces, pins, groups, duplicate/reorder, recently closed | Implemented with bounded MortFS recovery | — |
-| History, bookmarks, named sessions, command bar | Implemented natively | — |
-| Notes, Read Later, pin/delete/remove/export | Implemented with bounded local records and Markdown export | — |
-| Downloads and screenshots | Exact bounded downloads plus whole-frame BMP capture | Chromium page capture/annotation remains unavailable |
-| Reading mode and per-origin controls | Implemented for text layout and extracted-link exposure | — |
-| HTML/CSS/DOM, JavaScript, forms, images, video, WebGL, web apps | Unsupported and fail-closed | Sandboxed processes, virtual memory, a DOM/layout engine, JS runtime, image/media codecs |
-| Electron webviews, split screen, PiP, pop-outs, live tab previews | Unsupported | Multi-process web surfaces and a compositing window manager |
-| Chromium extensions, content scripts, boosts, element zapping, full ad blocking | Unsupported | Extension sandbox plus DOM and request-interception APIs |
-| Cookies, service workers, site storage, passwords/autofill | Unsupported | Same-origin storage model, encrypted secret service, renderer isolation |
-| Page translation, read-aloud, media capture, conferencing | Unsupported | Language/speech runtimes, codecs, device-permission broker |
-| AI agent, cloud workers, Ollama, MCP tools, sync | Unsupported | Large model/runtime support, credential/keychain isolation, public-Web compatibility |
-| General public-Web PKI | Partially supported through explicit validated CA roots and host pins | Maintained root bundle, update/revocation policy, additional certificate algorithms |
-| Per-domain zoom and rich accessibility transforms | Unsupported in the fixed 8×16 renderer | Scalable font shaping and a richer layout engine |
+| 64-bit architecture | Long-mode boot, page tables, 64-bit Mort entry | Boot-tested foundation |
+| Kernel isolation | Physical/virtual memory managers, NX, ring 3, TSS, per-process address spaces | Next |
+| Process runtime | ELF64 loader, scheduler, threads, signals/exceptions, handles, IPC | Planned |
+| MortOS ABI | Stable syscalls for files, memory, time, networking, graphics, input, audio, and entropy | Specified in `x86_64-userspace-abi.md` |
+| C/C++ platform | LLVM target, libc/libc++, atomics, pthread-compatible layer, build tools | Planned |
+| Node/V8 | V8 JIT permissions, libuv event loop, Node filesystem/network/process APIs | Planned |
+| Chromium | Sandbox, renderer/GPU processes, Skia, fonts, image/media codecs, TLS/PKI, accessibility | Planned |
+| Electron | `x86_64-mortos` host integration, windows/views, sessions, IPC, clipboard, dialogs, downloads | Planned |
+| Canonical Vex | Build and run the upstream application tree, then pass its tests and UI comparisons | Planned |
 
-MortuexOS reports these limits directly. It does not label an unavailable
-Chromium-dependent feature as working merely because the canonical desktop app
-has it.
+## Audited Vex platform surface
+
+The current main process imports Electron's `app`, `BrowserWindow`, `session`,
+`ipcMain`, `protocol`, `globalShortcut`, `Menu`, `net`, `shell`, `dialog`,
+`webContents`, `safeStorage`, and `clipboard` services. It additionally uses
+desktop capture, screen/work-area information, `WebContentsView`, Widevine
+components, and Electron Updater.
+
+Its Node surface includes filesystem and path APIs, URLs, cryptographic random
+data, TCP/TLS networking, child processes, ZIP handling, QR generation, and
+package persistence. Renderer pages depend on Chromium DOM/CSS/JavaScript,
+`<webview>`, preload scripts, context isolation, and IPC bridges.
+
+This audit is why the port is staged below the application. Replacing only
+`BrowserWindow` or copying the renderer assets would not provide the same
+browser.
+
+## Acceptance gates
+
+The canonical port is complete only when all of these are true:
+
+1. MortOS boots the 64-bit kernel on QEMU and supported physical x86-64
+   hardware.
+2. ELF64 ring-3 programs run in isolated address spaces and survive fault
+   containment tests.
+3. The C/C++ runtime passes its conformance subset and Node/V8 pass their
+   platform tests.
+4. Chromium's multiprocess browser, renderer, network, and GPU/software
+   compositor paths run on MortOS.
+5. The canonical Vex tree starts through the MortOS Electron target.
+6. Vex's own automated tests pass on MortOS.
+7. Reference screenshots and interaction tests match the same Vex revision on
+   the existing desktop build, allowing only font rasterization and
+   hardware-dependent media differences.

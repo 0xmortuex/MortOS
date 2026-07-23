@@ -15,7 +15,7 @@ instead of being represented by decorative switches.
 - Storage: MortFS status, file-table use, disk sectors, and Files shortcut.
 - Network: RTL8139 state, MAC/IPv4 information, DHCP connect/disconnect, and
   the router-provided gateway and DNS server.
-- Apps: launch Terminal, Files, and the native Vex browser.
+- Apps: launch Terminal, Files, and the legacy framebuffer web prototype.
 - Privacy & Security: local-first security state and session locking.
 - Power: lock, sleep, restart, shutdown, and the protected power menu.
 - Hardware & Devices: PCI rescan, USB inventory/rescan, PC speaker controls,
