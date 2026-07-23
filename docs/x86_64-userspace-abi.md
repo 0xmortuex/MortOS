@@ -1,9 +1,10 @@
 # MortOS x86-64 userspace ABI
 
 Status: active implementation contract for the canonical Vex platform port.
-Long mode, ring-3 execution, a validating static ELF64 loader, W^X/NX mappings,
-user-fault containment, `write`, and `exit` are boot-tested. Other facilities
-remain planned unless explicitly marked otherwise.
+Long mode, ring-3 execution, a validating static ELF64 loader, distinct
+per-process W^X/NX mappings, PID assignment, run-to-completion scheduling,
+user-fault containment, `write`, `getpid`, and `exit` are boot-tested. Other
+facilities remain planned unless explicitly marked otherwise.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
 Mort 0.39's hosted `net_*` intrinsic detection collides with MortOS's own
@@ -47,6 +48,7 @@ The initial numeric assignments are:
 | Number | Call | Status |
 | --- | --- | --- |
 | 1 | `write(fd, buffer, length)` | Implemented for stdout with bounded user-range validation |
+| 39 | `getpid()` | Implemented for scheduled processes |
 | 60 | `exit(status)` | Implemented for the current process |
 
 The remaining implementation order is:
@@ -54,7 +56,7 @@ The remaining implementation order is:
 1. `read`, `close`, `yield`, and `clock_gettime`.
 2. `mmap`, `munmap`, `mprotect`, `brk`, shared memory, and page-fault reporting.
 3. `openat`, `stat`, `getdents`, `pread`, `pwrite`, `fsync`, and file mapping.
-4. `spawn`, `execve`, `wait`, process IDs, threads, TLS, and futex-style waits.
+4. `spawn`, `execve`, `wait`, process groups, threads, TLS, and futex-style waits.
 5. `poll`, pipes, local IPC, sockets, DNS-facing service IPC, and entropy.
 6. Window surfaces, shared pixel buffers, input queues, clipboard, audio
    streams, device permissions, and GPU command submission.

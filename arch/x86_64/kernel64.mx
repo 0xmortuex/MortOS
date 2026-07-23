@@ -20,11 +20,25 @@ let g_user_pointer_rejected64: bool = false;
 let g_user_fault_seen64: bool = false;
 let g_user_fault_vector64: u64 = 0;
 let g_user_fault_error64: u64 = 0;
+// Process states: 0 FREE, 1 READY, 2 RUNNING, 3 EXITED, 4 FAULTED.
+let g_process_state64: [u8; 8] = [0; 8];
+let g_process_pid64: [u64; 8] = [0; 8];
+let g_process_root64: [u64; 8] = [0; 8];
+let g_process_pt64: [u64; 8] = [0; 8];
+let g_process_entry64: [u64; 8] = [0; 8];
+let g_process_exit64: [u64; 8] = [0; 8];
+let g_process_fault64: [u64; 8] = [0; 8];
+let g_current_process64: u32 = 8;
+let g_next_pid64: u64 = 1;
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
-extern fn mort64_user_image() -> u64;
-extern fn mort64_user_image_size() -> u64;
+extern fn mort64_probe_image() -> u64;
+extern fn mort64_probe_image_size() -> u64;
+extern fn mort64_isolation_image() -> u64;
+extern fn mort64_isolation_image_size() -> u64;
+extern fn mort64_survivor_image() -> u64;
+extern fn mort64_survivor_image_size() -> u64;
 extern fn mort64_enter_user(entry: u64, stack_top: u64, page_root: u64);
 
 fn serial_init64() {
@@ -361,6 +375,61 @@ fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
     return pml4;
 }
 
+// Create a process from a validated ELF image. Each successful process owns a
+// different PML4 and different physical frames even though every executable
+// uses the same virtual layout.
+fn process_create64(image: u64, image_size: u64) -> u32 {
+    let slot: u32 = 0;
+    while slot < 8 {
+        if g_process_state64[slot] == 0 {
+            let root: u64 = elf64_user_page_root(image, image_size);
+            if root == 0 {
+                return 8;
+            }
+            g_process_state64[slot] = 1;
+            g_process_pid64[slot] = g_next_pid64;
+            g_process_root64[slot] = root;
+            g_process_pt64[slot] = g_user_pt64;
+            g_process_entry64[slot] = g_user_entry64;
+            g_process_exit64[slot] = 0;
+            g_process_fault64[slot] = 0;
+            g_next_pid64 = g_next_pid64 + 1;
+            return slot;
+        }
+        slot = slot + 1;
+    }
+    return 8;
+}
+
+// Minimal non-preemptive scheduler. It establishes real lifecycle semantics
+// now: READY -> RUNNING -> EXITED/FAULTED, and a failed process cannot prevent
+// the next READY process from being dispatched.
+fn process_schedule64() -> u32 {
+    let dispatched: u32 = 0;
+    let slot: u32 = 0;
+    while slot < 8 {
+        if g_process_state64[slot] == 1 {
+            g_current_process64 = slot;
+            g_process_state64[slot] = 2;
+            g_user_pt64 = g_process_pt64[slot];
+            mort64_enter_user(
+                g_process_entry64[slot],
+                0x01200000,
+                g_process_root64[slot]);
+            if g_process_state64[slot] == 2 {
+                // Returning without SYS_exit or a contained exception violates
+                // the ring-transition contract; contain it as a process fault.
+                g_process_state64[slot] = 4;
+                g_process_fault64[slot] = 0xFFFFFFFF;
+            }
+            dispatched = dispatched + 1;
+        }
+        slot = slot + 1;
+    }
+    g_current_process64 = 8;
+    return dispatched;
+}
+
 fn on_exception64(
     vector: u64,
     error: u64,
@@ -375,6 +444,10 @@ fn on_exception64(
         g_user_fault_seen64 = true;
         g_user_fault_vector64 = vector;
         g_user_fault_error64 = error;
+        if g_current_process64 < 8 {
+            g_process_state64[g_current_process64] = 4;
+            g_process_fault64[g_current_process64] = vector;
+        }
         serial_write64("MORT64: user CPU fault contained\r\n");
         return 1;
     }
@@ -439,12 +512,22 @@ fn syscall_dispatch64(
         serial_write64("MORT64: ring 3 Mort program invoked write\r\n");
         return argument2;
     }
+    if number == 39 {
+        if g_current_process64 < 8 {
+            return g_process_pid64[g_current_process64];
+        }
+        return 0;
+    }
     return ~(37 as u64); // -ENOSYS
 }
 
 fn on_user_exit64(status: u64) {
     g_user_exit_status64 = status;
     g_user_exit_seen64 = true;
+    if g_current_process64 < 8 {
+        g_process_exit64[g_current_process64] = status;
+        g_process_state64[g_current_process64] = 3;
+    }
 }
 
 fn kmain64(multiboot_info: u64) {
@@ -476,23 +559,34 @@ fn kmain64(multiboot_info: u64) {
             serial_write64("MORT64 ERROR: IDT breakpoint was not handled\r\n");
         }
 
-        let user_image: u64 = mort64_user_image();
-        let user_size: u64 = mort64_user_image_size();
-        let user_root: u64 = elf64_user_page_root(user_image, user_size);
-        if user_root != 0 {
-            serial_write64("MORT64: ELF64 loader mapped W^X userspace\r\n");
-            mort64_enter_user(g_user_entry64, 0x01200000, user_root);
-            if g_user_probe_seen64 && g_user_pointer_rejected64
-                && g_user_exit_seen64
-                && g_user_exit_status64 == 42 {
+        let probe_slot: u32 = process_create64(
+            mort64_probe_image(), mort64_probe_image_size());
+        let isolation_slot: u32 = process_create64(
+            mort64_isolation_image(), mort64_isolation_image_size());
+        let survivor_slot: u32 = process_create64(
+            mort64_survivor_image(), mort64_survivor_image_size());
+        if probe_slot < 8 && isolation_slot < 8 && survivor_slot < 8
+            && g_process_root64[probe_slot]
+                != g_process_root64[isolation_slot]
+            && g_process_root64[probe_slot]
+                != g_process_root64[survivor_slot]
+            && g_process_root64[isolation_slot]
+                != g_process_root64[survivor_slot] {
+            serial_write64(
+                "MORT64: ELF64 loader mapped three isolated processes\r\n");
+            let dispatched: u32 = process_schedule64();
+            if dispatched == 3
+                && g_process_state64[probe_slot] == 3
+                && g_process_exit64[probe_slot] == 42
+                && g_user_probe_seen64
+                && g_user_pointer_rejected64 {
                 serial_write64("MORT64: protected Mort userspace passed\r\n");
             } else {
                 serial_write64("MORT64 ERROR: protected userspace failed\r\n");
             }
-
-            g_user_fault_seen64 = false;
-            mort64_enter_user(0x01010000, 0x01200000, user_root);
-            if g_user_fault_seen64
+            if g_process_state64[isolation_slot] == 4
+                && g_process_fault64[isolation_slot] == 14
+                && g_user_fault_seen64
                 && g_user_fault_vector64 == 14
                 && (g_user_fault_error64 & 0x5) == 0x5 {
                 serial_write64(
@@ -501,8 +595,19 @@ fn kmain64(multiboot_info: u64) {
                 serial_write64(
                     "MORT64 ERROR: supervisor page isolation failed\r\n");
             }
+            if g_process_state64[survivor_slot] == 3
+                && g_process_exit64[survivor_slot] == 7 {
+                serial_write64(
+                    "MORT64: scheduler continued after process fault\r\n");
+                serial_write64(
+                    "MORT64: process lifecycle and PID ABI passed\r\n");
+            } else {
+                serial_write64(
+                    "MORT64 ERROR: scheduler lifecycle failed\r\n");
+            }
         } else {
-            serial_write64("MORT64 ERROR: userspace page table failed\r\n");
+            serial_write64(
+                "MORT64 ERROR: isolated process creation failed\r\n");
         }
     } else {
         serial_write64("MORT64 ERROR: protected CPU setup failed\r\n");

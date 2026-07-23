@@ -1,0 +1,14 @@
+// Process 3 proves the scheduler continues after process 2 is faulted.
+
+extern fn mortos_write(text: *u8, length: u64) -> u64;
+extern fn mortos_getpid() -> u64;
+
+fn main() -> int {
+    if mortos_getpid() != 3 {
+        return 3;
+    }
+    if mortos_write("MORT64 PROCESS 3 OK\r\n", 21) != 21 {
+        return 4;
+    }
+    return 7;
+}

@@ -5,8 +5,12 @@
 // Returning 42 reaches pstart.s, which performs SYS_exit.
 
 extern fn mortos_write(text: *u8, length: u64) -> u64;
+extern fn mortos_getpid() -> u64;
 
 fn main() -> int {
+    if mortos_getpid() != 1 {
+        return 3;
+    }
     let denied: u64 = mortos_write((0x00200000 as u64) as *u8, 4);
     if denied != ~(13 as u64) {
         return 1;

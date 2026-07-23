@@ -82,7 +82,11 @@ BUILD64 = os.path.join(BUILD, "x86_64")
 ELF64 = os.path.join(BUILD64, "kernel.elf")          # bootable ELF32 trampoline
 PAYLOAD64 = os.path.join(BUILD64, "kernel64.elf")   # genuine ELF64 Mort kernel
 PAYLOAD64_BIN = os.path.join(BUILD64, "payload.bin")
-USER64_ELF = os.path.join(BUILD64, "user_probe.elf")
+USER64_ELFS = {
+    name: os.path.join(BUILD64, f"user_{name}.elf")
+    for name in ("probe", "isolation", "survivor")
+}
+USER64_ELF = USER64_ELFS["probe"]
 DISK = os.path.join(BUILD, "disk.img")
 
 # User programs: compiled from programs/*.mx into flat binaries the kernel
@@ -208,18 +212,11 @@ def build64():
     ]
     asm_flags = ["-target", TARGET64, "-fno-pie"]
 
-    # Build a separate Mort ELF64 userspace program. The kernel embeds its flat
-    # load image, maps it user-only at 16 MiB, and enters it at CPL3.
-    with open(os.path.join(PROGRAMS64, "probe.mx"), encoding="utf-8") as fh:
-        user_c_source = mortc.compile_to_c(fh.read(), freestanding=True)
-    user_c = os.path.join(BUILD64, "user_probe.c")
-    with open(user_c, "w", encoding="utf-8") as fh:
-        fh.write(user_c_source)
-    user_o = os.path.join(BUILD64, "user_probe.o")
+    # Build three separate Mort ELF64 processes. The kernel embeds each complete
+    # executable, validates it, and loads it into an independent address space.
     user_start_o = os.path.join(BUILD64, "user_pstart.o")
     user_syscall_o = os.path.join(BUILD64, "user_syscall.o")
     user_runtime_o = os.path.join(BUILD64, "user_runtime.o")
-    subprocess.run([*cc, *c_flags, "-c", user_c, "-o", user_o], check=True)
     subprocess.run([*cc, *c_flags, "-c", os.path.join(HERE, "runtime.c"),
                     "-o", user_runtime_o], check=True)
     subprocess.run([*cc, *asm_flags, "-c",
@@ -228,15 +225,30 @@ def build64():
     subprocess.run([*cc, *asm_flags, "-c",
                     os.path.join(PROGRAMS64, "syscall.s"),
                     "-o", user_syscall_o], check=True)
-    subprocess.run([
-        *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",
-        "-Wl,-T," + os.path.join(PROGRAMS64, "prog.ld"),
-        "-Wl,--build-id=none", "-Wl,-e,_user_start",
-        "-o", USER64_ELF, user_start_o, user_syscall_o, user_o, user_runtime_o,
-    ], check=True)
+    for user_name, user_elf in USER64_ELFS.items():
+        with open(os.path.join(PROGRAMS64, user_name + ".mx"),
+                  encoding="utf-8") as fh:
+            user_c_source = mortc.compile_to_c(
+                fh.read(), freestanding=True)
+        user_c = os.path.join(BUILD64, "user_" + user_name + ".c")
+        user_o = os.path.join(BUILD64, "user_" + user_name + ".o")
+        with open(user_c, "w", encoding="utf-8") as fh:
+            fh.write(user_c_source)
+        subprocess.run([*cc, *c_flags, "-c", user_c, "-o", user_o],
+                       check=True)
+        subprocess.run([
+            *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",
+            "-Wl,-T," + os.path.join(PROGRAMS64, "prog.ld"),
+            "-Wl,--build-id=none", "-Wl,-e,_user_start",
+            "-o", user_elf, user_start_o, user_syscall_o, user_o,
+            user_runtime_o,
+        ], check=True)
     # Invalidate Zig's .incbin cache whenever the userspace ELF changes.
-    with open(USER64_ELF, "rb") as fh:
-        user_digest = hashlib.sha256(fh.read()).hexdigest()
+    user_hasher = hashlib.sha256()
+    for user_elf in USER64_ELFS.values():
+        with open(user_elf, "rb") as fh:
+            user_hasher.update(fh.read())
+    user_digest = user_hasher.hexdigest()
     with open(os.path.join(arch, "user_blob.s"), encoding="utf-8") as fh:
         user_blob_source = fh.read()
     generated_user_blob = os.path.join(BUILD64, "user_blob.generated.s")
@@ -300,7 +312,8 @@ def build64():
         "-o", ELF64, boot_o,
     ], check=True)
     print(f"built {os.path.relpath(PAYLOAD64, ROOT)} (ELF64 Mort kernel)")
-    print(f"built {os.path.relpath(USER64_ELF, ROOT)} (ELF64 Mort userspace)")
+    for user_elf in USER64_ELFS.values():
+        print(f"built {os.path.relpath(user_elf, ROOT)} (ELF64 Mort userspace)")
     print(f"built {os.path.relpath(ELF64, ROOT)} (Multiboot trampoline + payload)")
 
 
@@ -347,42 +360,48 @@ def check64():
     require(payload_bin and payload_bin in bootstrap,
             "ELF64 payload is not embedded in the Multiboot image")
 
-    with open(USER64_ELF, "rb") as fh:
-        user_elf = fh.read()
-    require(user_elf[:4] == b"\x7fELF" and user_elf[4] == 2,
-            "userspace probe is not ELFCLASS64")
-    user_machine = struct.unpack("<H", user_elf[18:20])[0]
-    require(user_machine == 0x3E, "userspace probe is not EM_X86_64")
-    user_entry = struct.unpack("<Q", user_elf[24:32])[0]
-    require(user_entry == 0x01000000,
-            f"userspace entry is {hex(user_entry)}, expected 0x01000000")
-    user_phoff = struct.unpack("<Q", user_elf[32:40])[0]
-    user_phentsize = struct.unpack("<H", user_elf[54:56])[0]
-    user_phnum = struct.unpack("<H", user_elf[56:58])[0]
-    require(user_phentsize >= 56 and 0 < user_phnum <= 32,
-            "userspace ELF has an invalid program-header table")
-    require(user_phoff + user_phentsize * user_phnum <= len(user_elf),
-            "userspace ELF program headers exceed the file")
-    load_segments = 0
-    for index in range(user_phnum):
-        header = user_phoff + index * user_phentsize
-        segment_type, flags = struct.unpack("<II", user_elf[header:header + 8])
-        if segment_type != 1:
-            continue
-        load_segments += 1
-        virtual_address = struct.unpack("<Q", user_elf[header + 16:header + 24])[0]
-        memory_size = struct.unpack("<Q", user_elf[header + 40:header + 48])[0]
-        require(not (flags & 1 and flags & 2),
-                "userspace ELF contains a writable+executable PT_LOAD segment")
-        require(0x01000000 <= virtual_address
-                and virtual_address + memory_size <= 0x011FF000,
-                "userspace PT_LOAD segment is outside the process window")
-    require(load_segments > 0, "userspace ELF has no PT_LOAD segments")
-    require(user_elf in payload_bin,
-            "ELF64 userspace executable is not embedded in the kernel payload")
+    for user_name, user_path in USER64_ELFS.items():
+        with open(user_path, "rb") as fh:
+            user_elf = fh.read()
+        require(user_elf[:4] == b"\x7fELF" and user_elf[4] == 2,
+                f"userspace {user_name} is not ELFCLASS64")
+        user_machine = struct.unpack("<H", user_elf[18:20])[0]
+        require(user_machine == 0x3E,
+                f"userspace {user_name} is not EM_X86_64")
+        user_entry = struct.unpack("<Q", user_elf[24:32])[0]
+        require(user_entry == 0x01000000,
+                f"{user_name} entry is {hex(user_entry)}, expected 0x01000000")
+        user_phoff = struct.unpack("<Q", user_elf[32:40])[0]
+        user_phentsize = struct.unpack("<H", user_elf[54:56])[0]
+        user_phnum = struct.unpack("<H", user_elf[56:58])[0]
+        require(user_phentsize >= 56 and 0 < user_phnum <= 32,
+                f"userspace {user_name} has an invalid program-header table")
+        require(user_phoff + user_phentsize * user_phnum <= len(user_elf),
+                f"userspace {user_name} program headers exceed the file")
+        load_segments = 0
+        for index in range(user_phnum):
+            header = user_phoff + index * user_phentsize
+            segment_type, flags = struct.unpack(
+                "<II", user_elf[header:header + 8])
+            if segment_type != 1:
+                continue
+            load_segments += 1
+            virtual_address = struct.unpack(
+                "<Q", user_elf[header + 16:header + 24])[0]
+            memory_size = struct.unpack(
+                "<Q", user_elf[header + 40:header + 48])[0]
+            require(not (flags & 1 and flags & 2),
+                    f"userspace {user_name} has a writable+executable segment")
+            require(0x01000000 <= virtual_address
+                    and virtual_address + memory_size <= 0x011FF000,
+                    f"userspace {user_name} segment is outside process window")
+        require(load_segments > 0,
+                f"userspace {user_name} has no PT_LOAD segments")
+        require(user_elf in payload_bin,
+                f"userspace {user_name} is not embedded in kernel payload")
 
     print(f"OK: genuine ELF64 Mort payload at 0x200000")
-    print("OK: isolated W^X ELF64 Mort userspace image at 0x01000000")
+    print("OK: three isolated W^X ELF64 Mort images at 0x01000000")
     print(f"OK: ELF32 Multiboot trampoline; valid header at file offset {offset}")
     print("OK: ELF64 payload embedded in the bootable image")
     print("Boot it with:  python build.py run64")

@@ -1,0 +1,22 @@
+// Process 2 deliberately violates the supervisor boundary.
+//
+// The scheduler must mark only this process as faulted and continue with the
+// next READY process. A direct kernel-memory read is used because it exercises
+// hardware page protection rather than a syscall's software validation.
+
+extern fn mortos_write(text: *u8, length: u64) -> u64;
+extern fn mortos_getpid() -> u64;
+
+fn main() -> int {
+    if mortos_getpid() != 2 {
+        return 2;
+    }
+    if mortos_write("MORT64 PROCESS 2 START\r\n", 24) != 24 {
+        return 3;
+    }
+    let forbidden: u64 = *((0x00200000 as u64) as *u64);
+    if forbidden != 0 {
+        return 4;
+    }
+    return 99;
+}
