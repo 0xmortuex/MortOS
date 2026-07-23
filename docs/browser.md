@@ -161,8 +161,10 @@ verifies RSA-PSS CertificateVerify against the exact transcript, and verifies
 the server Finished value. The SHA-256 leaf fingerprint can then be approved
 explicitly with `K`; Vex stores one host-and-port-scoped pin in the user's
 MortFS state and compares it in constant time on later connections. Private
-mode cannot persist trust. It deliberately stops before application data until
-the pin or a future public certificate chain is trusted.
+mode cannot persist trust. On a pinned reconnect, Vex derives both application
+traffic secrets and keys, encrypts and sends client Finished, and retains
+sequence-zero application state for the HTTPS request. It still does not release
+application data before authentication.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

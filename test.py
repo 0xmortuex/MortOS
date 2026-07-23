@@ -785,6 +785,7 @@ def browser_ui():
     tls_probe_ok_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_ok")
     tls_probe_stage_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_stage")
     tls_server_key_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_server_key")
+    tls_application_ready_addr = _elf32_symbol(ELF, "m_g_browser_tls_application_ready")
     state_addr = _elf32_symbol(ELF, "m_g_browser_state")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
@@ -871,26 +872,31 @@ def browser_ui():
         tls_context.load_cert_chain(tls_cert, tls_key)
         tls_port = 18443
         tls_ready = threading.Event()
+        tls_complete = threading.Event()
         tls_errors = []
+        tls_completed = []
 
         def serve_tls_probe():
             with socket.socket() as listener:
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind(("127.0.0.1", tls_port))
-                listener.listen(1)
+                listener.listen(2)
                 listener.settimeout(180)
                 tls_ready.set()
-                try:
-                    connection, _address = listener.accept()
-                    connection.settimeout(30)
-                    with connection:
-                        try:
-                            with tls_context.wrap_socket(connection, server_side=True):
-                                pass
-                        except (ssl.SSLError, TimeoutError, OSError) as exc:
-                            tls_errors.append(repr(exc))  # Vex intentionally stops at its trust gate.
-                except (TimeoutError, OSError) as exc:
-                    tls_errors.append(repr(exc))
+                for _attempt in range(2):
+                    try:
+                        connection, _address = listener.accept()
+                        connection.settimeout(30)
+                        with connection:
+                            try:
+                                with tls_context.wrap_socket(connection, server_side=True):
+                                    tls_completed.append(True)
+                                    tls_complete.set()
+                            except (ssl.SSLError, TimeoutError, OSError) as exc:
+                                tls_errors.append(repr(exc))
+                    except (TimeoutError, OSError) as exc:
+                        tls_errors.append(repr(exc))
+                        break
 
         tls_thread = threading.Thread(target=serve_tls_probe, daemon=True)
         tls_thread.start()
@@ -1135,6 +1141,21 @@ def browser_ui():
                   (_guest_bytes(handle, state_addr + 7, 1)[0] == 1
                    and pin_host == "10.0.2.2" and pin_port == tls_port
                    and any(pin_hash) and "pin saved" in pin_status))
+            send_key(handle, "slash")
+            for char in secure_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            application_ready = _wait_guest_u32(
+                handle, tls_application_ready_addr, lambda value: (value & 0xff) != 0,
+                timeout_s=40)
+            completed_on_host = tls_complete.wait(5)
+            completed_status = _guest_bytes(
+                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            check("Pinned reconnect sends client Finished and completes TLS 1.3",
+                  ((application_ready & 0xff) != 0
+                   and _guest_u32(handle, tls_probe_stage_addr) == 9
+                   and completed_on_host and len(tls_completed) == 1
+                   and "TLS handshake complete" in completed_status))
         finally:
             shutdown(handle)
             server.shutdown()

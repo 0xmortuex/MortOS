@@ -32,6 +32,22 @@ let g_browser_tls_pending_host: [u8; 64] = [0; 64];
 let g_browser_tls_pending_port: u16 = 0;
 let g_browser_tls_pending: bool = false;
 let g_browser_tls_pin_matched: bool = false;
+let g_browser_tls_application_ready: bool = false;
+let g_browser_tls_client_app_key: [u8; 32] = [0; 32];
+let g_browser_tls_server_app_key: [u8; 32] = [0; 32];
+let g_browser_tls_client_app_iv: [u8; 12] = [0; 12];
+let g_browser_tls_server_app_iv: [u8; 12] = [0; 12];
+let g_browser_tls_client_app_sequence: u64 = 0;
+let g_browser_tls_server_app_sequence: u64 = 0;
+
+fn browser_tls_application_clear() {
+    g_browser_tls_application_ready = false;
+    browser_zero(&g_browser_tls_client_app_key as u64, 32);
+    browser_zero(&g_browser_tls_server_app_key as u64, 32);
+    browser_zero(&g_browser_tls_client_app_iv as u64, 12);
+    browser_zero(&g_browser_tls_server_app_iv as u64, 12);
+    g_browser_tls_client_app_sequence = 0; g_browser_tls_server_app_sequence = 0;
+}
 
 fn browser_net_lower(ch: u8) -> u8 { if ch >= 65 && ch <= 90 { return ch + 32; } return ch; }
 
@@ -437,9 +453,49 @@ fn browser_network_open(url: u64, secure: bool) -> bool {
     return browser_tcp_connect();
 }
 
+fn browser_tls_finish_client(handshake_secret: u64, client_traffic: u64,
+                             client_key: u64, client_iv: u64) -> bool {
+    let transcript_hash: [u8; 32] = [0; 32]; browser_tls_transcript_hash(&transcript_hash as u64);
+    let master_secret: [u8; 32] = [0; 32];
+    let client_app: [u8; 32] = [0; 32]; let server_app: [u8; 32] = [0; 32];
+    let finished: [u8; 32] = [0; 32];
+    let ok: bool = tls13_master_secret(handshake_secret, &master_secret as u64)
+        && tls13_application_traffic(&master_secret as u64, &transcript_hash as u64,
+                                     &client_app as u64, &server_app as u64)
+        && tls13_traffic_key(&client_app as u64, &g_browser_tls_client_app_key as u64,
+                             32, &g_browser_tls_client_app_iv as u64)
+        && tls13_traffic_key(&server_app as u64, &g_browser_tls_server_app_key as u64,
+                             32, &g_browser_tls_server_app_iv as u64)
+        && tls13_finished_calculate(client_traffic, &transcript_hash as u64, &finished as u64);
+    if !ok {
+        for i: u32 in 0..32 {
+            master_secret[i] = 0; client_app[i] = 0; server_app[i] = 0; finished[i] = 0;
+        }
+        browser_tls_application_clear(); return false;
+    }
+    let message: [u8; 36] = [0; 36]; message[0] = 20; message[3] = 32;
+    for i: u32 in 0..32 { message[4 + i] = finished[i]; }
+    let record: [u8; 64] = [0; 64];
+    let record_length: u32 = tls13_encrypt_record(
+        client_key, client_iv, 0, &message as u64, 36, 22, 0, &record as u64, 64);
+    if record_length == 0 || !browser_tls_transcript_append(&message as u64, 36) {
+        for i: u32 in 0..32 {
+            master_secret[i] = 0; client_app[i] = 0; server_app[i] = 0; finished[i] = 0;
+        }
+        browser_tls_application_clear(); return false;
+    }
+    browser_tcp_send(TCP_PSH | TCP_ACK, &record as u64, record_length);
+    g_browser_tls_client_app_sequence = 0; g_browser_tls_server_app_sequence = 0;
+    for i: u32 in 0..32 {
+        master_secret[i] = 0; client_app[i] = 0; server_app[i] = 0; finished[i] = 0;
+    }
+    g_browser_tls_application_ready = true; return true;
+}
+
 fn browser_tls_probe(url: u64) -> bool {
     g_browser_tls_probe_ok = false; g_browser_tls_probe_stage = 0;
     g_browser_tls_pending = false; g_browser_tls_pin_matched = false;
+    browser_tls_application_clear();
     browser_zero(&g_browser_tls_probe_server_key as u64, 32);
     browser_zero(&g_browser_tls_leaf_fingerprint as u64, 32);
     if !g_tls_entropy_ready { g_browser_tls_probe_stage = 101; return false; }
@@ -496,21 +552,27 @@ fn browser_tls_probe(url: u64) -> bool {
             &server_key as u64, &server_iv as u64, &server_traffic as u64);
         if server_flight_ok { g_browser_tls_probe_stage = 8; }
     }
+    g_browser_tls_probe_ok = derived && server_flight_ok;
+    if g_browser_tls_probe_ok {
+        g_browser_tls_pin_matched = browser_pin_matches(
+            &g_browser_net_host as u64, g_browser_net_port, &g_browser_tls_leaf_fingerprint as u64);
+        if g_browser_tls_pin_matched {
+            if browser_tls_finish_client(&handshake_secret as u64, &client_traffic as u64,
+                                         &client_key as u64, &client_iv as u64) {
+                g_browser_tls_probe_stage = 9;
+            } else { g_browser_tls_probe_ok = false; }
+        } else {
+            browser_zero(&g_browser_tls_pending_host as u64, 64);
+            browser_copy(&g_browser_tls_pending_host as u64, &g_browser_net_host as u64, 64);
+            g_browser_tls_pending_port = g_browser_net_port; g_browser_tls_pending = true;
+            browser_tcp_send(TCP_FIN | TCP_ACK, 0, 0);
+        }
+    }
     for i: u32 in 0..32 {
         private_key[i] = 0; handshake_secret[i] = 0; client_traffic[i] = 0; server_traffic[i] = 0;
         client_key[i] = 0; server_key[i] = 0;
     }
     for i: u32 in 0..12 { client_iv[i] = 0; server_iv[i] = 0; }
-    g_browser_tls_probe_ok = derived && server_flight_ok;
-    if g_browser_tls_probe_ok {
-        g_browser_tls_pin_matched = browser_pin_matches(
-            &g_browser_net_host as u64, g_browser_net_port, &g_browser_tls_leaf_fingerprint as u64);
-        if !g_browser_tls_pin_matched {
-            browser_zero(&g_browser_tls_pending_host as u64, 64);
-            browser_copy(&g_browser_tls_pending_host as u64, &g_browser_net_host as u64, 64);
-            g_browser_tls_pending_port = g_browser_net_port; g_browser_tls_pending = true;
-        }
-    }
     return g_browser_tls_probe_ok;
 }
 

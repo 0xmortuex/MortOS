@@ -342,7 +342,9 @@ fn browser_load(url: u64, add_history: bool) {
         if browser_tls_probe(url) {
             if g_browser_tls_pin_matched {
                 browser_set_title("Secure identity verified");
-                browser_set_status("Pinned certificate verified; application handshake pending");
+                if g_browser_tls_application_ready {
+                    browser_set_status("Pinned TLS handshake complete; HTTPS request pending");
+                } else { browser_set_status("Pinned identity verified; client Finished failed"); }
             } else {
                 browser_set_title("Certificate approval required");
                 browser_set_status("Untrusted cert. Press K to pin host; no data sent");
