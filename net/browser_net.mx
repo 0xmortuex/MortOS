@@ -21,6 +21,7 @@ let g_browser_net_secure: bool = false;
 let g_browser_tls_stream: [u8; 32768] = [0; 32768];
 let g_browser_tls_stream_len: u32 = 0;
 let g_browser_tls_record: [u8; 16645] = [0; 16645];
+let g_browser_tls_plaintext: [u8; 16624] = [0; 16624];
 let g_browser_tls_probe_ok: bool = false;
 let g_browser_tls_probe_stage: u32 = 0;
 let g_browser_tls_probe_server_key: [u8; 32] = [0; 32];
@@ -300,6 +301,38 @@ fn browser_tls_receive_record() -> u32 {
     return 0;
 }
 
+fn browser_tls_receive_encrypted_handshake(server_key: u64, server_iv: u64) -> bool {
+    let sequence: u64 = 0;
+    tls13_handshake_reset();
+    for attempt: u32 in 0..6 {
+        let record_length: u32 = browser_tls_receive_record();
+        if record_length == 0 { return false; }
+        // TLS 1.3 servers may send one unencrypted compatibility CCS after
+        // ServerHello. It is not part of the transcript or record sequence.
+        if g_browser_tls_record[0] == 20 {
+            if record_length != 6 || g_browser_tls_record[1] != 3 || g_browser_tls_record[2] != 3
+                || g_browser_tls_record[3] != 0 || g_browser_tls_record[4] != 1
+                || g_browser_tls_record[5] != 1 { return false; }
+        } else {
+            let content_type: u8 = 0;
+            let plaintext_length: u32 = tls13_decrypt_record(
+                server_key, server_iv, sequence, &g_browser_tls_record as u64, record_length,
+                &g_browser_tls_plaintext as u64, 16624, &content_type as u64);
+            if plaintext_length == 0xffffffff || content_type != 22 {
+                browser_zero(&g_browser_tls_plaintext as u64, 16624); return false;
+            }
+            let fed: bool = tls13_handshake_feed(&g_browser_tls_plaintext as u64, plaintext_length);
+            browser_zero(&g_browser_tls_plaintext as u64, 16624);
+            if !fed { return false; }
+            sequence = sequence + 1;
+            if tls13_handshake_ready() {
+                return tls13_handshake_type() == 8; // EncryptedExtensions
+            }
+        }
+    }
+    return false;
+}
+
 fn browser_network_open(url: u64, secure: bool) -> bool {
     if !browser_parse_url(url) || g_browser_net_secure != secure {
         browser_set_status("Address scheme does not match transport"); return false;
@@ -372,13 +405,18 @@ fn browser_tls_probe(url: u64) -> bool {
                                    &client_traffic as u64, &server_traffic as u64)
         && tls13_traffic_key(&client_traffic as u64, &client_key as u64, 32, &client_iv as u64)
         && tls13_traffic_key(&server_traffic as u64, &server_key as u64, 32, &server_iv as u64);
+    if derived { g_browser_tls_probe_stage = 6; }
+    let encrypted_ok: bool = false;
+    if derived {
+        encrypted_ok = browser_tls_receive_encrypted_handshake(&server_key as u64, &server_iv as u64);
+        if encrypted_ok { g_browser_tls_probe_stage = 7; }
+    }
     for i: u32 in 0..32 {
         private_key[i] = 0; handshake_secret[i] = 0; client_traffic[i] = 0; server_traffic[i] = 0;
         client_key[i] = 0; server_key[i] = 0;
     }
     for i: u32 in 0..12 { client_iv[i] = 0; server_iv[i] = 0; }
-    if derived { g_browser_tls_probe_stage = 6; }
-    g_browser_tls_probe_ok = derived; return derived;
+    g_browser_tls_probe_ok = derived && encrypted_ok; return g_browser_tls_probe_ok;
 }
 
 fn browser_text_newline() {

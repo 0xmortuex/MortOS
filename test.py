@@ -947,7 +947,13 @@ def browser_ui():
             links = _wait_guest_u32(handle, links_addr, lambda value: value >= 1)
             check("HTTP anchor is extracted as a navigable link", links >= 1)
 
-            remembered = _guest_bytes(handle, state_addr + 816, 80).split(b"\0", 1)[0].decode("ascii", "replace")
+            remembered = ""
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and remembered != address:
+                remembered = _guest_bytes(
+                    handle, state_addr + 816, 80).split(b"\0", 1)[0].decode("ascii", "replace")
+                if remembered != address:
+                    time.sleep(0.1)
             check("Last non-private HTTP page is stored for explicit recovery",
                   remembered == address)
             send_key(handle, "1")
@@ -1103,9 +1109,10 @@ def browser_ui():
                 timeout_s=30)
             secure_status = _guest_bytes(
                 handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
-            check("Vex negotiates a live TLS 1.3 ServerHello and derives handshake keys",
+            check("Vex authenticates a live encrypted TLS 1.3 handshake record",
                   (tls_probe & 0xff) != 0
                   and any(_guest_bytes(handle, tls_server_key_addr, 32))
+                  and _guest_u32(handle, tls_probe_stage_addr) == 7
                   and "certificate trust gate remains closed" in secure_status)
             if (tls_probe & 0xff) == 0:
                 print("TLS probe stage:", _guest_u32(handle, tls_probe_stage_addr),

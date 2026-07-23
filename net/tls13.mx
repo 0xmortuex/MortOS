@@ -158,9 +158,11 @@ fn tls13_build_client_hello(host: u64, host_length: u32, random: u64,
     *((output + (pos as u64)) as *u8) = 2; tls13_write_u16(output, pos + 1, 0x0304); pos = pos + 3;
     tls13_write_u16(output, pos, 0x000a); tls13_write_u16(output, pos + 2, 4); pos = pos + 4;
     tls13_write_u16(output, pos, 2); tls13_write_u16(output, pos + 2, 0x001d); pos = pos + 4;
-    tls13_write_u16(output, pos, 0x000d); tls13_write_u16(output, pos + 2, 8); pos = pos + 4;
-    tls13_write_u16(output, pos, 6); tls13_write_u16(output, pos + 2, 0x0403);
-    tls13_write_u16(output, pos + 4, 0x0804); tls13_write_u16(output, pos + 6, 0x0807); pos = pos + 8;
+    // Advertise only the signature scheme that the trust path can verify.
+    // Offering ECDSA or Ed25519 before implementing them can make a conforming
+    // server choose an algorithm that Vex would then have to reject.
+    tls13_write_u16(output, pos, 0x000d); tls13_write_u16(output, pos + 2, 4); pos = pos + 4;
+    tls13_write_u16(output, pos, 2); tls13_write_u16(output, pos + 2, 0x0804); pos = pos + 4;
     tls13_write_u16(output, pos, 0x0033); tls13_write_u16(output, pos + 2, 38); pos = pos + 4;
     tls13_write_u16(output, pos, 36); tls13_write_u16(output, pos + 2, 0x001d); tls13_write_u16(output, pos + 4, 32); pos = pos + 6;
     for i: u32 in 0..32 { *((output + ((pos + i) as u64)) as *u8) = *((public_key + (i as u64)) as *u8); }
