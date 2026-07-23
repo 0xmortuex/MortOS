@@ -1109,14 +1109,32 @@ def browser_ui():
                 timeout_s=30)
             secure_status = _guest_bytes(
                 handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
-            check("Vex verifies the live TLS 1.3 server flight and Finished",
+            check("Vex verifies the live TLS server and keeps untrusted identity gated",
                   (tls_probe & 0xff) != 0
                   and any(_guest_bytes(handle, tls_server_key_addr, 32))
                   and _guest_u32(handle, tls_probe_stage_addr) == 8
-                  and "chain trust gate remains closed" in secure_status)
+                  and "Press K to pin host" in secure_status)
             if (tls_probe & 0xff) == 0:
                 print("TLS probe stage:", _guest_u32(handle, tls_probe_stage_addr),
                       "status:", secure_status, "server:", tls_errors)
+            send_key(handle, "k")
+            private_pin_status = _guest_bytes(
+                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            check("Private mode refuses to persist certificate trust",
+                  (_guest_bytes(handle, state_addr + 7, 1)[0] == 0
+                   and "Leave private mode" in private_pin_status))
+            send_key(handle, "p")
+            send_key(handle, "k")
+            pin_host = _guest_bytes(
+                handle, state_addr + 896, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            pin_hash = _guest_bytes(handle, state_addr + 960, 32)
+            pin_port = int.from_bytes(_guest_bytes(handle, state_addr + 992, 2), "little")
+            pin_status = _guest_bytes(
+                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+            check("Explicit host-scoped certificate pin is saved to MortFS",
+                  (_guest_bytes(handle, state_addr + 7, 1)[0] == 1
+                   and pin_host == "10.0.2.2" and pin_port == tls_port
+                   and any(pin_hash) and "pin saved" in pin_status))
         finally:
             shutdown(handle)
             server.shutdown()
@@ -1131,7 +1149,8 @@ def browser_ui():
         send_key(handle, "esc")
         send_key(handle, "f3")
         state = _guest_bytes(handle, state_addr, 8)
-        check("Browser bookmarks survive a full reboot", state[6] >= 1)
+        check("Browser bookmarks and certificate pin survive a full reboot",
+              state[6] >= 1 and state[7] == 1)
     finally:
         shutdown(handle)
         try:

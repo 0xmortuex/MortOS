@@ -158,8 +158,11 @@ authenticates and decrypts the first protected record, and requires the
 EncryptedExtensions handshake message. It continues across protected records,
 parses the leaf certificate, validates its RTC validity interval and RSA key,
 verifies RSA-PSS CertificateVerify against the exact transcript, and verifies
-the server Finished value. It deliberately stops at the certificate-chain trust
-gate and does not expose unauthenticated response content.
+the server Finished value. The SHA-256 leaf fingerprint can then be approved
+explicitly with `K`; Vex stores one host-and-port-scoped pin in the user's
+MortFS state and compares it in constant time on later connections. Private
+mode cannot persist trust. It deliberately stops before application data until
+the pin or a future public certificate chain is trusted.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

@@ -7,6 +7,9 @@ let BROWSER_BOOKMARK_MAX: u32 = 4;
 let BROWSER_HISTORY_BASE: u32 = 16;
 let BROWSER_BOOKMARK_BASE: u32 = 496;
 let BROWSER_LAST_URL_BASE: u32 = 816;
+let BROWSER_PIN_HOST_BASE: u32 = 896;
+let BROWSER_PIN_HASH_BASE: u32 = 960;
+let BROWSER_PIN_PORT_BASE: u32 = 992;
 let BROWSER_STATE_MAGIC: u32 = 0x31535856; // "VXS1"
 
 let g_browser_state: [u8; 1024] = [0; 1024];
@@ -139,11 +142,41 @@ fn browser_link_add(text: u64, length: u32) {
 fn browser_history_count() -> u32 { return *((&g_browser_state as u64 + 4) as *u8) as u32; }
 fn browser_history_index() -> u32 { return *((&g_browser_state as u64 + 5) as *u8) as u32; }
 fn browser_bookmark_count() -> u32 { return *((&g_browser_state as u64 + 6) as *u8) as u32; }
+fn browser_pin_valid() -> bool { return *((&g_browser_state as u64 + 7) as *u8) == 1; }
 fn browser_last_url() -> u64 { return &g_browser_state as u64 + (BROWSER_LAST_URL_BASE as u64); }
+fn browser_pin_host() -> u64 { return &g_browser_state as u64 + (BROWSER_PIN_HOST_BASE as u64); }
+fn browser_pin_hash() -> u64 { return &g_browser_state as u64 + (BROWSER_PIN_HASH_BASE as u64); }
 
 fn browser_set_history_count(value: u32) { *((&g_browser_state as u64 + 4) as *u8) = value as u8; }
 fn browser_set_history_index(value: u32) { *((&g_browser_state as u64 + 5) as *u8) = value as u8; }
 fn browser_set_bookmark_count(value: u32) { *((&g_browser_state as u64 + 6) as *u8) = value as u8; }
+
+fn browser_pin_matches(host: u64, port: u16, fingerprint: u64) -> bool {
+    return browser_pin_valid() && browser_streq(browser_pin_host(), host)
+        && *((&g_browser_state as u64 + (BROWSER_PIN_PORT_BASE as u64)) as *u16) == port
+        && tls_bytes_equal(browser_pin_hash(), fingerprint, 32);
+}
+
+fn browser_pin_approve() {
+    if !g_browser_tls_pending {
+        browser_set_status("No verified certificate is waiting for approval"); browser_draw(); return;
+    }
+    if g_browser_private {
+        browser_set_status("Leave private mode before saving a trust pin"); browser_draw(); return;
+    }
+    browser_zero(browser_pin_host(), 64);
+    browser_copy(browser_pin_host(), &g_browser_tls_pending_host as u64, 64);
+    for i: u32 in 0..32 {
+        *((browser_pin_hash() + (i as u64)) as *u8) = g_browser_tls_leaf_fingerprint[i];
+    }
+    *((&g_browser_state as u64 + (BROWSER_PIN_PORT_BASE as u64)) as *u16) = g_browser_tls_pending_port;
+    *((&g_browser_state as u64 + 7) as *u8) = 1;
+    if browser_state_save() {
+        g_browser_tls_pending = false; g_browser_tls_pin_matched = true;
+        browser_set_status("Certificate pin saved; reload HTTPS");
+    } else { browser_set_status("Could not save certificate pin to MortFS"); }
+    browser_draw();
+}
 
 fn browser_state_reset() {
     browser_zero(&g_browser_state as u64, 1024);
@@ -180,6 +213,14 @@ fn browser_state_load() {
     if *(&g_browser_state as *u32) != BROWSER_STATE_MAGIC { browser_state_reset(); return; }
     if !browser_history_state_valid(browser_history_count(), browser_history_index(), browser_bookmark_count()) {
         browser_state_reset(); return;
+    }
+    if *((&g_browser_state as u64 + 7) as *u8) > 1 { browser_state_reset(); return; }
+    if browser_pin_valid() {
+        *((browser_pin_host() + 63) as *u8) = 0;
+        if *((browser_pin_host()) as *u8) == 0
+            || *((&g_browser_state as u64 + (BROWSER_PIN_PORT_BASE as u64)) as *u16) == 0 {
+            browser_state_reset(); return;
+        }
     }
     for i: u32 in 0..browser_history_count() { *((browser_slot(BROWSER_HISTORY_BASE, i) + 79) as *u8) = 0; }
     for i: u32 in 0..browser_bookmark_count() { *((browser_slot(BROWSER_BOOKMARK_BASE, i) + 79) as *u8) = 0; }
@@ -299,8 +340,13 @@ fn browser_load(url: u64, add_history: bool) {
         g_browser_loading = true; browser_set_title("Negotiating secure connection"); browser_set_status("Opening HTTPS"); browser_draw();
         g_browser_page = 7;
         if browser_tls_probe(url) {
-            browser_set_title("Secure server reached");
-            browser_set_status("TLS signatures verified; chain trust gate remains closed");
+            if g_browser_tls_pin_matched {
+                browser_set_title("Secure identity verified");
+                browser_set_status("Pinned certificate verified; application handshake pending");
+            } else {
+                browser_set_title("Certificate approval required");
+                browser_set_status("Untrusted cert. Press K to pin host; no data sent");
+            }
         } else {
             browser_set_title("Secure connection failed");
             browser_set_status("TLS negotiation failed closed");
@@ -824,6 +870,7 @@ fn browser_on_key(sc: u8) {
     if sc == 45 { browser_close_tab(); return; } // X
     if sc == 15 { browser_switch_tab(); return; } // Tab
     if sc == 25 { browser_toggle_private(); return; } // P
+    if sc == 37 { browser_pin_approve(); return; } // K
     if sc == 46 && g_browser_page == 5 { browser_clear_history(); return; } // C in settings
     if sc == 1 { browser_home(); return; }
 }

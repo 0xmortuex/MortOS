@@ -27,6 +27,11 @@ let g_browser_tls_transcript_len: u32 = 0;
 let g_browser_tls_probe_ok: bool = false;
 let g_browser_tls_probe_stage: u32 = 0;
 let g_browser_tls_probe_server_key: [u8; 32] = [0; 32];
+let g_browser_tls_leaf_fingerprint: [u8; 32] = [0; 32];
+let g_browser_tls_pending_host: [u8; 64] = [0; 64];
+let g_browser_tls_pending_port: u16 = 0;
+let g_browser_tls_pending: bool = false;
+let g_browser_tls_pin_matched: bool = false;
 
 fn browser_net_lower(ch: u8) -> u8 { if ch >= 65 && ch <= 90 { return ch + 32; } return ch; }
 
@@ -323,6 +328,7 @@ fn browser_tls_leaf_rsa(message: u64, message_length: u32,
     if !tls13_parse_certificate_message(message, message_length,
         &certificate_offset as u64, &certificate_length as u64) { return false; }
     let certificate: u64 = message + (certificate_offset as u64);
+    tls_sha256(certificate, certificate_length, &g_browser_tls_leaf_fingerprint as u64);
     let tbs_offset: u32 = 0; let tbs_length: u32 = 0;
     let signature_offset: u32 = 0; let signature_length: u32 = 0;
     if !tls_x509_certificate_shape(certificate, certificate_length,
@@ -433,7 +439,9 @@ fn browser_network_open(url: u64, secure: bool) -> bool {
 
 fn browser_tls_probe(url: u64) -> bool {
     g_browser_tls_probe_ok = false; g_browser_tls_probe_stage = 0;
+    g_browser_tls_pending = false; g_browser_tls_pin_matched = false;
     browser_zero(&g_browser_tls_probe_server_key as u64, 32);
+    browser_zero(&g_browser_tls_leaf_fingerprint as u64, 32);
     if !g_tls_entropy_ready { g_browser_tls_probe_stage = 101; return false; }
     if !g_tls_crypto_aead_ok { g_browser_tls_probe_stage = 102; return false; }
     if !g_tls_crypto_x25519_ok { g_browser_tls_probe_stage = 103; return false; }
@@ -493,7 +501,17 @@ fn browser_tls_probe(url: u64) -> bool {
         client_key[i] = 0; server_key[i] = 0;
     }
     for i: u32 in 0..12 { client_iv[i] = 0; server_iv[i] = 0; }
-    g_browser_tls_probe_ok = derived && server_flight_ok; return g_browser_tls_probe_ok;
+    g_browser_tls_probe_ok = derived && server_flight_ok;
+    if g_browser_tls_probe_ok {
+        g_browser_tls_pin_matched = browser_pin_matches(
+            &g_browser_net_host as u64, g_browser_net_port, &g_browser_tls_leaf_fingerprint as u64);
+        if !g_browser_tls_pin_matched {
+            browser_zero(&g_browser_tls_pending_host as u64, 64);
+            browser_copy(&g_browser_tls_pending_host as u64, &g_browser_net_host as u64, 64);
+            g_browser_tls_pending_port = g_browser_net_port; g_browser_tls_pending = true;
+        }
+    }
+    return g_browser_tls_probe_ok;
 }
 
 fn browser_text_newline() {
