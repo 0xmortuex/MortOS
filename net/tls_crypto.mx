@@ -462,4 +462,5 @@ fn tls_crypto_self_test() {
     tls_x25519_self_test();
     tls13_self_test();
     tls_entropy_self_test();
+    input_bounds_self_test();
 }

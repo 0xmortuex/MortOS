@@ -16,6 +16,7 @@ let g_browser_tcp_seq: u32 = 0;
 let g_browser_tcp_ack: u32 = 0;
 let g_browser_tcp_ipid: u16 = 0x4400;
 let g_browser_tcp_nonce: u32 = 0;
+let g_input_bounds_ok: bool = false;
 
 fn browser_net_lower(ch: u8) -> u8 { if ch >= 65 && ch <= 90 { return ch + 32; } return ch; }
 
@@ -167,10 +168,21 @@ fn browser_tcp_send(flags: u8, data: u64, data_len: u32) {
 fn browser_tcp_segment(rx: u64, length: u32) -> u64 {
     if length < 54 || eth_type(rx) != ETH_IP { return 0; }
     let ip: u64 = eth_payload(rx);
-    if ip_proto(ip) != IP_PROTO_TCP || !ip4_eq(ip_src(ip), &g_browser_net_ip as u64) { return 0; }
-    let tcp: u64 = ip + (ip_ihl_bytes(ip) as u64);
+    let ihl: u32 = ip_ihl_bytes(ip); let total: u32 = ip_total_len(ip) as u32;
+    if (*((ip + 0) as *u8) >> 4) != 4 || !browser_tcp_lengths_valid(length, ihl, total, 20) { return 0; }
+    let fragment: u32 = ((*((ip + 6) as *u8) as u32) << 8) | (*((ip + 7) as *u8) as u32);
+    if (fragment & 0x3fff) != 0 || ip_proto(ip) != IP_PROTO_TCP
+        || !ip4_eq(ip_src(ip), &g_browser_net_ip as u64) || !ip4_eq(ip_dst(ip), net_our_ip()) { return 0; }
+    let tcp: u64 = ip + (ihl as u64); let tcp_header: u32 = tcp_header_len(tcp);
+    if !browser_tcp_lengths_valid(length, ihl, total, tcp_header) { return 0; }
     if tcp_dst_port(tcp) != g_browser_tcp_source_port || tcp_src_port(tcp) != g_browser_net_port { return 0; }
     return tcp;
+}
+
+fn browser_tcp_lengths_valid(frame_length: u32, ihl: u32, total: u32, tcp_header: u32) -> bool {
+    if frame_length < 14 || ihl < 20 || ihl > 60 || (ihl & 3) != 0 || total < ihl
+        || total > frame_length - 14 || tcp_header < 20 || (tcp_header & 3) != 0 { return false; }
+    return tcp_header <= total - ihl;
 }
 
 fn browser_tcp_connect() -> bool {
@@ -211,8 +223,10 @@ fn browser_tcp_receive() -> bool {
                 let payload_len: u32 = (ip_total_len(ip) as u32) - ip_ihl_bytes(ip) - header;
                 let their_seq: u32 = tcp_seq(tcp);
                 if payload_len > 0 && their_seq == g_browser_tcp_ack {
+                    if g_browser_http_raw_len > 12287 { return false; }
                     let take: u32 = payload_len;
-                    if g_browser_http_raw_len + take > 12287 { take = 12287 - g_browser_http_raw_len; }
+                    let remaining: u32 = 12287 - g_browser_http_raw_len;
+                    if take > remaining { take = remaining; }
                     for i: u32 in 0..take {
                         g_browser_http_raw[g_browser_http_raw_len + i] = *((tcp + (header as u64) + (i as u64)) as *u8);
                     }
@@ -377,6 +391,11 @@ fn browser_hex_digit(ch: u8) -> u32 {
     return 16;
 }
 
+fn browser_chunk_size_add(current: u32, digit: u32) -> u32 {
+    if digit >= 16 || current > (12287 - digit) / 16 { return 0xffffffff; }
+    return current * 16 + digit;
+}
+
 fn browser_headers_chunked(body: u32) -> bool {
     let pos: u32 = 0;
     while pos + 18 < body {
@@ -396,6 +415,7 @@ fn browser_headers_chunked(body: u32) -> bool {
 }
 
 fn browser_decode_chunked(body: u32) -> bool {
+    if body > 12287 || body > g_browser_http_raw_len { browser_set_status("Invalid chunked HTTP body"); return false; }
     let read: u32 = body; let write: u32 = body;
     while read < g_browser_http_raw_len {
         let size: u32 = 0; let digits: u32 = 0;
@@ -406,14 +426,18 @@ fn browser_decode_chunked(body: u32) -> bool {
             }
             let digit: u32 = browser_hex_digit(g_browser_http_raw[read]);
             if digit >= 16 { browser_set_status("Invalid chunked HTTP response"); return false; }
-            size = size * 16 + digit; digits = digits + 1; read = read + 1;
+            let next_size: u32 = browser_chunk_size_add(size, digit);
+            if next_size == 0xffffffff { browser_set_status("HTTP chunk exceeds receive limit"); return false; }
+            size = next_size; digits = digits + 1; read = read + 1;
         }
         if digits == 0 { browser_set_status("Invalid chunked HTTP response"); return false; }
         if read < g_browser_http_raw_len && g_browser_http_raw[read] == 13 { read = read + 1; }
         if read >= g_browser_http_raw_len || g_browser_http_raw[read] != 10 { browser_set_status("Incomplete chunk header"); return false; }
         read = read + 1;
         if size == 0 { g_browser_http_raw_len = write; g_browser_http_raw[write] = 0; return true; }
-        if read + size > g_browser_http_raw_len { browser_set_status("Incomplete chunked HTTP body"); return false; }
+        let available: u32 = g_browser_http_raw_len - read;
+        if size > available { browser_set_status("Incomplete chunked HTTP body"); return false; }
+        if write > 12287 || size > 12287 - write { browser_set_status("Decoded HTTP body exceeds receive limit"); return false; }
         for i: u32 in 0..size { g_browser_http_raw[write + i] = g_browser_http_raw[read + i]; }
         write = write + size; read = read + size;
         if read < g_browser_http_raw_len && g_browser_http_raw[read] == 13 { read = read + 1; }
@@ -421,6 +445,22 @@ fn browser_decode_chunked(body: u32) -> bool {
         read = read + 1;
     }
     browser_set_status("Chunked HTTP body ended early"); return false;
+}
+
+fn input_bounds_self_test() {
+    let chunk_ok: bool = browser_chunk_size_add(0x2ff, 0xf) == 0x2fff
+        && browser_chunk_size_add(0x300, 0) == 0xffffffff
+        && browser_chunk_size_add(0xffffffff, 0xf) == 0xffffffff;
+    let tcp_ok: bool = browser_tcp_lengths_valid(54, 20, 40, 20)
+        && !browser_tcp_lengths_valid(54, 20, 19, 20)
+        && !browser_tcp_lengths_valid(54, 20, 41, 20)
+        && !browser_tcp_lengths_valid(54, 20, 40, 24);
+    let history_ok: bool = browser_history_state_valid(0, 0, 0)
+        && browser_history_state_valid(6, 5, 4)
+        && !browser_history_state_valid(1, 255, 0);
+    let usb_ok: bool = usb_descriptor_fits(9, 9, 18)
+        && !usb_descriptor_fits(60, 9, 64);
+    g_input_bounds_ok = chunk_ok && tcp_ok && history_ok && usb_ok;
 }
 
 fn browser_http_parse() -> bool {

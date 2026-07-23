@@ -427,7 +427,7 @@ fn usb_boot_parse_configuration() {
     while pos + 2 <= wanted {
         let size: u32 = g_usb_config[pos] as u32;
         let typ: u8 = g_usb_config[pos + 1];
-        if size < 2 { return; }
+        if size < 2 || !usb_descriptor_fits(pos, size, wanted) { return; }
         if typ == 4 && size >= 9 {
             active_interface = !have_interface;
             if active_interface {
@@ -474,6 +474,11 @@ fn usb_boot_parse_configuration() {
         }
     }
     if g_usb_configured && g_hw_bluetooth { usb_bluetooth_init(); }
+}
+
+fn usb_descriptor_fits(position: u32, size: u32, limit: u32) -> bool {
+    if position > limit { return false; }
+    return size <= limit - position;
 }
 
 fn usb_find_uhci() -> bool {
