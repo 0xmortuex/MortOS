@@ -1,8 +1,9 @@
 # MortOS x86-64 userspace ABI
 
-Status: design contract for the canonical Vex platform port. The long-mode
-kernel bootstrap is implemented; ring-3 execution and these syscalls are not
-yet implemented unless explicitly marked otherwise.
+Status: active implementation contract for the canonical Vex platform port.
+Long mode, ring-3 execution, a validating static ELF64 loader, W^X/NX mappings,
+user-fault containment, `write`, and `exit` are boot-tested. Other facilities
+remain planned unless explicitly marked otherwise.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
 Mort 0.39's hosted `net_*` intrinsic detection collides with MortOS's own
@@ -41,10 +42,16 @@ overflow, access permissions, and complete range validity before use.
 
 ## Required syscall groups
 
-The numeric table will be frozen only when its first implementation lands.
-The implementation order is:
+The initial numeric assignments are:
 
-1. `exit`, `write`, `read`, `close`, `yield`, `clock_gettime`.
+| Number | Call | Status |
+| --- | --- | --- |
+| 1 | `write(fd, buffer, length)` | Implemented for stdout with bounded user-range validation |
+| 60 | `exit(status)` | Implemented for the current process |
+
+The remaining implementation order is:
+
+1. `read`, `close`, `yield`, and `clock_gettime`.
 2. `mmap`, `munmap`, `mprotect`, `brk`, shared memory, and page-fault reporting.
 3. `openat`, `stat`, `getdents`, `pread`, `pwrite`, `fsync`, and file mapping.
 4. `spawn`, `execve`, `wait`, process IDs, threads, TLS, and futex-style waits.

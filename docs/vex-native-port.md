@@ -36,7 +36,9 @@ Windows package is only one host build. MortOS will become another host target:
 
 `python test_x86_64.py` boots the image, enables PAE and long mode, installs an
 identity map, crosses the 32-to-64-bit boundary, and verifies serial output
-from `arch/x86_64/kernel64.mx`.
+from `arch/x86_64/kernel64.mx`. It also enters an independently linked Mort
+ELF64 executable at ring 3, exercises SYSCALL/SYSRET, rejects a supervisor
+pointer, and contains a deliberate user page fault without rebooting.
 
 This is only the architectural bootstrap. It does not yet run Vex.
 
@@ -45,8 +47,8 @@ This is only the architectural bootstrap. It does not yet run Vex.
 | Layer | Required result | Status |
 | --- | --- | --- |
 | 64-bit architecture | Long-mode boot, page tables, 64-bit Mort entry | Boot-tested foundation |
-| Kernel isolation | Physical/virtual memory managers, NX, ring 3, TSS, per-process address spaces | Next |
-| Process runtime | ELF64 loader, scheduler, threads, signals/exceptions, handles, IPC | Planned |
+| Kernel isolation | GDT/TSS/IDT, NX, ring 3, supervisor/user page protection, user-fault containment | Boot-tested foundation; address-space lifecycle next |
+| Process runtime | Validating ELF64 ET_EXEC loader, W^X PT_LOAD mappings, `write`/`exit` syscalls | Boot-tested foundation; scheduler, threads, handles, IPC next |
 | MortOS ABI | Stable syscalls for files, memory, time, networking, graphics, input, audio, and entropy | Specified in `x86_64-userspace-abi.md` |
 | C/C++ platform | LLVM target, libc/libc++, atomics, pthread-compatible layer, build tools | Planned |
 | Node/V8 | V8 JIT permissions, libuv event loop, Node filesystem/network/process APIs | Planned |

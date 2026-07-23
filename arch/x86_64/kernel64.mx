@@ -10,6 +10,22 @@
 let g_frame_bitmap64: [u8; 32768] = [0xFF; 32768];
 let g_frame_limit64: u32 = 0;
 let g_frame_free64: u32 = 0;
+let g_breakpoint_seen64: bool = false;
+let g_user_probe_seen64: bool = false;
+let g_user_exit_seen64: bool = false;
+let g_user_exit_status64: u64 = 0;
+let g_user_entry64: u64 = 0;
+let g_user_pt64: u64 = 0;
+let g_user_pointer_rejected64: bool = false;
+let g_user_fault_seen64: bool = false;
+let g_user_fault_vector64: u64 = 0;
+let g_user_fault_error64: u64 = 0;
+
+extern fn mort64_cpu_init() -> u64;
+extern fn mort64_idt_self_test();
+extern fn mort64_user_image() -> u64;
+extern fn mort64_user_image_size() -> u64;
+extern fn mort64_enter_user(entry: u64, stack_top: u64, page_root: u64);
 
 fn serial_init64() {
     outb(0x3F9, 0);       // disable UART interrupts
@@ -162,6 +178,275 @@ fn phys_self_test64() -> bool {
     return g_frame_free64 == before;
 }
 
+fn page_zero64(address: u64) {
+    let index: u32 = 0;
+    while index < 512 {
+        *((address + ((index as u64) * 8)) as *u64) = 0;
+        index = index + 1;
+    }
+}
+
+fn page_table_alloc64() -> u64 {
+    let address: u64 = frame_alloc64();
+    if address != 0 {
+        page_zero64(address);
+    }
+    return address;
+}
+
+fn page_table_set64(table: u64, index: u32, value: u64) {
+    if index < 512 {
+        *((table + ((index as u64) * 8)) as *u64) = value;
+    }
+}
+
+fn page_copy64(destination: u64, source: u64, count: u64) {
+    let offset: u64 = 0;
+    while offset < count {
+        *((destination + offset) as *u8) = *((source + offset) as *u8);
+        offset = offset + 1;
+    }
+}
+
+// Validate and load an ELF64 ET_EXEC image into an isolated address space:
+//   0..16 MiB      supervisor-only identity map for kernel/runtime
+//   16..18 MiB     ELF PT_LOAD segments plus a non-executable stack
+//   18 MiB..1 GiB  supervisor-only identity map for kernel frame access
+//
+// Upper paging levels carry U/S so the leaf PTE decides access. Kernel 2 MiB
+// leaves remain supervisor-only. ELF pages enforce W^X and BSS starts zeroed.
+fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
+    if image == 0 || image_size < 64 || image_size > 0x00100000 {
+        return 0;
+    }
+    if *((image + 0) as *u8) != 0x7F
+        || *((image + 1) as *u8) != 0x45
+        || *((image + 2) as *u8) != 0x4C
+        || *((image + 3) as *u8) != 0x46
+        || *((image + 4) as *u8) != 2
+        || *((image + 5) as *u8) != 1 {
+        return 0;
+    }
+    if *((image + 16) as *u16) != 2
+        || *((image + 18) as *u16) != 0x3E {
+        return 0;
+    }
+    let entry: u64 = *((image + 24) as *u64);
+    let program_offset: u64 = *((image + 32) as *u64);
+    let program_size: u64 = (*((image + 54) as *u16)) as u64;
+    let program_count: u64 = (*((image + 56) as *u16)) as u64;
+    if entry < 0x01000000 || entry >= 0x011FF000
+        || program_size < 56 || program_count == 0 || program_count > 32 {
+        return 0;
+    }
+    let table_size: u64 = program_size * program_count;
+    if table_size / program_count != program_size
+        || program_offset > image_size
+        || table_size > image_size - program_offset {
+        return 0;
+    }
+
+    let pml4: u64 = page_table_alloc64();
+    let pdpt: u64 = page_table_alloc64();
+    let pd: u64 = page_table_alloc64();
+    let user_pt: u64 = page_table_alloc64();
+    if pml4 == 0 || pdpt == 0 || pd == 0 || user_pt == 0 {
+        return 0;
+    }
+
+    page_table_set64(pml4, 0, pdpt | 0x7);
+    page_table_set64(pdpt, 0, pd | 0x7);
+    let directory_index: u32 = 0;
+    while directory_index < 512 {
+        if directory_index != 8 {
+            page_table_set64(
+                pd,
+                directory_index,
+                ((directory_index as u64) * 0x00200000) | 0x83);
+        }
+        directory_index = directory_index + 1;
+    }
+    page_table_set64(pd, 8, user_pt | 0x7);
+
+    let loaded_segments: u32 = 0;
+    let program_index: u64 = 0;
+    let no_execute: u64 = (1 as u64) << 63;
+    while program_index < program_count {
+        let header: u64 = image + program_offset
+            + (program_index * program_size);
+        let segment_type: u32 = *((header + 0) as *u32);
+        if segment_type == 1 {
+            let flags: u32 = *((header + 4) as *u32);
+            let file_offset: u64 = *((header + 8) as *u64);
+            let virtual_address: u64 = *((header + 16) as *u64);
+            let file_size: u64 = *((header + 32) as *u64);
+            let memory_size: u64 = *((header + 40) as *u64);
+            let segment_end: u64 = virtual_address + memory_size;
+            let file_end: u64 = file_offset + file_size;
+            if (flags & 1) != 0 && (flags & 2) != 0 {
+                return 0;                         // W^X
+            }
+            if file_size > memory_size
+                || segment_end < virtual_address
+                || virtual_address < 0x01000000
+                || segment_end > 0x011FF000
+                || file_end < file_offset
+                || file_end > image_size {
+                return 0;
+            }
+
+            if memory_size != 0 {
+                let page_address: u64 = (virtual_address / 4096) * 4096;
+                let page_limit: u64 = ((segment_end + 4095) / 4096) * 4096;
+                while page_address < page_limit {
+                    let page_index: u32 =
+                        ((page_address - 0x01000000) / 4096) as u32;
+                    let slot: *u64 = (user_pt
+                        + ((page_index as u64) * 8)) as *u64;
+                    if *slot != 0 {
+                        return 0;                 // overlapping PT_LOAD pages
+                    }
+                    let frame: u64 = frame_alloc64();
+                    if frame == 0 {
+                        return 0;
+                    }
+                    page_zero64(frame);           // includes ELF BSS
+                    let page_flags: u64 = 0x5;    // present + user
+                    if (flags & 2) != 0 {
+                        page_flags = page_flags | 0x2;
+                    }
+                    if (flags & 1) == 0 {
+                        page_flags = page_flags | no_execute;
+                    }
+                    *slot = frame | page_flags;
+
+                    let copy_start: u64 = page_address;
+                    if copy_start < virtual_address {
+                        copy_start = virtual_address;
+                    }
+                    let copy_limit: u64 = page_address + 4096;
+                    let segment_file_limit: u64 = virtual_address + file_size;
+                    if copy_limit > segment_file_limit {
+                        copy_limit = segment_file_limit;
+                    }
+                    if copy_start < copy_limit {
+                        page_copy64(
+                            frame + (copy_start - page_address),
+                            image + file_offset
+                                + (copy_start - virtual_address),
+                            copy_limit - copy_start);
+                    }
+                    page_address = page_address + 4096;
+                }
+                loaded_segments = loaded_segments + 1;
+            }
+        }
+        program_index = program_index + 1;
+    }
+    if loaded_segments == 0 {
+        return 0;
+    }
+
+    let stack_frame: u64 = frame_alloc64();
+    if stack_frame == 0 {
+        return 0;
+    }
+    page_zero64(stack_frame);
+    page_table_set64(
+        user_pt,
+        511,
+        stack_frame | no_execute | 0x7); // user RW, NX
+    g_user_entry64 = entry;
+    g_user_pt64 = user_pt;
+    return pml4;
+}
+
+fn on_exception64(
+    vector: u64,
+    error: u64,
+    rip: u64,
+    code_segment: u64
+) -> u64 {
+    if vector == 3 {
+        g_breakpoint_seen64 = true;
+        return 0;
+    }
+    if (code_segment & 3) == 3 {
+        g_user_fault_seen64 = true;
+        g_user_fault_vector64 = vector;
+        g_user_fault_error64 = error;
+        serial_write64("MORT64: user CPU fault contained\r\n");
+        return 1;
+    }
+    serial_write64("MORT64 ERROR: unhandled CPU exception\r\n");
+    if error != 0 || rip != 0 || code_segment != 0 {
+        serial_write64("MORT64: exception frame captured\r\n");
+    }
+    asm("cli");
+    while true {
+        asm("hlt");
+    }
+    return 0;
+}
+
+fn user_range_readable64(address: u64, length: u64) -> bool {
+    if length == 0 {
+        return true;
+    }
+    let limit: u64 = address + length;
+    if limit < address
+        || address < 0x01000000
+        || limit > 0x01200000
+        || g_user_pt64 == 0 {
+        return false;
+    }
+    let page: u64 = (address / 4096) * 4096;
+    while page < limit {
+        let index: u32 = ((page - 0x01000000) / 4096) as u32;
+        let entry: u64 = *((g_user_pt64
+            + ((index as u64) * 8)) as *u64);
+        if (entry & 0x5) != 0x5 {               // present and user-accessible
+            return false;
+        }
+        page = page + 4096;
+    }
+    return true;
+}
+
+fn syscall_dispatch64(
+    number: u64,
+    argument0: u64,
+    argument1: u64,
+    argument2: u64
+) -> u64 {
+    if number == 1 {
+        if argument0 != 1 {
+            return ~(8 as u64);                 // -EBADF
+        }
+        if argument2 > 4096
+            || !user_range_readable64(argument1, argument2) {
+            g_user_pointer_rejected64 = true;
+            serial_write64(
+                "MORT64: syscall rejected supervisor pointer\r\n");
+            return ~(13 as u64);                // -EFAULT
+        }
+        let offset: u64 = 0;
+        while offset < argument2 {
+            serial_put64(*((argument1 + offset) as *u8));
+            offset = offset + 1;
+        }
+        g_user_probe_seen64 = true;
+        serial_write64("MORT64: ring 3 Mort program invoked write\r\n");
+        return argument2;
+    }
+    return ~(37 as u64); // -ENOSYS
+}
+
+fn on_user_exit64(status: u64) {
+    g_user_exit_status64 = status;
+    g_user_exit_seen64 = true;
+}
+
 fn kmain64(multiboot_info: u64) {
     serial_init64();
     serial_write64("MORT64: long mode active\r\n");
@@ -180,6 +465,47 @@ fn kmain64(multiboot_info: u64) {
         }
     } else {
         serial_write64("MORT64 ERROR: physical memory map unavailable\r\n");
+    }
+
+    if mort64_cpu_init() != 0 {
+        serial_write64("MORT64: GDT TSS IDT and SYSCALL active\r\n");
+        mort64_idt_self_test();
+        if g_breakpoint_seen64 {
+            serial_write64("MORT64: IDT breakpoint self-test passed\r\n");
+        } else {
+            serial_write64("MORT64 ERROR: IDT breakpoint was not handled\r\n");
+        }
+
+        let user_image: u64 = mort64_user_image();
+        let user_size: u64 = mort64_user_image_size();
+        let user_root: u64 = elf64_user_page_root(user_image, user_size);
+        if user_root != 0 {
+            serial_write64("MORT64: ELF64 loader mapped W^X userspace\r\n");
+            mort64_enter_user(g_user_entry64, 0x01200000, user_root);
+            if g_user_probe_seen64 && g_user_pointer_rejected64
+                && g_user_exit_seen64
+                && g_user_exit_status64 == 42 {
+                serial_write64("MORT64: protected Mort userspace passed\r\n");
+            } else {
+                serial_write64("MORT64 ERROR: protected userspace failed\r\n");
+            }
+
+            g_user_fault_seen64 = false;
+            mort64_enter_user(0x01010000, 0x01200000, user_root);
+            if g_user_fault_seen64
+                && g_user_fault_vector64 == 14
+                && (g_user_fault_error64 & 0x5) == 0x5 {
+                serial_write64(
+                    "MORT64: supervisor page fault isolation passed\r\n");
+            } else {
+                serial_write64(
+                    "MORT64 ERROR: supervisor page isolation failed\r\n");
+            }
+        } else {
+            serial_write64("MORT64 ERROR: userspace page table failed\r\n");
+        }
+    } else {
+        serial_write64("MORT64 ERROR: protected CPU setup failed\r\n");
     }
     serial_write64("MORT64: bootstrap foundation ready\r\n");
 

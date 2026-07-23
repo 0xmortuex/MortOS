@@ -82,11 +82,13 @@ BUILD64 = os.path.join(BUILD, "x86_64")
 ELF64 = os.path.join(BUILD64, "kernel.elf")          # bootable ELF32 trampoline
 PAYLOAD64 = os.path.join(BUILD64, "kernel64.elf")   # genuine ELF64 Mort kernel
 PAYLOAD64_BIN = os.path.join(BUILD64, "payload.bin")
+USER64_ELF = os.path.join(BUILD64, "user_probe.elf")
 DISK = os.path.join(BUILD, "disk.img")
 
 # User programs: compiled from programs/*.mx into flat binaries the kernel
 # loads at 0x00A00000 and enters at byte 0 (see programs/prog.ld / pstart.s).
 PROGRAMS = os.path.join(HERE, "programs")
+PROGRAMS64 = os.path.join(HERE, "programs64")
 
 # Bootable-ISO tooling (downloaded + cached once under kernel/tools/).
 TOOLS = os.path.join(HERE, "tools")
@@ -198,12 +200,6 @@ def build64():
     cc = _zig()
     arch = os.path.join(HERE, "arch", "x86_64")
 
-    with open(os.path.join(arch, "kernel64.mx"), encoding="utf-8") as fh:
-        c_source = mortc.compile_to_c(fh.read(), freestanding=True)
-    kernel_c = os.path.join(BUILD64, "kernel64.c")
-    with open(kernel_c, "w", encoding="utf-8") as fh:
-        fh.write(c_source)
-
     c_flags = [
         "-target", TARGET64, "-ffreestanding", "-fno-builtin",
         "-fno-stack-protector", "-fno-pie", "-fno-asynchronous-unwind-tables",
@@ -211,9 +207,54 @@ def build64():
         "-mno-mmx", "-O2",
     ]
     asm_flags = ["-target", TARGET64, "-fno-pie"]
+
+    # Build a separate Mort ELF64 userspace program. The kernel embeds its flat
+    # load image, maps it user-only at 16 MiB, and enters it at CPL3.
+    with open(os.path.join(PROGRAMS64, "probe.mx"), encoding="utf-8") as fh:
+        user_c_source = mortc.compile_to_c(fh.read(), freestanding=True)
+    user_c = os.path.join(BUILD64, "user_probe.c")
+    with open(user_c, "w", encoding="utf-8") as fh:
+        fh.write(user_c_source)
+    user_o = os.path.join(BUILD64, "user_probe.o")
+    user_start_o = os.path.join(BUILD64, "user_pstart.o")
+    user_syscall_o = os.path.join(BUILD64, "user_syscall.o")
+    user_runtime_o = os.path.join(BUILD64, "user_runtime.o")
+    subprocess.run([*cc, *c_flags, "-c", user_c, "-o", user_o], check=True)
+    subprocess.run([*cc, *c_flags, "-c", os.path.join(HERE, "runtime.c"),
+                    "-o", user_runtime_o], check=True)
+    subprocess.run([*cc, *asm_flags, "-c",
+                    os.path.join(PROGRAMS64, "pstart.s"),
+                    "-o", user_start_o], check=True)
+    subprocess.run([*cc, *asm_flags, "-c",
+                    os.path.join(PROGRAMS64, "syscall.s"),
+                    "-o", user_syscall_o], check=True)
+    subprocess.run([
+        *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",
+        "-Wl,-T," + os.path.join(PROGRAMS64, "prog.ld"),
+        "-Wl,--build-id=none", "-Wl,-e,_user_start",
+        "-o", USER64_ELF, user_start_o, user_syscall_o, user_o, user_runtime_o,
+    ], check=True)
+    # Invalidate Zig's .incbin cache whenever the userspace ELF changes.
+    with open(USER64_ELF, "rb") as fh:
+        user_digest = hashlib.sha256(fh.read()).hexdigest()
+    with open(os.path.join(arch, "user_blob.s"), encoding="utf-8") as fh:
+        user_blob_source = fh.read()
+    generated_user_blob = os.path.join(BUILD64, "user_blob.generated.s")
+    with open(generated_user_blob, "w", encoding="utf-8") as fh:
+        fh.write(f"/* embedded userspace sha256: {user_digest} */\n")
+        fh.write(user_blob_source)
+
+    with open(os.path.join(arch, "kernel64.mx"), encoding="utf-8") as fh:
+        c_source = mortc.compile_to_c(fh.read(), freestanding=True)
+    kernel_c = os.path.join(BUILD64, "kernel64.c")
+    with open(kernel_c, "w", encoding="utf-8") as fh:
+        fh.write(c_source)
+
     kernel_o = os.path.join(BUILD64, "kernel64.o")
     runtime_o = os.path.join(BUILD64, "runtime.o")
     entry_o = os.path.join(BUILD64, "entry64.o")
+    cpu_o = os.path.join(BUILD64, "cpu64.o")
+    user_blob_o = os.path.join(BUILD64, "user_blob.o")
     boot_o = os.path.join(BUILD64, "boot.o")
 
     subprocess.run([*cc, *c_flags, "-c", kernel_c, "-o", kernel_o], check=True)
@@ -221,11 +262,15 @@ def build64():
                     "-o", runtime_o], check=True)
     subprocess.run([*cc, *asm_flags, "-c", os.path.join(arch, "entry64.s"),
                     "-o", entry_o], check=True)
+    subprocess.run([*cc, *asm_flags, "-c", os.path.join(arch, "cpu64.s"),
+                    "-o", cpu_o], check=True)
+    subprocess.run([*cc, *asm_flags, "-c", generated_user_blob,
+                    "-o", user_blob_o], cwd=HERE, check=True)
     subprocess.run([
         *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",
         "-Wl,-T," + os.path.join(arch, "linker.ld"),
         "-Wl,--build-id=none", "-Wl,-e,_payload_start",
-        "-o", PAYLOAD64, entry_o, kernel_o, runtime_o,
+        "-o", PAYLOAD64, entry_o, cpu_o, user_blob_o, kernel_o, runtime_o,
     ], check=True)
 
     objcopy = cc[:-1] + ["objcopy"]
@@ -255,6 +300,7 @@ def build64():
         "-o", ELF64, boot_o,
     ], check=True)
     print(f"built {os.path.relpath(PAYLOAD64, ROOT)} (ELF64 Mort kernel)")
+    print(f"built {os.path.relpath(USER64_ELF, ROOT)} (ELF64 Mort userspace)")
     print(f"built {os.path.relpath(ELF64, ROOT)} (Multiboot trampoline + payload)")
 
 
@@ -301,7 +347,42 @@ def check64():
     require(payload_bin and payload_bin in bootstrap,
             "ELF64 payload is not embedded in the Multiboot image")
 
+    with open(USER64_ELF, "rb") as fh:
+        user_elf = fh.read()
+    require(user_elf[:4] == b"\x7fELF" and user_elf[4] == 2,
+            "userspace probe is not ELFCLASS64")
+    user_machine = struct.unpack("<H", user_elf[18:20])[0]
+    require(user_machine == 0x3E, "userspace probe is not EM_X86_64")
+    user_entry = struct.unpack("<Q", user_elf[24:32])[0]
+    require(user_entry == 0x01000000,
+            f"userspace entry is {hex(user_entry)}, expected 0x01000000")
+    user_phoff = struct.unpack("<Q", user_elf[32:40])[0]
+    user_phentsize = struct.unpack("<H", user_elf[54:56])[0]
+    user_phnum = struct.unpack("<H", user_elf[56:58])[0]
+    require(user_phentsize >= 56 and 0 < user_phnum <= 32,
+            "userspace ELF has an invalid program-header table")
+    require(user_phoff + user_phentsize * user_phnum <= len(user_elf),
+            "userspace ELF program headers exceed the file")
+    load_segments = 0
+    for index in range(user_phnum):
+        header = user_phoff + index * user_phentsize
+        segment_type, flags = struct.unpack("<II", user_elf[header:header + 8])
+        if segment_type != 1:
+            continue
+        load_segments += 1
+        virtual_address = struct.unpack("<Q", user_elf[header + 16:header + 24])[0]
+        memory_size = struct.unpack("<Q", user_elf[header + 40:header + 48])[0]
+        require(not (flags & 1 and flags & 2),
+                "userspace ELF contains a writable+executable PT_LOAD segment")
+        require(0x01000000 <= virtual_address
+                and virtual_address + memory_size <= 0x011FF000,
+                "userspace PT_LOAD segment is outside the process window")
+    require(load_segments > 0, "userspace ELF has no PT_LOAD segments")
+    require(user_elf in payload_bin,
+            "ELF64 userspace executable is not embedded in the kernel payload")
+
     print(f"OK: genuine ELF64 Mort payload at 0x200000")
+    print("OK: isolated W^X ELF64 Mort userspace image at 0x01000000")
     print(f"OK: ELF32 Multiboot trampoline; valid header at file offset {offset}")
     print("OK: ELF64 payload embedded in the bootable image")
     print("Boot it with:  python build.py run64")

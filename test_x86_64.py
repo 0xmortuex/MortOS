@@ -51,12 +51,28 @@ def main():
         "MORT64: Multiboot handoff received",
         "MORT64: Multiboot memory map accepted",
         "MORT64: physical frame allocator passed",
+        "MORT64: GDT TSS IDT and SYSCALL active",
+        "MORT64: IDT breakpoint self-test passed",
+        "MORT64: ELF64 loader mapped W^X userspace",
+        "MORT64: syscall rejected supervisor pointer",
+        "MORT64 USERSPACE OK",
+        "MORT64: ring 3 Mort program invoked write",
+        "MORT64: protected Mort userspace passed",
+        "MORT64: user CPU fault contained",
+        "MORT64: supervisor page fault isolation passed",
         "MORT64: bootstrap foundation ready",
     ]
     missing = [line for line in expected if line not in output]
-    if missing:
+    errors = [line for line in output.splitlines()
+              if line.startswith("MORT64 ERROR:")]
+    if missing or errors:
         print(output)
-        sys.exit("x86-64 boot test FAILED; missing: " + ", ".join(missing))
+        details = []
+        if missing:
+            details.append("missing: " + ", ".join(missing))
+        if errors:
+            details.append("kernel errors: " + " | ".join(errors))
+        sys.exit("x86-64 boot test FAILED; " + "; ".join(details))
 
     print("OK: x86-64 long-mode boot entered Mort code")
     for line in expected:
