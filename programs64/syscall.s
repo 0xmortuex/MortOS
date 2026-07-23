@@ -30,6 +30,14 @@ mortos_yield:
     ret
 .size mortos_yield, . - mortos_yield
 
+.global mortos_brk
+.type mortos_brk, @function
+mortos_brk:
+    mov $12, %rax                  /* SYS_brk */
+    syscall
+    ret
+.size mortos_brk, . - mortos_brk
+
 /*
  * A second fixed ELF entry used only by the kernel isolation test. It attempts
  * a direct read from the supervisor-only kernel mapping. Reaching SYS_exit

@@ -393,7 +393,7 @@ def check64():
             require(not (flags & 1 and flags & 2),
                     f"userspace {user_name} has a writable+executable segment")
             require(0x01000000 <= virtual_address
-                    and virtual_address + memory_size <= 0x011FF000,
+                    and virtual_address + memory_size <= 0x01100000,
                     f"userspace {user_name} segment is outside process window")
         require(load_segments > 0,
                 f"userspace {user_name} has no PT_LOAD segments")

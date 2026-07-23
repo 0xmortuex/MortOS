@@ -197,6 +197,14 @@ mort64_resume_user:
     sysretq
 .size mort64_resume_user, . - mort64_resume_user
 
+.global mort64_flush_tlb
+.type mort64_flush_tlb, @function
+mort64_flush_tlb:
+    mov %cr3, %rax
+    mov %rax, %cr3
+    ret
+.size mort64_flush_tlb, . - mort64_flush_tlb
+
 .type mort64_syscall_entry, @function
 mort64_syscall_entry:
     cmp $24, %rax                   /* cooperative process yield */

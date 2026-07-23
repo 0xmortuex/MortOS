@@ -7,6 +7,7 @@
 extern fn mortos_write(text: *u8, length: u64) -> u64;
 extern fn mortos_getpid() -> u64;
 extern fn mortos_yield() -> u64;
+extern fn mortos_brk(address: u64) -> u64;
 
 fn main() -> int {
     if mortos_getpid() != 1 {
@@ -21,6 +22,17 @@ fn main() -> int {
     }
     if mortos_write("MORT64 PROCESS 1 RESUMED\r\n", 26) != 26 {
         return 5;
+    }
+    let heap: u64 = mortos_brk(0);
+    if heap != 0x01100000 || mortos_brk(heap + 8192) != heap + 8192 {
+        return 6;
+    }
+    *((heap + 4096) as *u64) = 0x4D4F525448454150;
+    if *((heap + 4096) as *u64) != 0x4D4F525448454150 {
+        return 7;
+    }
+    if mortos_brk(heap) != heap {
+        return 8;
     }
     let written: u64 = mortos_write("MORT64 USERSPACE OK\r\n", 21);
     if written != 21 {
