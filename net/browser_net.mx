@@ -20,6 +20,7 @@ let g_input_bounds_ok: bool = false;
 let g_browser_net_secure: bool = false;
 let g_browser_tls_stream: [u8; 32768] = [0; 32768];
 let g_browser_tls_stream_len: u32 = 0;
+let g_browser_tls_peer_closed: bool = false;
 let g_browser_tls_record: [u8; 16645] = [0; 16645];
 let g_browser_tls_plaintext: [u8; 16624] = [0; 16624];
 let g_browser_tls_transcript: [u8; 65536] = [0; 65536];
@@ -39,6 +40,7 @@ let g_browser_tls_client_app_iv: [u8; 12] = [0; 12];
 let g_browser_tls_server_app_iv: [u8; 12] = [0; 12];
 let g_browser_tls_client_app_sequence: u64 = 0;
 let g_browser_tls_server_app_sequence: u64 = 0;
+let g_browser_tls_http_ok: bool = false;
 
 fn browser_tls_application_clear() {
     g_browser_tls_application_ready = false;
@@ -279,7 +281,7 @@ fn browser_tcp_receive() -> bool {
     return received;
 }
 
-fn browser_tls_stream_reset() { g_browser_tls_stream_len = 0; }
+fn browser_tls_stream_reset() { g_browser_tls_stream_len = 0; g_browser_tls_peer_closed = false; }
 
 fn browser_tls_transcript_reset() { g_browser_tls_transcript_len = 0; }
 
@@ -310,6 +312,7 @@ fn browser_tls_receive_record() -> u32 {
                 g_browser_tls_stream_len = remaining; return record_length;
             }
         }
+        if g_browser_tls_peer_closed { return 0; }
         let n: u32 = rtl_poll_rx(&g_net_rx as u64);
         if n == 0 { idle = idle + 1; }
         else {
@@ -331,7 +334,11 @@ fn browser_tls_receive_record() -> u32 {
                 } else if payload_length > 0 && their_sequence < g_browser_tcp_ack {
                     browser_tcp_send(TCP_ACK, 0, 0);
                 }
-                if (flags & TCP_FIN) != 0 { return 0; }
+                if (flags & TCP_FIN) != 0 {
+                    let fin_sequence: u32 = their_sequence + payload_length;
+                    if fin_sequence == g_browser_tcp_ack { g_browser_tcp_ack = g_browser_tcp_ack + 1; }
+                    browser_tcp_send(TCP_ACK, 0, 0); g_browser_tls_peer_closed = true;
+                }
             }
         }
     }
@@ -492,9 +499,79 @@ fn browser_tls_finish_client(handshake_secret: u64, client_traffic: u64,
     g_browser_tls_application_ready = true; return true;
 }
 
+fn browser_http_build_request() -> u32 {
+    browser_zero(&g_browser_http_request as u64, 384); let req: u32 = 0;
+    req = browser_request_append(req, "GET " as u64);
+    req = browser_request_append(req, &g_browser_net_path as u64);
+    req = browser_request_append(req, " HTTP/1.0\r\nHost: " as u64);
+    req = browser_request_append(req, &g_browser_net_host as u64);
+    req = browser_request_append(req,
+        "\r\nUser-Agent: MortOS-Vex/1.0\r\nAccept: text/html,text/plain\r\nConnection: close\r\n\r\n" as u64);
+    return req;
+}
+
+fn browser_tls_http_receive() -> bool {
+    g_browser_http_raw_len = 0; tls13_handshake_reset();
+    for record_count: u32 in 0..64 {
+        let record_length: u32 = browser_tls_receive_record();
+        if record_length == 0 { return g_browser_http_raw_len > 0; }
+        let content_type: u8 = 0;
+        let plaintext_length: u32 = tls13_decrypt_record(
+            &g_browser_tls_server_app_key as u64, &g_browser_tls_server_app_iv as u64,
+            g_browser_tls_server_app_sequence, &g_browser_tls_record as u64, record_length,
+            &g_browser_tls_plaintext as u64, 16624, &content_type as u64);
+        if plaintext_length == 0xffffffff {
+            browser_zero(&g_browser_tls_plaintext as u64, 16624); return false;
+        }
+        g_browser_tls_server_app_sequence = g_browser_tls_server_app_sequence + 1;
+        if content_type == 22 {
+            if !tls13_handshake_feed(&g_browser_tls_plaintext as u64, plaintext_length) {
+                browser_zero(&g_browser_tls_plaintext as u64, 16624); return false;
+            }
+            while tls13_handshake_ready() {
+                if tls13_handshake_type() != 4 || !tls13_handshake_consume() {
+                    browser_zero(&g_browser_tls_plaintext as u64, 16624); return false;
+                }
+            }
+        } else if content_type == 23 {
+            if plaintext_length > 12287 - g_browser_http_raw_len {
+                browser_zero(&g_browser_tls_plaintext as u64, 16624); return false;
+            }
+            for i: u32 in 0..plaintext_length {
+                g_browser_http_raw[g_browser_http_raw_len + i] = g_browser_tls_plaintext[i];
+            }
+            g_browser_http_raw_len = g_browser_http_raw_len + plaintext_length;
+            g_browser_http_raw[g_browser_http_raw_len] = 0;
+        } else if content_type == 21 {
+            browser_zero(&g_browser_tls_plaintext as u64, 16624);
+            return g_browser_http_raw_len > 0;
+        } else {
+            browser_zero(&g_browser_tls_plaintext as u64, 16624); return false;
+        }
+        browser_zero(&g_browser_tls_plaintext as u64, 16624);
+    }
+    return false;
+}
+
+fn browser_tls_http_exchange() -> bool {
+    if !g_browser_tls_application_ready { return false; }
+    let request_length: u32 = browser_http_build_request();
+    let record: [u8; 512] = [0; 512];
+    let record_length: u32 = tls13_encrypt_record(
+        &g_browser_tls_client_app_key as u64, &g_browser_tls_client_app_iv as u64,
+        g_browser_tls_client_app_sequence, &g_browser_http_request as u64, request_length,
+        23, 0, &record as u64, 512);
+    if record_length == 0 { return false; }
+    browser_tcp_send(TCP_PSH | TCP_ACK, &record as u64, record_length);
+    g_browser_tls_client_app_sequence = g_browser_tls_client_app_sequence + 1;
+    browser_set_status("Downloading authenticated HTTPS response"); browser_draw();
+    return browser_tls_http_receive() && browser_http_parse();
+}
+
 fn browser_tls_probe(url: u64) -> bool {
     g_browser_tls_probe_ok = false; g_browser_tls_probe_stage = 0;
     g_browser_tls_pending = false; g_browser_tls_pin_matched = false;
+    g_browser_tls_http_ok = false;
     browser_tls_application_clear();
     browser_zero(&g_browser_tls_probe_server_key as u64, 32);
     browser_zero(&g_browser_tls_leaf_fingerprint as u64, 32);
@@ -560,6 +637,9 @@ fn browser_tls_probe(url: u64) -> bool {
             if browser_tls_finish_client(&handshake_secret as u64, &client_traffic as u64,
                                          &client_key as u64, &client_iv as u64) {
                 g_browser_tls_probe_stage = 9;
+                g_browser_tls_http_ok = browser_tls_http_exchange();
+                if g_browser_tls_http_ok { g_browser_tls_probe_stage = 10; }
+                browser_tls_application_clear();
             } else { g_browser_tls_probe_ok = false; }
         } else {
             browser_zero(&g_browser_tls_pending_host as u64, 64);
@@ -845,10 +925,7 @@ fn browser_http_redirect_location() -> bool {
 
 fn browser_http_fetch_inner(url: u64, redirects: u32) -> bool {
     if !browser_network_open(url, false) { return false; }
-    browser_zero(&g_browser_http_request as u64, 384); let req: u32 = 0;
-    req = browser_request_append(req, "GET " as u64); req = browser_request_append(req, &g_browser_net_path as u64);
-    req = browser_request_append(req, " HTTP/1.0\r\nHost: " as u64); req = browser_request_append(req, &g_browser_net_host as u64);
-    req = browser_request_append(req, "\r\nUser-Agent: MortOS-Vex/1.0\r\nAccept: text/html,text/plain\r\nConnection: close\r\n\r\n" as u64);
+    let req: u32 = browser_http_build_request();
     browser_set_status("Downloading HTTP response"); browser_draw();
     browser_tcp_send(TCP_PSH | TCP_ACK, &g_browser_http_request as u64, req);
     if !browser_tcp_receive() { browser_set_status("No HTTP response data"); return false; }

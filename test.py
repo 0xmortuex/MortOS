@@ -785,7 +785,7 @@ def browser_ui():
     tls_probe_ok_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_ok")
     tls_probe_stage_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_stage")
     tls_server_key_addr = _elf32_symbol(ELF, "m_g_browser_tls_probe_server_key")
-    tls_application_ready_addr = _elf32_symbol(ELF, "m_g_browser_tls_application_ready")
+    tls_http_ok_addr = _elf32_symbol(ELF, "m_g_browser_tls_http_ok")
     state_addr = _elf32_symbol(ELF, "m_g_browser_state")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
@@ -875,6 +875,8 @@ def browser_ui():
         tls_complete = threading.Event()
         tls_errors = []
         tls_completed = []
+        tls_requests = []
+        tls_marker = "MORT TLS APPLICATION DATA"
 
         def serve_tls_probe():
             with socket.socket() as listener:
@@ -889,8 +891,22 @@ def browser_ui():
                         connection.settimeout(30)
                         with connection:
                             try:
-                                with tls_context.wrap_socket(connection, server_side=True):
+                                with tls_context.wrap_socket(connection, server_side=True) as secure:
                                     tls_completed.append(True)
+                                    request = b""
+                                    while b"\r\n\r\n" not in request and len(request) < 2048:
+                                        part = secure.recv(512)
+                                        if not part:
+                                            break
+                                        request += part
+                                    tls_requests.append(request)
+                                    body = (
+                                        f"<html><head><title>Vex TLS</title></head>"
+                                        f"<body>{tls_marker}</body></html>").encode("ascii")
+                                    secure.sendall(
+                                        b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n"
+                                        + f"Content-Length: {len(body)}\r\n".encode("ascii")
+                                        + b"Connection: close\r\n\r\n" + body)
                                     tls_complete.set()
                             except (ssl.SSLError, TimeoutError, OSError) as exc:
                                 tls_errors.append(repr(exc))
@@ -1131,12 +1147,20 @@ def browser_ui():
                    and "Leave private mode" in private_pin_status))
             send_key(handle, "p")
             send_key(handle, "k")
+            _wait_guest_u32(
+                handle, state_addr + 7, lambda value: (value & 0xff) == 1,
+                timeout_s=10)
+            pin_status = ""
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and "pin saved" not in pin_status:
+                pin_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "pin saved" not in pin_status:
+                    time.sleep(0.1)
             pin_host = _guest_bytes(
                 handle, state_addr + 896, 64).split(b"\0", 1)[0].decode("ascii", "replace")
             pin_hash = _guest_bytes(handle, state_addr + 960, 32)
             pin_port = int.from_bytes(_guest_bytes(handle, state_addr + 992, 2), "little")
-            pin_status = _guest_bytes(
-                handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
             check("Explicit host-scoped certificate pin is saved to MortFS",
                   (_guest_bytes(handle, state_addr + 7, 1)[0] == 1
                    and pin_host == "10.0.2.2" and pin_port == tls_port
@@ -1145,17 +1169,26 @@ def browser_ui():
             for char in secure_address:
                 send_key(handle, key_name(char))
             send_key(handle, "ret")
-            application_ready = _wait_guest_u32(
-                handle, tls_application_ready_addr, lambda value: (value & 0xff) != 0,
+            https_stage = _wait_guest_u32(
+                handle, tls_probe_stage_addr, lambda value: value == 10,
                 timeout_s=40)
+            https_loaded = _guest_u32(handle, remote_addr)
             completed_on_host = tls_complete.wait(5)
             completed_status = _guest_bytes(
                 handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
-            check("Pinned reconnect sends client Finished and completes TLS 1.3",
-                  ((application_ready & 0xff) != 0
-                   and _guest_u32(handle, tls_probe_stage_addr) == 9
+            https_length = _guest_u32(handle, content_len_addr)
+            https_text = _guest_bytes(
+                handle, content_addr, min(max(https_length, 1), 512)).decode("ascii", "replace")
+            check("Pinned reconnect completes TLS and renders authenticated HTTPS",
+                  ((https_loaded & 0xff) != 0
+                   and (_guest_u32(handle, tls_http_ok_addr) & 0xff) != 0
+                   and https_stage == 10
                    and completed_on_host and len(tls_completed) == 1
-                   and "TLS handshake complete" in completed_status))
+                   and len(tls_requests) == 1
+                   and tls_requests[0].startswith(b"GET / HTTP/1.0\r\n")
+                   and b"Host: 10.0.2.2" in tls_requests[0]
+                   and tls_marker in https_text
+                   and "Authenticated HTTPS" in completed_status))
         finally:
             shutdown(handle)
             server.shutdown()

@@ -163,8 +163,11 @@ explicitly with `K`; Vex stores one host-and-port-scoped pin in the user's
 MortFS state and compares it in constant time on later connections. Private
 mode cannot persist trust. On a pinned reconnect, Vex derives both application
 traffic secrets and keys, encrypts and sends client Finished, and retains
-sequence-zero application state for the HTTPS request. It still does not release
-application data before authentication.
+sequence-zero application state for the HTTPS request. Vex encrypts the GET,
+accepts authenticated application records, safely ignores bounded NewSessionTicket
+handshake messages, accumulates the response within the HTTP receive limit, and
+passes it to the same content-type-aware text renderer used by HTTP. No
+application bytes are released before record authentication and pin validation.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

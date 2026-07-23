@@ -26,6 +26,7 @@ let g_browser_mode: u32 = 0;       // 0 page, 1 address, 2 find
 let g_browser_page: u32 = 0;       // local page identifier
 let g_browser_scroll: u32 = 0;
 let g_browser_remote: bool = false;
+let g_browser_secure_page: bool = false;
 let g_browser_loading: bool = false;
 let g_browser_ext: bool = false;
 let g_browser_shift: bool = false;
@@ -321,7 +322,8 @@ fn browser_local_page(url: u64) -> u32 {
 }
 
 fn browser_load(url: u64, add_history: bool) {
-    browser_set_url(url); g_browser_scroll = 0; g_browser_remote = false; g_browser_content_len = 0;
+    browser_set_url(url); g_browser_scroll = 0; g_browser_remote = false;
+    g_browser_secure_page = false; g_browser_content_len = 0;
     if browser_prefix(url, "vex://" as u64) {
         g_browser_page = browser_local_page(url);
         if g_browser_page == 0 { browser_set_title("Home"); browser_set_status("Local start page"); }
@@ -341,10 +343,13 @@ fn browser_load(url: u64, add_history: bool) {
         g_browser_page = 7;
         if browser_tls_probe(url) {
             if g_browser_tls_pin_matched {
-                browser_set_title("Secure identity verified");
-                if g_browser_tls_application_ready {
-                    browser_set_status("Pinned TLS handshake complete; HTTPS request pending");
-                } else { browser_set_status("Pinned identity verified; client Finished failed"); }
+                if g_browser_tls_http_ok {
+                    g_browser_remote = true; g_browser_secure_page = true; g_browser_page = 8;
+                    browser_set_status("Authenticated HTTPS text document");
+                } else {
+                    browser_set_title("Secure transfer failed");
+                    browser_set_status("TLS authenticated, but HTTPS response failed");
+                }
             } else {
                 browser_set_title("Certificate approval required");
                 browser_set_status("Untrusted cert. Press K to pin host; no data sent");
@@ -486,7 +491,10 @@ fn browser_draw_toolbar() {
         draw_text_abs(&g_browser_input as *u8, 302, 224, 0xffffff, 0x0b0f14);
     } else {
         if g_browser_private { draw_text_abs("PRIVATE", 302, 224, 0xc18cff, 0x0b0f14); }
-        else if g_browser_remote { draw_text_abs("HTTP", 302, 224, 0xffb454, 0x0b0f14); }
+        else if g_browser_remote {
+            if g_browser_secure_page { draw_text_abs("HTTPS", 302, 224, 0x4fd1c5, 0x0b0f14); }
+            else { draw_text_abs("HTTP", 302, 224, 0xffb454, 0x0b0f14); }
+        }
         else { draw_text_abs("LOCAL", 302, 224, 0x4fd1c5, 0x0b0f14); }
         let url_x: u32 = 350; if g_browser_private { url_x = 366; }
         draw_text_abs(&g_browser_url as *u8, url_x, 224, 0xc8d0d4, 0x0b0f14);
