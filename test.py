@@ -439,6 +439,8 @@ def smoke(disk_img=None):
     x509_hostname_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_hostname_ok")
     x509_fields_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_fields_ok")
     x509_time_addr = _elf32_symbol(ELF, "m_g_tls_x509_time_test")
+    x509_rtc_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_rtc_ok")
+    x509_rtc_addr = _elf32_symbol(ELF, "m_g_tls_x509_rtc_test")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -531,6 +533,10 @@ def smoke(disk_img=None):
               (_guest_u32(handle, x509_fields_ok_addr) & 0xff) != 0
               and int.from_bytes(_guest_bytes(handle, x509_time_addr, 8), "little") == 20260722000000,
               handle)
+        guest_rtc = int.from_bytes(_guest_bytes(handle, x509_rtc_addr, 8), "little")
+        check("Mort reads a stable full RTC date for certificate validity",
+              (_guest_u32(handle, x509_rtc_ok_addr) & 0xff) != 0
+              and 20200101000000 <= guest_rtc <= 99991231235959, handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",

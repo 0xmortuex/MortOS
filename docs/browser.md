@@ -117,6 +117,10 @@ serial number, required field order, validity sequence, SubjectPublicKeyInfo,
 and explicitly tagged extensions. UTCTime and GeneralizedTime are normalized
 with leap-year/calendar validation, and the SAN extension is located by OID
 without trusting nested lengths.
+Certificate validity uses a stable double-read of the full CMOS date and time,
+covering BCD or binary RTCs and 12- or 24-hour mode. A missing/invalid century,
+an update in progress that never stabilizes, or an impossible calendar value
+fails closed instead of substituting a guessed date.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

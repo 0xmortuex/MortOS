@@ -8,6 +8,8 @@ let g_tls_x509_signature_test: [u8; 2] = [0; 2];
 let g_tls_x509_hostname_ok: bool = false;
 let g_tls_x509_fields_ok: bool = false;
 let g_tls_x509_time_test: [u8; 8] = [0; 8];
+let g_tls_x509_rtc_ok: bool = false;
+let g_tls_x509_rtc_test: [u8; 8] = [0; 8];
 
 fn tls_der_read(input: u64, available: u32, expected_tag: u8,
                 content_offset: u64, content_length: u64) -> u32 {
@@ -199,6 +201,13 @@ fn tls_x509_leap_year(year: u32) -> bool {
     return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
 }
 
+fn tls_x509_days_in_month(year: u32, month: u32) -> u32 {
+    if month == 0 || month > 12 { return 0; }
+    if month == 4 || month == 6 || month == 9 || month == 11 { return 30; }
+    if month == 2 { if tls_x509_leap_year(year) { return 29; } return 28; }
+    return 31;
+}
+
 fn tls_x509_parse_time(input: u64, length: u32, tag: u8, output: u64) -> bool {
     let year: u32 = 0; let month_offset: u32 = 0;
     if tag == 0x17 {
@@ -219,13 +228,50 @@ fn tls_x509_parse_time(input: u64, length: u32, tag: u8, output: u64) -> bool {
     let minute: u32 = tls_x509_time_pair(input, month_offset + 6);
     let second: u32 = tls_x509_time_pair(input, month_offset + 8);
     if month == 0 || month > 12 || hour > 23 || minute > 59 || second > 59 { return false; }
-    let days: u32 = 31;
-    if month == 4 || month == 6 || month == 9 || month == 11 { days = 30; }
-    if month == 2 { days = 28; if tls_x509_leap_year(year) { days = 29; } }
+    let days: u32 = tls_x509_days_in_month(year, month);
     if day == 0 || day > days { return false; }
     *((output) as *u64) = (year as u64) * 10000000000 + (month as u64) * 100000000
         + (day as u64) * 1000000 + (hour as u64) * 10000 + (minute as u64) * 100 + (second as u64);
     return true;
+}
+
+fn tls_x509_rtc_snapshot(output: u64) -> bool {
+    for attempt: u32 in 0..10000 {
+        if (rtc_reg(0x0a) & 0x80) != 0 { continue; }
+        let second1: u8 = rtc_reg(0); let minute1: u8 = rtc_reg(2); let hour1: u8 = rtc_reg(4);
+        let day1: u8 = rtc_reg(7); let month1: u8 = rtc_reg(8); let year1: u8 = rtc_reg(9);
+        let century1: u8 = rtc_reg(0x32); let status1: u8 = rtc_reg(0x0b);
+        if (rtc_reg(0x0a) & 0x80) != 0 { continue; }
+        let second2: u8 = rtc_reg(0); let minute2: u8 = rtc_reg(2); let hour2: u8 = rtc_reg(4);
+        let day2: u8 = rtc_reg(7); let month2: u8 = rtc_reg(8); let year2: u8 = rtc_reg(9);
+        let century2: u8 = rtc_reg(0x32); let status2: u8 = rtc_reg(0x0b);
+        if second1 != second2 || minute1 != minute2 || hour1 != hour2 || day1 != day2
+            || month1 != month2 || year1 != year2 || century1 != century2 || status1 != status2 { continue; }
+        let binary: bool = (status1 & 4) != 0;
+        let second: u32 = rtc_conv(second1, binary) as u32;
+        let minute: u32 = rtc_conv(minute1, binary) as u32;
+        let pm: bool = (hour1 & 0x80) != 0;
+        let hour: u32 = rtc_conv(hour1 & 0x7f, binary) as u32;
+        if (status1 & 2) == 0 {
+            if hour == 0 || hour > 12 { return false; }
+            hour = hour % 12; if pm { hour = hour + 12; }
+        }
+        let day: u32 = rtc_conv(day1, binary) as u32;
+        let month: u32 = rtc_conv(month1, binary) as u32;
+        let short_year: u32 = rtc_conv(year1, binary) as u32;
+        let century: u32 = rtc_conv(century1, binary) as u32;
+        let year: u32 = century * 100 + short_year;
+        if century < 19 || century > 99 || second > 59 || minute > 59 || hour > 23
+            || day == 0 || day > tls_x509_days_in_month(year, month) { return false; }
+        *((output) as *u64) = (year as u64) * 10000000000 + (month as u64) * 100000000
+            + (day as u64) * 1000000 + (hour as u64) * 10000 + (minute as u64) * 100 + (second as u64);
+        return true;
+    }
+    return false;
+}
+
+fn tls_x509_valid_at(not_before: u64, not_after: u64, now: u64) -> bool {
+    return not_before <= now && now <= not_after;
 }
 
 fn tls_x509_parse_validity(validity: u64, validity_length: u32,
@@ -434,4 +480,9 @@ fn tls_x509_self_test() {
         && validity_offset == 17 && validity_length == 32 && spki_offset == 51 && spki_length == 5
         && not_before == 20260722000000 && not_after == 20270722000000
         && !tls_x509_parse_time("230229000000Z" as u64, 13, 0x17, &not_before as u64);
+    let rtc_now: u64 = 0; let rtc_read: bool = tls_x509_rtc_snapshot(&rtc_now as u64);
+    *(&g_tls_x509_rtc_test as *u64) = rtc_now;
+    g_tls_x509_rtc_ok = rtc_read && rtc_now >= 20200101000000
+        && tls_x509_valid_at(20200101000000, 99991231235959, rtc_now)
+        && !tls_x509_valid_at(rtc_now + 1, 99991231235959, rtc_now);
 }
