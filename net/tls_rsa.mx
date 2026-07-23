@@ -26,9 +26,26 @@ let TLS_RSA_DIGEST1: [u8; 32] = [
     0x2f, 0x62, 0x09, 0x6b, 0x86, 0x42, 0x80, 0xa0, 0x20, 0xe0, 0x07, 0xc7, 0x82, 0x45, 0x18, 0x71,
     0x2a, 0x14, 0xa9, 0x68, 0x4f, 0xeb, 0xb8, 0x84, 0x20, 0x80, 0x03, 0x32, 0x35, 0x13, 0x49, 0xf7
 ];
+let TLS_RSA_PSS_SIGNATURE1: [u8; 128] = [
+    0x5a, 0x74, 0x7c, 0x5d, 0x88, 0xfa, 0x9b, 0xd2, 0xe5, 0x5a, 0xb0, 0x85, 0xa6, 0x10, 0x15, 0xb7,
+    0x21, 0x1f, 0x82, 0x4c, 0xd4, 0x84, 0x14, 0x5a, 0xb3, 0xff, 0x52, 0xf1, 0xfd, 0xa8, 0x47, 0x7b,
+    0x0b, 0x7a, 0xbc, 0x90, 0xdb, 0x78, 0xe2, 0xd3, 0x3a, 0x5c, 0x14, 0x1a, 0x07, 0x86, 0x53, 0xfa,
+    0x6b, 0xef, 0x78, 0x0c, 0x5e, 0xa2, 0x48, 0xee, 0xaa, 0xa7, 0x85, 0xc4, 0xf3, 0x94, 0xca, 0xb6,
+    0xd3, 0x0b, 0xbe, 0x8d, 0x48, 0x59, 0xee, 0x51, 0x1f, 0x60, 0x29, 0x57, 0xb1, 0x54, 0x11, 0xac,
+    0x02, 0x76, 0x71, 0x45, 0x9e, 0x46, 0x44, 0x5c, 0x9e, 0xa5, 0x8c, 0x18, 0x1e, 0x81, 0x8e, 0x95,
+    0xb8, 0xc3, 0xfb, 0x0b, 0xf3, 0x27, 0x84, 0x09, 0xd3, 0xbe, 0x15, 0x2a, 0x3d, 0xa5, 0x04, 0x3e,
+    0x06, 0x3d, 0xda, 0x65, 0xcd, 0xf5, 0xae, 0xa2, 0x0d, 0x53, 0xdf, 0xac, 0xd4, 0x2f, 0x74, 0xf3
+];
+let TLS_RSA_PSS_MESSAGE_HASH1: [u8; 32] = [
+    0xbe, 0xed, 0x95, 0xaf, 0x40, 0x4e, 0x23, 0xdd, 0x55, 0x3e, 0xbc, 0xfb, 0x4a, 0x00, 0xb8, 0xdb,
+    0xbf, 0x22, 0x44, 0xdb, 0x2a, 0x9a, 0xa3, 0x9a, 0x37, 0x92, 0x56, 0x51, 0x26, 0x7c, 0x14, 0x1f
+];
 
 let g_tls_rsa_modexp_ok: bool = false;
 let g_tls_rsa_output_test: [u8; 128] = [0; 128];
+let g_tls_rsa_pkcs1_ok: bool = false;
+let g_tls_rsa_pss_ok: bool = false;
+let g_tls_rsa_pss_output_test: [u8; 128] = [0; 128];
 
 fn tls_rsa_zero(value: u64, limbs: u32) {
     for i: u32 in 0..limbs { *((value + ((i * 4) as u64)) as *u32) = 0; }
@@ -158,6 +175,79 @@ fn tls_rsa_public(signature: u64, signature_length: u32,
     tls_rsa_export_be(&temporary as u64, modulus_length, output); return true;
 }
 
+fn tls_rsa_pkcs1_sha256_block(encoded: u64, encoded_length: u32, digest: u64) -> bool {
+    if encoded_length < 62 || *((encoded + 0) as *u8) != 0 || *((encoded + 1) as *u8) != 1 { return false; }
+    let separator: u32 = 2;
+    while separator < encoded_length && *((encoded + (separator as u64)) as *u8) == 0xff {
+        separator = separator + 1;
+    }
+    if separator < 10 || separator >= encoded_length || *((encoded + (separator as u64)) as *u8) != 0
+        || encoded_length - separator - 1 != 51 { return false; }
+    let prefix: [u8; 19] = [
+        0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
+        0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20
+    ];
+    return tls_bytes_equal(encoded + ((separator + 1) as u64), &prefix as u64, 19)
+        && tls_bytes_equal(encoded + ((separator + 20) as u64), digest, 32);
+}
+
+fn tls_rsa_pkcs1_sha256_verify_hash(signature: u64, signature_length: u32,
+                                    modulus: u64, modulus_length: u32, exponent: u32,
+                                    digest: u64) -> bool {
+    let encoded: [u8; 512] = [0; 512];
+    return tls_rsa_public(signature, signature_length, modulus, modulus_length, exponent, &encoded as u64)
+        && tls_rsa_pkcs1_sha256_block(&encoded as u64, modulus_length, digest);
+}
+
+fn tls_rsa_mgf1_sha256(seed: u64, output: u64, output_length: u32) -> bool {
+    if output_length > 512 { return false; }
+    let message: [u8; 36] = [0; 36]; let digest: [u8; 32] = [0; 32];
+    for i: u32 in 0..32 { message[i] = *((seed + (i as u64)) as *u8); }
+    let written: u32 = 0; let counter: u32 = 0;
+    while written < output_length {
+        message[32] = (counter >> 24) as u8; message[33] = (counter >> 16) as u8;
+        message[34] = (counter >> 8) as u8; message[35] = counter as u8;
+        tls_sha256(&message as u64, 36, &digest as u64);
+        let take: u32 = output_length - written; if take > 32 { take = 32; }
+        for i: u32 in 0..take { *((output + ((written + i) as u64)) as *u8) = digest[i]; }
+        written = written + take; counter = counter + 1;
+    }
+    return true;
+}
+
+fn tls_rsa_pss_sha256_block(encoded: u64, encoded_length: u32, message_digest: u64) -> bool {
+    if encoded_length < 66 || encoded_length > 512 || *((encoded + ((encoded_length - 1) as u64)) as *u8) != 0xbc
+        || (*((encoded + 0) as *u8) & 0x80) != 0 { return false; }
+    let db_length: u32 = encoded_length - 33; let hash: u64 = encoded + (db_length as u64);
+    let mask: [u8; 512] = [0; 512];
+    if !tls_rsa_mgf1_sha256(hash, &mask as u64, db_length) { return false; }
+    let padding_length: u32 = encoded_length - 66; let salt: [u8; 32] = [0; 32];
+    for i: u32 in 0..db_length {
+        let value: u8 = *((encoded + (i as u64)) as *u8) ^ mask[i];
+        if i == 0 { value = value & 0x7f; }
+        if i < padding_length {
+            if value != 0 { return false; }
+        } else if i == padding_length {
+            if value != 1 { return false; }
+        } else {
+            salt[i - padding_length - 1] = value;
+        }
+    }
+    let verify_input: [u8; 72] = [0; 72]; let expected_hash: [u8; 32] = [0; 32];
+    for i: u32 in 0..32 { verify_input[8 + i] = *((message_digest + (i as u64)) as *u8); }
+    for i: u32 in 0..32 { verify_input[40 + i] = salt[i]; }
+    tls_sha256(&verify_input as u64, 72, &expected_hash as u64);
+    return tls_bytes_equal(&expected_hash as u64, hash, 32);
+}
+
+fn tls_rsa_pss_sha256_verify_hash(signature: u64, signature_length: u32,
+                                  modulus: u64, modulus_length: u32, exponent: u32,
+                                  message_digest: u64) -> bool {
+    let encoded: [u8; 512] = [0; 512];
+    return tls_rsa_public(signature, signature_length, modulus, modulus_length, exponent, &encoded as u64)
+        && tls_rsa_pss_sha256_block(&encoded as u64, modulus_length, message_digest);
+}
+
 fn tls_rsa_self_test() {
     let expected: [u8; 128] = [0; 128];
     expected[0] = 0; expected[1] = 1; for i: u32 in 2..76 { expected[i] = 0xff; } expected[76] = 0;
@@ -171,4 +261,15 @@ fn tls_rsa_self_test() {
         &TLS_RSA_MODULUS1 as u64, 128, 65537, &g_tls_rsa_output_test as u64);
     g_tls_rsa_modexp_ok = operation_ok
         && tls_bytes_equal(&g_tls_rsa_output_test as u64, &expected as u64, 128);
+    let bad_digest: [u8; 32] = [0; 32];
+    for i: u32 in 0..32 { bad_digest[i] = TLS_RSA_DIGEST1[i]; } bad_digest[0] = bad_digest[0] ^ 1;
+    g_tls_rsa_pkcs1_ok = g_tls_rsa_modexp_ok
+        && tls_rsa_pkcs1_sha256_block(&g_tls_rsa_output_test as u64, 128, &TLS_RSA_DIGEST1 as u64)
+        && !tls_rsa_pkcs1_sha256_block(&g_tls_rsa_output_test as u64, 128, &bad_digest as u64);
+    let pss_operation_ok: bool = tls_rsa_public(&TLS_RSA_PSS_SIGNATURE1 as u64, 128,
+        &TLS_RSA_MODULUS1 as u64, 128, 65537, &g_tls_rsa_pss_output_test as u64);
+    for i: u32 in 0..32 { bad_digest[i] = TLS_RSA_PSS_MESSAGE_HASH1[i]; } bad_digest[0] = bad_digest[0] ^ 1;
+    g_tls_rsa_pss_ok = pss_operation_ok
+        && tls_rsa_pss_sha256_block(&g_tls_rsa_pss_output_test as u64, 128, &TLS_RSA_PSS_MESSAGE_HASH1 as u64)
+        && !tls_rsa_pss_sha256_block(&g_tls_rsa_pss_output_test as u64, 128, &bad_digest as u64);
 }

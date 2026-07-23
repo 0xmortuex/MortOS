@@ -444,6 +444,9 @@ def smoke(disk_img=None):
     x509_rsa_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_rsa_spki_ok")
     rsa_modexp_ok_addr = _elf32_symbol(ELF, "m_g_tls_rsa_modexp_ok")
     rsa_output_addr = _elf32_symbol(ELF, "m_g_tls_rsa_output_test")
+    rsa_pkcs1_ok_addr = _elf32_symbol(ELF, "m_g_tls_rsa_pkcs1_ok")
+    rsa_pss_ok_addr = _elf32_symbol(ELF, "m_g_tls_rsa_pss_ok")
+    rsa_pss_output_addr = _elf32_symbol(ELF, "m_g_tls_rsa_pss_output_test")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
     results = []
@@ -548,6 +551,11 @@ def smoke(disk_img=None):
               and rsa_em[:3] == b"\x00\x01\xff"
               and rsa_em[-32:] == bytes.fromhex(
                   "2f62096b864280a020e007c7824518712a14a9684febb88420800332351349f7"), handle)
+        check("Mort verifies strict PKCS#1 v1.5 SHA-256 certificate signatures",
+              (_guest_u32(handle, rsa_pkcs1_ok_addr) & 0xff) != 0, handle)
+        check("Mort verifies RFC 8448 RSA-PSS-SHA256 CertificateVerify encoding",
+              (_guest_u32(handle, rsa_pss_ok_addr) & 0xff) != 0
+              and _guest_bytes(handle, rsa_pss_output_addr, 128)[-1] == 0xbc, handle)
 
         type_line(handle, "help")
         check("'help' lists the commands",

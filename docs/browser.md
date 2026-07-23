@@ -130,6 +130,11 @@ floor exists only so the historical RFC trace can test the arithmetic; X.509
 policy still requires at least 2048 bits). Its Montgomery implementation is
 checked by recovering the complete PKCS#1 signature block from RFC 8448's
 published certificate, including the expected SHA-256 digest.
+Strict EMSA-PKCS1-v1_5 checking requires the complete SHA-256 DigestInfo,
+at least eight `FF` padding octets, and no trailing data. TLS CertificateVerify
+uses RSA-PSS-SHA256 with MGF1-SHA256, a 32-byte salt, the modulus top-bit rule,
+and full delimiter/padding/hash validation. Both accept/reject paths use RFC
+8448 values and deliberately corrupted digests at boot.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
