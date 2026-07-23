@@ -52,23 +52,23 @@ def main():
     h = T.boot(disk_img=IMG)
     try:
         check("boot banner", T.wait_for(h, "MORT OS"), h)
-        T.type_line(h, "ls")
+        T.type_line(h, "ls /bin")
         check("ls shows hello.bin", T.wait_for(h, "hello.bin", timeout_s=15), h)
         check("ls shows count.bin", T.wait_for(h, "count.bin", timeout_s=15), h)
 
-        T.type_line(h, "exec hello.bin")
+        T.type_line(h, "exec /bin/hello.bin")
         check("exec hello: syscall output",
               T.wait_for(h, "hello from a real mort program!", timeout_s=15), h)
         T.type_line(h, "echo back-in-shell")
         check("shell alive after program returns",
               T.wait_for(h, "back-in-shell", timeout_s=15), h)
 
-        T.type_line(h, "exec count.bin")
+        T.type_line(h, "exec /bin/count.bin")
         check("exec count: prints 'one'", T.wait_for(h, "one", timeout_s=15), h)
         check("exec count: prints 'three'", T.wait_for(h, "three", timeout_s=15), h)
 
         # interactive program: it prompts, reads a line via syscall, greets
-        T.type_line(h, "exec ask.bin")
+        T.type_line(h, "exec /bin/ask.bin")
         check("interactive program prompts",
               T.wait_for(h, "what is your name?", timeout_s=15), h)
         T.type_line(h, "fadi")

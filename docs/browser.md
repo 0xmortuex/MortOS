@@ -43,12 +43,18 @@ upstream/native boundary.
 - A native Vex Library persisted in `.vex-library`: up to eight short
   Markdown-style notes and eight HTTP/HTTPS Read Later entries. `note TEXT`
   saves a note, `read later` queues the active page, and queued pages reopen
-  from the local Library page. Private pages cannot change the store.
+  from the local Library page. Notes can be pinned, unpinned, deleted, and
+  exported together as `vex-notes.md`; Read Later entries can be removed
+  individually. Private pages cannot change or export the store.
 - A distraction-reduced reading layout toggled with `M`, plus eight per-origin
   profiles in `.vex-sites` that remember reading mode and whether extracted
   links are exposed. Private mode may use reading mode transiently but never
   writes or changes site profiles.
-- Private mode, which prevents new visits from entering persistent history.
+- Private mode snapshots the full normal workspace/tab state on entry and
+  restores it on exit. Temporary URLs, titles, tab creation/closing, and
+  workspace changes therefore disappear instead of leaking into a later
+  journal save. A verified certificate may remain available for explicit
+  approval immediately after exit; the normal session is restored afterward.
 - Content-Type-aware rendering for HTML and literal plain-text responses.
   Script/style bodies are never executed or displayed. Other response types
   are staged as bounded binary downloads instead of being misrendered.
@@ -70,6 +76,9 @@ upstream/native boundary.
   responses.
 - Saving the current rendered document as `vex-page.txt` in the user's home
   directory, plus exact binary downloads under a sanitized URL-derived name.
+- A native `Ctrl+Alt+S` screenshot path that downsamples the live framebuffer
+  into a valid 256×192, 8-bit grayscale `vex-shot.bmp`. Its exact 50,230-byte
+  format fits safely inside one 64 KiB MortFS file extent.
 - An eight-record, newest-first download manager persisted in
   `.vex-downloads`, with exact filename, byte count, text/binary kind, and
   HTTP/HTTPS metadata. Private-mode saves are deliberately not indexed.
@@ -92,6 +101,7 @@ upstream/native boundary.
 | `Ctrl+F` / `Ctrl+H` | Find / open History |
 | `Ctrl+D` | Bookmark the active page |
 | `Ctrl+Shift+N` | Open the Notes and Read Later Library |
+| `Ctrl+Alt+S` | Save a bounded framebuffer screenshot as `vex-shot.bmp` |
 | `S` | Open Saved Sessions |
 | `Q` | Open the Notes and Read Later Library |
 | `/` | Edit the address; Up/Down chooses a local suggestion |
@@ -120,7 +130,9 @@ upstream/native boundary.
 | `E` | Clear Notes and Read Later on `vex://settings` |
 
 The command bar also accepts `library`, `note TEXT`, `read later`, and
-`clear library`. Tab organization is available through `pin tab`, `unpin tab`,
+`clear library`. Individual Library actions use `pin note N`, `unpin note N`,
+`delete note N`, `remove later N`, and `export notes`. Tab organization is
+available through `pin tab`, `unpin tab`,
 `duplicate tab`, `move tab left`, `move tab right`, and `group focus`,
 `group research`, `group later`, or `group none`.
 
@@ -166,6 +178,11 @@ digits, dot, dash, and underscore; empty or special `.`/`..` names fall back to
 `vex-download.bin`. Pressing `D` writes the exact bounded payload to a normal
 MortFS file after capacity and permission checks. The Downloads page reports
 the eight newest saved names, byte counts, types, and transports across reboots.
+
+Screenshot export is deliberately a bounded whole-frame capture rather than
+canonical Vex's Chromium page-capture and annotation pipeline. It uses a
+dedicated 49.5 KiB kernel buffer; it never reuses MortFS metadata or sector
+scratch memory.
 
 The TLS foundation is being built as independently testable Mort primitives.
 SHA-256, HMAC-SHA256, HKDF-SHA256, X25519, ChaCha20, Poly1305, and their
@@ -313,12 +330,14 @@ python test.py usb-hotplug
 python test.py smoke
 ```
 
-The browser regression covers real DHCP configuration, ARP, TCP, HTTP, and TLS
+The 75-assertion browser regression covers real DHCP configuration, ARP, TCP,
+HTTP, and TLS
 loading, HTML and literal plain-text rendering, bounded HTTP and authenticated
 HTTPS binary staging with byte-exact MortFS saves,
 script/style removal, links, redirects, chunked responses, local suggestions,
-keyboard and mouse tab controls, private mode, bookmarks, downloads,
-Notes and Read Later persistence/private isolation, explicit normal-session
+keyboard and mouse tab controls, full private-session discard, bookmarks,
+downloads, Notes pin/export/delete and Read Later persistence/private isolation,
+valid BMP screenshot output without filesystem corruption, explicit normal-session
 recovery, screenshots, live ServerHello through
 Finished verification, private-mode pin refusal, pinned encrypted GET/response,
 private-mode root-import refusal, CA import, a separately renewed leaf under

@@ -4,6 +4,8 @@ Press `F4` to open MortOS Settings. The control center is written in Mort and
 uses live kernel and driver state; unsupported hardware is reported honestly
 instead of being represented by decorative switches.
 
+![MortuexOS Settings Clock page](settings.png)
+
 ## Pages and controls
 
 - Overview: OS, CPU, memory, network, storage, and session summary.

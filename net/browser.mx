@@ -47,6 +47,7 @@ let g_browser_status: [u8; 64] = [0; 64];
 let g_browser_content: [u8; 8192] = [0; 8192];
 let g_browser_content_len: u32 = 0;
 let g_browser_binary_data: [u8; 12288] = [0; 12288];
+let g_browser_capture: [u8; 50688] = [0; 50688];
 let g_browser_binary_name: [u8; 24] = [0; 24];
 let g_browser_binary_len: u32 = 0;
 let g_browser_binary_ready: bool = false;
@@ -62,6 +63,7 @@ let g_browser_workspace_store: [u8; 2560] = [0; 2560];
 let g_browser_library: [u8; 2048] = [0; 2048];
 let g_browser_note_count: u32 = 0;
 let g_browser_read_later_count: u32 = 0;
+let g_browser_note_pins: u32 = 0;
 let g_browser_recent_tabs: [u8; 320] = [0; 320];
 let g_browser_recent_titles: [u8; 96] = [0; 96];
 let g_browser_recent_count: u32 = 0;
@@ -76,11 +78,20 @@ let g_browser_loading: bool = false;
 let g_browser_ext: bool = false;
 let g_browser_shift: bool = false;
 let g_browser_ctrl: bool = false;
+let g_browser_alt: bool = false;
 let g_browser_ctrl_shift_seen: bool = false;
 let g_browser_replace_address: bool = false;
 let g_browser_loaded_dir: u32 = 256;
 let g_browser_state_saved: bool = false;
 let g_browser_private: bool = false;
+let g_browser_private_saved_tabs: [u8; 1280] = [0; 1280];
+let g_browser_private_saved_titles: [u8; 384] = [0; 384];
+let g_browser_private_saved_pinned: [u8; 16] = [0; 16];
+let g_browser_private_saved_groups: [u8; 16] = [0; 16];
+let g_browser_private_saved_counts: [u32; 4] = [0; 4];
+let g_browser_private_saved_active: [u32; 4] = [0; 4];
+let g_browser_private_saved_workspace: u32 = 0;
+let g_browser_private_restore_pending: bool = false;
 let g_browser_tabs: [u8; 1280] = [0; 1280];       // 4 workspaces x 4 tabs x 80 bytes
 let g_browser_tab_titles: [u8; 384] = [0; 384];   // 4 workspaces x 4 titles x 24
 let g_browser_tab_pinned: [u8; 16] = [0; 16];
@@ -260,6 +271,12 @@ fn browser_pin_approve() {
     *((&g_browser_state as u64 + 7) as *u8) = 1;
     if browser_state_save() {
         g_browser_tls_pending = false; g_browser_tls_pin_matched = true;
+        if g_browser_private_restore_pending {
+            browser_private_restore();
+            if g_browser_tab_count > 0 {
+                browser_load(browser_tab_slot(g_browser_active_tab), false);
+            }
+        }
         browser_set_status("Certificate pin saved; reload HTTPS");
     } else { browser_set_status("Could not save certificate pin to MortFS"); }
     browser_draw();
@@ -891,7 +908,7 @@ fn browser_sessions_clear() {
 fn browser_library_reset() {
     browser_zero(&g_browser_library as u64, 2048);
     *(&g_browser_library as *u32) = BROWSER_LIBRARY_MAGIC;
-    g_browser_note_count = 0; g_browser_read_later_count = 0;
+    g_browser_note_count = 0; g_browser_read_later_count = 0; g_browser_note_pins = 0;
 }
 
 fn browser_library_save() -> bool {
@@ -903,6 +920,7 @@ fn browser_library_save() -> bool {
     if start == 0 { return false; }
     *((&g_browser_library as u64 + 4) as *u8) = g_browser_note_count as u8;
     *((&g_browser_library as u64 + 5) as *u8) = g_browser_read_later_count as u8;
+    *((&g_browser_library as u64 + 6) as *u8) = g_browser_note_pins as u8;
     for sector: u32 in 0..4 {
         if !ata_write(start + sector,
             (&g_browser_library as u64 + ((sector * 512) as u64)) as *u8) {
@@ -943,6 +961,10 @@ fn browser_library_load() {
             browser_library_reset(); return;
         }
     }
+    let pins: u32 = *((&g_browser_library as u64 + 6) as *u8) as u32;
+    for index: u32 in notes..BROWSER_LIBRARY_MAX {
+        if (pins & ((1 as u32) << index)) != 0 { browser_library_reset(); return; }
+    }
     for index: u32 in 0..later {
         *((browser_read_later_slot(index) + 79) as *u8) = 0;
         let url: u64 = browser_read_later_slot(index);
@@ -952,6 +974,7 @@ fn browser_library_load() {
         }
     }
     g_browser_note_count = notes; g_browser_read_later_count = later;
+    g_browser_note_pins = pins;
 }
 
 fn browser_note_add(text: u64) {
@@ -969,6 +992,7 @@ fn browser_note_add(text: u64) {
                     = *((browser_note_record(index + 1) + (byte as u64)) as *u8);
             }
         }
+        g_browser_note_pins = g_browser_note_pins >> 1;
         target = BROWSER_LIBRARY_MAX - 1;
     } else { g_browser_note_count = g_browser_note_count + 1; }
     browser_zero(browser_note_record(target), BROWSER_NOTE_RECORD_SIZE);
@@ -978,6 +1002,60 @@ fn browser_note_add(text: u64) {
     browser_copy(browser_note_title(target), title_source, 24);
     if browser_library_save() { browser_set_status("Note saved in the Vex Library"); }
     else { browser_set_status("Could not persist Vex note"); }
+    browser_draw();
+}
+
+fn browser_library_position(text: u64) -> u32 {
+    let digit: u8 = *(text as *u8);
+    if digit < 49 || digit > 56 || *((text + 1) as *u8) != 0 { return 0; }
+    return (digit - 48) as u32;
+}
+
+fn browser_note_pin(position: u32, set: bool) {
+    if g_browser_private {
+        browser_set_status("Private mode cannot change saved notes"); browser_draw(); return;
+    }
+    if position == 0 || position > g_browser_note_count {
+        browser_set_status("Note number is outside the Library"); browser_draw(); return;
+    }
+    let index: u32 = g_browser_note_count - position;
+    if set {
+        g_browser_note_pins = g_browser_note_pins | ((1 as u32) << index);
+        browser_set_status("Library note pinned");
+    } else {
+        g_browser_note_pins = g_browser_note_pins
+            & ((255 as u32) ^ ((1 as u32) << index));
+        browser_set_status("Library note unpinned");
+    }
+    browser_library_save(); browser_draw();
+}
+
+fn browser_note_delete(position: u32) {
+    if g_browser_private {
+        browser_set_status("Private mode cannot delete saved notes"); browser_draw(); return;
+    }
+    if position == 0 || position > g_browser_note_count {
+        browser_set_status("Note number is outside the Library"); browser_draw(); return;
+    }
+    let index: u32 = g_browser_note_count - position; let next_pins: u32 = 0;
+    for old: u32 in 0..g_browser_note_count {
+        if old != index && (g_browser_note_pins & ((1 as u32) << old)) != 0 {
+            let next: u32 = old; if old > index { next = old - 1; }
+            next_pins = next_pins | ((1 as u32) << next);
+        }
+    }
+    for move: u32 in index..(BROWSER_LIBRARY_MAX - 1) {
+        if move + 1 < g_browser_note_count {
+            for byte: u32 in 0..BROWSER_NOTE_RECORD_SIZE {
+                *((browser_note_record(move) + (byte as u64)) as *u8)
+                    = *((browser_note_record(move + 1) + (byte as u64)) as *u8);
+            }
+        }
+    }
+    browser_zero(browser_note_record(g_browser_note_count - 1), BROWSER_NOTE_RECORD_SIZE);
+    g_browser_note_count = g_browser_note_count - 1; g_browser_note_pins = next_pins;
+    if browser_library_save() { browser_set_status("Library note deleted"); }
+    else { browser_set_status("Could not persist note deletion"); }
     browser_draw();
 }
 
@@ -1007,6 +1085,73 @@ fn browser_read_later_add() {
     browser_copy(browser_read_later_slot(target), &g_browser_url as u64, BROWSER_URL_CAP);
     if browser_library_save() { browser_set_status("Page added to Read Later"); }
     else { browser_set_status("Could not persist Read Later"); }
+    browser_draw();
+}
+
+fn browser_read_later_remove(position: u32) {
+    if g_browser_private {
+        browser_set_status("Private mode cannot change Read Later"); browser_draw(); return;
+    }
+    if position == 0 || position > g_browser_read_later_count {
+        browser_set_status("Read Later number is outside the Library"); browser_draw(); return;
+    }
+    let index: u32 = g_browser_read_later_count - position;
+    for move: u32 in index..(BROWSER_LIBRARY_MAX - 1) {
+        if move + 1 < g_browser_read_later_count {
+            browser_zero(browser_read_later_slot(move), BROWSER_URL_CAP);
+            browser_copy(browser_read_later_slot(move), browser_read_later_slot(move + 1), BROWSER_URL_CAP);
+        }
+    }
+    browser_zero(browser_read_later_slot(g_browser_read_later_count - 1), BROWSER_URL_CAP);
+    g_browser_read_later_count = g_browser_read_later_count - 1;
+    if browser_library_save() { browser_set_status("Read Later entry removed"); }
+    else { browser_set_status("Could not persist Read Later change"); }
+    browser_draw();
+}
+
+fn browser_notes_export() {
+    if g_browser_private {
+        browser_set_status("Leave private mode before exporting notes"); browser_draw(); return;
+    }
+    if g_browser_note_count == 0 {
+        browser_set_status("There are no notes to export"); browser_draw(); return;
+    }
+    if !g_fs_ok || g_cwd > 255 {
+        browser_set_status("Note export needs a MortFS home"); browser_draw(); return;
+    }
+    let idx: u32 = fs_find_in("vex-notes.md", g_cwd);
+    if idx == 64 { idx = fs_create_full("vex-notes.md", g_cwd, 0); }
+    if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) {
+        browser_set_status("Note export permission denied"); browser_draw(); return;
+    }
+    let base: u32 = fs_entry_addr(idx); let start: u32 = *((base + 32) as *u32);
+    if start == 0 || *((base + 36) as *u32) < 4 {
+        browser_set_status("Note export file capacity is too small"); browser_draw(); return;
+    }
+    let output: u64 = &g_browser_capture as u64; browser_zero(output, 2048);
+    let pos: u32 = browser_copy(output, "# Vex Notes\n\n" as u64, 2048);
+    for row: u32 in 0..g_browser_note_count {
+        let note: u32 = g_browser_note_count - 1 - row;
+        if (g_browser_note_pins & ((1 as u32) << note)) != 0 {
+            pos = pos + browser_copy(output + (pos as u64), "**Pinned**\n\n" as u64, 2048 - pos);
+        }
+        pos = pos + browser_copy(output + (pos as u64), "## " as u64, 2048 - pos);
+        pos = pos + browser_copy(output + (pos as u64), browser_note_title(note), 2048 - pos);
+        pos = pos + browser_copy(output + (pos as u64), "\n\n" as u64, 2048 - pos);
+        pos = pos + browser_copy(output + (pos as u64), browser_note_body(note), 2048 - pos);
+        pos = pos + browser_copy(output + (pos as u64), "\n\n" as u64, 2048 - pos);
+    }
+    let sectors: u32 = (pos + 511) / 512; let ok: bool = true;
+    for sector: u32 in 0..sectors {
+        if !ata_write(start + sector,
+            (output + ((sector * 512) as u64)) as *u8) { ok = false; }
+    }
+    if ok {
+        *((base + 28) as *u32) = pos; *((base + 48) as *u32) = fs_now();
+        ok = fs_sync();
+    }
+    if ok { browser_set_status("Notes exported as vex-notes.md"); }
+    else { browser_set_status("Note export write failed"); }
     browser_draw();
 }
 
@@ -1404,6 +1549,39 @@ fn browser_bookmark_remove() {
     browser_state_save(); browser_set_status("Bookmark removed"); browser_draw();
 }
 
+fn browser_private_snapshot() {
+    browser_workspace_sync();
+    for byte: u32 in 0..1280 { g_browser_private_saved_tabs[byte] = g_browser_tabs[byte]; }
+    for byte: u32 in 0..384 { g_browser_private_saved_titles[byte] = g_browser_tab_titles[byte]; }
+    for byte: u32 in 0..16 {
+        g_browser_private_saved_pinned[byte] = g_browser_tab_pinned[byte];
+        g_browser_private_saved_groups[byte] = g_browser_tab_groups[byte];
+    }
+    for workspace: u32 in 0..4 {
+        g_browser_private_saved_counts[workspace] = g_browser_workspace_counts[workspace];
+        g_browser_private_saved_active[workspace] = g_browser_workspace_active[workspace];
+    }
+    g_browser_private_saved_workspace = g_browser_workspace;
+    g_browser_private_restore_pending = false;
+}
+
+fn browser_private_restore() {
+    for byte: u32 in 0..1280 { g_browser_tabs[byte] = g_browser_private_saved_tabs[byte]; }
+    for byte: u32 in 0..384 { g_browser_tab_titles[byte] = g_browser_private_saved_titles[byte]; }
+    for byte: u32 in 0..16 {
+        g_browser_tab_pinned[byte] = g_browser_private_saved_pinned[byte];
+        g_browser_tab_groups[byte] = g_browser_private_saved_groups[byte];
+    }
+    for workspace: u32 in 0..4 {
+        g_browser_workspace_counts[workspace] = g_browser_private_saved_counts[workspace];
+        g_browser_workspace_active[workspace] = g_browser_private_saved_active[workspace];
+    }
+    g_browser_workspace = g_browser_private_saved_workspace;
+    g_browser_tab_count = g_browser_workspace_counts[g_browser_workspace];
+    g_browser_active_tab = g_browser_workspace_active[g_browser_workspace];
+    g_browser_private_restore_pending = false;
+}
+
 fn browser_local_page(url: u64) -> u32 {
     if browser_streq(url, "vex://home" as u64) { return 0; }
     if browser_streq(url, "vex://about" as u64) { return 1; }
@@ -1418,6 +1596,22 @@ fn browser_local_page(url: u64) -> u32 {
 }
 
 fn browser_load(url: u64, add_history: bool) {
+    let restored_url: [u8; 80] = [0; 80]; let restored_slot: u32 = 16;
+    if !g_browser_private && g_browser_private_restore_pending {
+        let tabs_base: u64 = &g_browser_tabs as u64;
+        if url >= tabs_base && url < tabs_base + 1280 {
+            restored_slot = ((url - tabs_base) / 80) as u32;
+        } else { browser_copy(&restored_url as u64, url, 80); }
+        browser_private_restore();
+        if restored_slot < 16 {
+            let workspace: u32 = restored_slot / 4; let tab: u32 = restored_slot % 4;
+            g_browser_workspace = workspace;
+            g_browser_tab_count = g_browser_workspace_counts[workspace];
+            g_browser_active_tab = g_browser_workspace_active[workspace];
+            if tab < g_browser_tab_count { g_browser_active_tab = tab; }
+            url = &g_browser_tabs as u64 + ((workspace * 320 + g_browser_active_tab * 80) as u64);
+        } else { url = &restored_url as u64; }
+    }
     browser_set_url(url); g_browser_scroll = 0; g_browser_remote = false;
     g_browser_secure_page = false; g_browser_content_len = 0;
     g_browser_reader = false; g_browser_site_links_allowed = true;
@@ -1714,10 +1908,23 @@ fn browser_close_tab() {
 }
 
 fn browser_toggle_private() {
-    g_browser_private = !g_browser_private;
-    if g_browser_private { browser_set_status("Private mode: new visits are not recorded"); }
-    else { browser_set_status("Private mode off"); }
-    browser_draw();
+    if !g_browser_private {
+        browser_private_snapshot(); g_browser_private = true;
+        browser_set_status("Private mode: this tab state is temporary"); browser_draw(); return;
+    }
+    g_browser_private = false;
+    if g_browser_tls_pending {
+        g_browser_private_restore_pending = true;
+        browser_set_status("Private mode off; certificate approval remains available");
+        browser_draw(); return;
+    }
+    browser_private_restore();
+    if g_browser_tab_count == 0 {
+        g_browser_tab_count = 1; g_browser_active_tab = 0;
+        browser_copy(browser_tab_slot(0), "vex://home" as u64, 80);
+    }
+    browser_load(browser_tab_slot(g_browser_active_tab), false);
+    browser_set_status("Private session discarded"); browser_draw();
 }
 
 fn browser_open_link(index: u32) {
@@ -1996,7 +2203,11 @@ fn browser_draw_library() {
         let index: u32 = g_browser_note_count - 1 - row;
         let y: u32 = 344 + row * 54; let bg: u32 = 0x17130f;
         fill_round_rect(208, y - 8, 330, 46, 8, bg);
-        draw_text_abs(browser_note_title(index) as *u8, 220, y - 1, 0xe7daca, bg);
+        num_to_str(row + 1, g_numbuf); draw_text_abs(g_numbuf, 220, y - 1, 0xd4a574, bg);
+        if (g_browser_note_pins & ((1 as u32) << index)) != 0 {
+            draw_text_abs("P", 236, y - 1, 0x55d6a0, bg);
+        }
+        draw_text_abs(browser_note_title(index) as *u8, 252, y - 1, 0xe7daca, bg);
         let excerpt: [u8; 37] = [0; 37];
         browser_copy(&excerpt as u64, browser_note_body(index), 37);
         draw_text_abs(&excerpt as *u8, 220, y + 19, 0x887765, bg);
@@ -2009,12 +2220,13 @@ fn browser_draw_library() {
         let index: u32 = g_browser_read_later_count - 1 - row;
         let y: u32 = 344 + row * 54; let bg: u32 = 0x17130f;
         fill_round_rect(568, y - 8, 340, 46, 8, bg);
-        draw_text_abs("Open", 580, y - 1, 0xd4a574, bg);
+        num_to_str(row + 1, g_numbuf); draw_text_abs(g_numbuf, 580, y - 1, 0xd4a574, bg);
+        draw_text_abs("Open", 604, y - 1, 0xd4a574, bg);
         let short_url: [u8; 37] = [0; 37];
         browser_copy(&short_url as u64, browser_read_later_slot(index), 37);
         draw_text_abs(&short_url as *u8, 580, y + 19, 0xb6a894, bg);
     }
-    draw_text_abs("Ctrl+K: note TEXT / read later / clear library", 208, 584, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("Ctrl+K: note TEXT / pin note N / export notes / delete or remove N", 208, 584, 0x7a8b93, 0x0b0f14);
 }
 
 fn browser_draw_settings_page() {
@@ -2138,7 +2350,7 @@ fn browser_draw_command() {
     draw_text_abs("bookmarks         history", 322, 334, 0xe7daca, 0x17130f);
     draw_text_abs("downloads         library", 322, 362, 0xe7daca, 0x17130f);
     draw_text_abs("note TEXT         read later", 322, 390, 0xe7daca, 0x17130f);
-    draw_text_abs("pin tab           duplicate tab", 322, 418, 0xe7daca, 0x17130f);
+    draw_text_abs("pin tab           screenshot", 322, 418, 0xe7daca, 0x17130f);
     draw_text_abs("Enter runs   Esc closes", 322, 462, 0x887765, 0x17130f);
 }
 
@@ -2234,6 +2446,8 @@ fn browser_command_execute() {
     if browser_streq(cmd, "reader" as u64) { browser_reader_toggle(); return; }
     if browser_streq(cmd, "site links" as u64) { browser_site_links_toggle(); return; }
     if browser_streq(cmd, "read later" as u64) { browser_read_later_add(); return; }
+    if browser_streq(cmd, "export notes" as u64) { browser_notes_export(); return; }
+    if browser_streq(cmd, "screenshot" as u64) { browser_take_screenshot(); return; }
     if browser_streq(cmd, "clear history" as u64) { browser_clear_history(); return; }
     if browser_streq(cmd, "clear downloads" as u64) { browser_downloads_clear(); return; }
     if browser_streq(cmd, "clear sessions" as u64) { browser_sessions_clear(); return; }
@@ -2254,6 +2468,18 @@ fn browser_command_execute() {
     }
     if browser_prefix(cmd, "note " as u64) {
         browser_note_add(cmd + 5); return;
+    }
+    if browser_prefix(cmd, "pin note " as u64) {
+        browser_note_pin(browser_library_position(cmd + 9), true); return;
+    }
+    if browser_prefix(cmd, "unpin note " as u64) {
+        browser_note_pin(browser_library_position(cmd + 11), false); return;
+    }
+    if browser_prefix(cmd, "delete note " as u64) {
+        browser_note_delete(browser_library_position(cmd + 12)); return;
+    }
+    if browser_prefix(cmd, "remove later " as u64) {
+        browser_read_later_remove(browser_library_position(cmd + 13)); return;
     }
     if explicit {
         browser_set_status("Unknown Vex command"); browser_draw(); return;
@@ -2387,6 +2613,70 @@ fn browser_save_page() {
         browser_set_status("Saved as vex-page.txt");
     }
     else { browser_set_status("Download write failed"); }
+    browser_draw();
+}
+
+fn browser_take_screenshot() {
+    if !g_gfx || g_fb == 0 || g_fb_w == 0 || g_fb_h == 0 {
+        browser_set_status("Screenshot needs an active framebuffer"); browser_draw(); return;
+    }
+    if !g_fs_ok || g_cwd > 255 {
+        browser_set_status("Screenshot needs a writable MortFS home"); browser_draw(); return;
+    }
+    let idx: u32 = fs_find_in("vex-shot.bmp", g_cwd);
+    if idx == 64 { idx = fs_create_full("vex-shot.bmp", g_cwd, 0); }
+    if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) {
+        browser_set_status("Screenshot permission denied"); browser_draw(); return;
+    }
+    let base: u32 = fs_entry_addr(idx); let start: u32 = *((base + 32) as *u32);
+    let file_size: u32 = 50230; let sectors: u32 = 99;
+    if start == 0 || *((base + 36) as *u32) < sectors {
+        browser_set_status("Screenshot file capacity is too small"); browser_draw(); return;
+    }
+    let output: u64 = &g_browser_capture as u64;
+    browser_zero(output, sectors * 512);
+    *((output + 0) as *u8) = 66; *((output + 1) as *u8) = 77; // BM
+    *((output + 2) as *u32) = file_size;
+    *((output + 10) as *u32) = 1078;
+    *((output + 14) as *u32) = 40;
+    *((output + 18) as *u32) = 256;
+    *((output + 22) as *u32) = 192;
+    *((output + 26) as *u16) = 1;
+    *((output + 28) as *u16) = 8;
+    *((output + 34) as *u32) = 49152;
+    *((output + 38) as *u32) = 2835;
+    *((output + 42) as *u32) = 2835;
+    *((output + 46) as *u32) = 256;
+    *((output + 50) as *u32) = 256;
+    for shade: u32 in 0..256 {
+        let palette: u64 = output + 54 + ((shade * 4) as u64);
+        *(palette as *u8) = shade as u8;
+        *((palette + 1) as *u8) = shade as u8;
+        *((palette + 2) as *u8) = shade as u8;
+    }
+    for row: u32 in 0..192 {
+        let source_y: u32 = (191 - row) * g_fb_h / 192;
+        for column: u32 in 0..256 {
+            let source_x: u32 = column * g_fb_w / 256;
+            let pixel: u32 = *((g_fb + source_y * g_fb_pitch + source_x * 4) as *u32);
+            let red: u32 = (pixel >> 16) & 255;
+            let green: u32 = (pixel >> 8) & 255;
+            let blue: u32 = pixel & 255;
+            let gray: u8 = ((red * 77 + green * 150 + blue * 29) >> 8) as u8;
+            *((output + 1078 + ((row * 256 + column) as u64)) as *u8) = gray;
+        }
+    }
+    let ok: bool = true;
+    for sector: u32 in 0..sectors {
+        if !ata_write(start + sector,
+            (output + ((sector * 512) as u64)) as *u8) { ok = false; }
+    }
+    if ok {
+        *((base + 28) as *u32) = file_size;
+        *((base + 48) as *u32) = fs_now(); ok = fs_sync();
+    }
+    if ok { browser_set_status("Screenshot saved as vex-shot.bmp"); }
+    else { browser_set_status("Screenshot write failed"); }
     browser_draw();
 }
 
@@ -2525,6 +2815,8 @@ fn browser_find_key(sc: u8) {
 fn browser_on_key(sc: u8) {
     if sc == 29 { g_browser_ctrl = true; g_browser_ctrl_shift_seen = false; return; }
     if sc == 157 { g_browser_ctrl = false; g_browser_ctrl_shift_seen = false; return; }
+    if sc == 56 { g_browser_alt = true; return; }
+    if sc == 184 { g_browser_alt = false; return; }
     if sc == 42 || sc == 54 {
         g_browser_shift = true;
         if g_browser_ctrl { g_browser_ctrl_shift_seen = true; }
@@ -2537,6 +2829,9 @@ fn browser_on_key(sc: u8) {
     if g_browser_ctrl && (g_browser_shift || g_browser_ctrl_shift_seen) && sc == 49 {
         browser_load("vex://library" as u64, true); return;
     }
+    if g_browser_ctrl && g_browser_alt && sc == 31 {
+        browser_take_screenshot(); return;
+    } // Ctrl+Alt+S
     if g_browser_ctrl && sc == 37 { browser_command_open(); return; } // Ctrl+K
     if g_browser_ctrl && sc == 20 { browser_new_tab(); return; } // Ctrl+T
     if g_browser_ctrl && sc == 17 { browser_close_tab(); return; } // Ctrl+W

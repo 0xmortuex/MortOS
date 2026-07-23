@@ -28,6 +28,8 @@ authenticated TLS 1.3 with host pins or validated imported CA roots. See
 [the browser guide](docs/browser.md) for its
 controls, architecture, tests, and honest engine limits.
 
+![Native Vex running over MortuexOS networking](docs/app-vex.png)
+
 ![MORT OS networking: net leases 10.0.2.15 over DHCP, httpd serves on port 80](docs/mortos-net.png)
 
 <sub>A web server, on an OS, over a TCP/IP stack — every layer in one language. Networking needs an RTL8139 NIC (QEMU emulates one; on real hardware, a ~$5 PCI card). The rest of the OS boots and runs on any machine.</sub>

@@ -776,6 +776,7 @@ def browser_ui():
     gateway_addr = _elf32_symbol(ELF, "m_g_gateway_ip")
     dns_addr = _elf32_symbol(ELF, "m_g_dns_ip")
     content_addr = _elf32_symbol(ELF, "m_g_browser_content")
+    browser_url_addr = _elf32_symbol(ELF, "m_g_browser_url")
     content_len_addr = _elf32_symbol(ELF, "m_g_browser_content_len")
     status_addr = _elf32_symbol(ELF, "m_g_browser_status")
     page_addr = _elf32_symbol(ELF, "m_g_browser_page")
@@ -815,6 +816,7 @@ def browser_ui():
     library_addr = _elf32_symbol(ELF, "m_g_browser_library")
     note_count_addr = _elf32_symbol(ELF, "m_g_browser_note_count")
     read_later_count_addr = _elf32_symbol(ELF, "m_g_browser_read_later_count")
+    note_pins_addr = _elf32_symbol(ELF, "m_g_browser_note_pins")
     list_sel_addr = _elf32_symbol(ELF, "m_g_browser_list_sel")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
@@ -1332,6 +1334,16 @@ def browser_ui():
                    and _guest_bytes(
                        handle, library_addr + 1296, 80).split(b"\0", 1)[0]
                    == address.encode("ascii")))
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "pin note 1":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            pinned_notes = _wait_guest_u32(
+                handle, note_pins_addr, lambda value: value == 1)
+            check("Vex Library pins individual notes persistently",
+                  pinned_notes == 1
+                  and _guest_bytes(handle, library_addr + 6, 1)[0] == 1)
 
             remembered = ""
             deadline = time.monotonic() + 5
@@ -1396,6 +1408,8 @@ def browser_ui():
                   (closed_tabs == 2 and reopened_tabs == 2
                    and _guest_u32(handle, recent_count_addr) == 1))
             send_key(handle, "tab")
+            normal_before_private = _guest_bytes(
+                handle, browser_url_addr, 80).split(b"\0", 1)[0]
             send_key(handle, "p")
             private = _wait_guest_u32(
                 handle, private_addr, lambda value: (value & 0xff) != 0)
@@ -1614,6 +1628,16 @@ def browser_ui():
             send_key(handle, "p")
             _wait_guest_u32(
                 handle, private_addr, lambda value: (value & 0xff) == 0)
+            restored_after_private = b""
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and restored_after_private != normal_before_private:
+                restored_after_private = _guest_bytes(
+                    handle, browser_url_addr, 80).split(b"\0", 1)[0]
+                if restored_after_private != normal_before_private:
+                    time.sleep(0.2)
+            check("Leaving private mode discards its temporary tab state",
+                  restored_after_private == normal_before_private
+                  and b"redirected" not in restored_after_private)
             send_key(handle, "d")
             downloaded = _wait_guest_u32(
                 handle, download_count_addr, lambda value: value == 1)
@@ -1849,6 +1873,16 @@ def browser_ui():
                        handle, download_index_addr + 96, 24).split(b"\0", 1)[0]
                    == b"secure.bin"
                    and _guest_u32(handle, download_index_addr + 96 + 28) == 3))
+            send_key(handle, "ctrl-alt-s")
+            screenshot_status = ""
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and "vex-shot.bmp" not in screenshot_status:
+                screenshot_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "vex-shot.bmp" not in screenshot_status:
+                    time.sleep(0.1)
+            check("Ctrl+Alt+S saves a bounded native framebuffer screenshot",
+                  "Screenshot saved as vex-shot.bmp" in screenshot_status)
             send_key(handle, "t")
             _wait_guest_u32(handle, tabs_addr, lambda value: value == 3)
             send_key(handle, "x")
@@ -1868,6 +1902,13 @@ def browser_ui():
           read_mortfs_file(temp_disk, "bad_name.bin") == binary_body)
     check("MortFS preserves the exact authenticated HTTPS binary payload",
           read_mortfs_file(temp_disk, "secure.bin") == tls_binary_body)
+    screenshot = read_mortfs_file(temp_disk, "vex-shot.bmp")
+    check("Native Vex screenshot is a valid non-empty 256x192 grayscale BMP",
+          (screenshot is not None and len(screenshot) == 50230
+           and screenshot[:2] == b"BM"
+           and struct.unpack_from("<II", screenshot, 18) == (256, 192)
+           and screenshot[28] == 8
+           and len(set(screenshot[1078:])) > 8))
     corrupt_mortfs_file_byte(temp_disk, "vex-roots.der", len(root_der))
     handle = boot_iso(kernel_build.ISO, temp_disk)
     try:
@@ -1937,12 +1978,35 @@ def browser_ui():
                and _guest_bytes(handle, site_prefs_addr + 83, 1)[0] == 3))
         check("Vex notes and Read Later survive a full reboot",
               (restored_notes == 1 and restored_later == 1
+               and _guest_u32(handle, note_pins_addr) == 1
                and _guest_bytes(
                    handle, library_addr + 16, 24).split(b"\0", 1)[0]
                == b"Focus research"
                and _guest_bytes(
                    handle, library_addr + 1296, 80).split(b"\0", 1)[0]
                == address.encode("ascii")))
+        send_key(handle, "ctrl-k")
+        _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+        for char in "export notes":
+            send_key(handle, key_name(char))
+        send_key(handle, "ret")
+        send_key(handle, "ctrl-k")
+        _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+        for char in "delete note 1":
+            send_key(handle, key_name(char))
+        send_key(handle, "ret")
+        deleted_notes = _wait_guest_u32(
+            handle, note_count_addr, lambda value: value == 0)
+        send_key(handle, "ctrl-k")
+        _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+        for char in "remove later 1":
+            send_key(handle, key_name(char))
+        send_key(handle, "ret")
+        removed_later = _wait_guest_u32(
+            handle, read_later_count_addr, lambda value: value == 0)
+        check("Vex Library exports and removes individual saved items",
+              deleted_notes == 0 and removed_later == 0
+              and _guest_u32(handle, note_pins_addr) == 0)
         send_key(handle, "8")
         send_key(handle, "a")
         rejected_bundle_status = ""
@@ -2006,12 +2070,17 @@ def browser_ui():
             session_store = read_mortfs_file(temp_disk, ".vex-sessions")
             site_store = read_mortfs_file(temp_disk, ".vex-sites")
             library_store = read_mortfs_file(temp_disk, ".vex-library")
+            exported_notes = read_mortfs_file(temp_disk, "vex-notes.md")
             check("Browser-data clears are durable without deleting downloaded files",
                   (len(download_store) == 512 and download_store[4] == 0
                    and len(session_store) == 2048 and session_store[4] == 0
                    and len(site_store) == 1024 and site_store[4] == 0
                    and len(library_store) == 2048
                    and library_store[4] == 0 and library_store[5] == 0
+                   and exported_notes is not None
+                   and b"# Vex Notes" in exported_notes
+                   and b"**Pinned**" in exported_notes
+                   and b"Focus research" in exported_notes
                    and read_mortfs_file(temp_disk, "bad_name.bin") == binary_body
                    and read_mortfs_file(temp_disk, "secure.bin") == tls_binary_body))
         except Exception:

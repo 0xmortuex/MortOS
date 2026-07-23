@@ -3724,21 +3724,24 @@ fn overlay_on_key(sc: u8) {
 
 fn on_scancode(sc: u8) {
     mouse_hide();
+    // App shortcuts remain global while the Home launcher or power menu is
+    // visible. Lock and sleep keep exclusive input ownership so they cannot
+    // be bypassed with an app-switch key.
+    if g_gfx && g_overlay != 2 && g_overlay != 3 {
+        if sc == 88 {
+            open_power_menu();
+            return;
+        }
+        if sc >= 59 && sc <= 62 {
+            g_overlay = 0;
+            switch_app((sc as u32) - 59);
+            return;
+        }
+        if sc == 63 { open_launcher(); return; }
+    }
     if g_overlay != 0 {              // an overlay owns the keyboard while it's up
         overlay_on_key(sc);
         return;
-    }
-    if g_gfx && sc == 88 {           // F12 opens the power menu from anywhere
-        open_power_menu();
-        return;
-    }
-
-    if g_gfx {                       // F1-F4 switch apps, F5 opens the home launcher
-        if sc == 59 { switch_app(0); return; }
-        if sc == 60 { switch_app(1); return; }
-        if sc == 61 { switch_app(2); return; }
-        if sc == 62 { switch_app(3); return; }
-        if sc == 63 { open_launcher(); return; }
     }
     if g_app == 1 {                  // route to the active app
         files_on_key(sc);
