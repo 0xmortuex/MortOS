@@ -43,6 +43,9 @@ upstream/native boundary.
   responses.
 - Saving the current rendered document as `vex-page.txt` in the user's home
   directory, plus exact binary downloads under a sanitized URL-derived name.
+- An eight-record, newest-first download manager persisted in
+  `.vex-downloads`, with exact filename, byte count, text/binary kind, and
+  HTTP/HTTPS metadata. Private-mode saves are deliberately not indexed.
 - Local pages for Home, About, History, Bookmarks, Downloads, Settings, and
   Network status.
 

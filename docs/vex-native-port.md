@@ -19,7 +19,7 @@ a native Mort subsystem:
 | Address / command surface | `Ctrl+K` actions, local suggestions, and `vex://` / HTTP / HTTPS navigation |
 | History, bookmarks, sessions | Per-user MortFS records |
 | Private browsing | No persistent history, session recovery, pins, or CA imports |
-| Downloads manager | Explicit exact-byte MortFS saves with bounded staging |
+| Downloads manager | Eight persistent exact-byte MortFS records with type and transport metadata |
 | Network and TLS | `mortnet`, RTL8139, DNS, TCP, and the Mort TLS 1.3 client |
 | Web content | Fail-closed HTML-to-text engine; scripts and styles never execute |
 | Settings and trust | Native Vex pages backed by MortFS CA roots and host pins |
@@ -33,7 +33,7 @@ or Chromium engine is embedded.
 
 1. Shared identity, vertical tabs, library navigation, and command/address UI.
 2. Isolated workspaces and persisted workspace selection.
-3. Named sessions, searchable history, and a multi-item download manager.
+3. Multi-item download manager, named sessions, and searchable history.
 4. Reading mode, per-site preferences, and content controls supported by the
    native renderer.
 5. Further web compatibility only after memory isolation, process support, and

@@ -15,6 +15,9 @@ let BROWSER_PIN_HOST_BASE: u32 = 896;
 let BROWSER_PIN_HASH_BASE: u32 = 960;
 let BROWSER_PIN_PORT_BASE: u32 = 992;
 let BROWSER_STATE_MAGIC: u32 = 0x31535856; // "VXS1"
+let BROWSER_DOWNLOAD_MAGIC: u32 = 0x31445856; // "VXD1"
+let BROWSER_DOWNLOAD_MAX: u32 = 8;
+let BROWSER_DOWNLOAD_RECORD_SIZE: u32 = 40;
 let BROWSER_ROOT_LEGACY_MAGIC: u32 = 0x31525856; // "VXR1" hash-only records
 let BROWSER_ROOT_V2_MAGIC: u32 = 0x32525856;     // "VXR2" eight DER anchors
 let BROWSER_ROOT_MAGIC: u32 = 0x33525856;        // "VXR3" fifteen DER anchors
@@ -36,8 +39,8 @@ let g_browser_binary_data: [u8; 12288] = [0; 12288];
 let g_browser_binary_name: [u8; 24] = [0; 24];
 let g_browser_binary_len: u32 = 0;
 let g_browser_binary_ready: bool = false;
-let g_browser_last_download_name: [u8; 24] = [0; 24];
-let g_browser_last_download_len: u32 = 0;
+let g_browser_download_index: [u8; 512] = [0; 512];
+let g_browser_download_count: u32 = 0;
 let g_browser_input_len: u32 = 0;
 let g_browser_find_len: u32 = 0;
 let g_browser_mode: u32 = 0;       // 0 page, 1 address, 2 find
@@ -52,7 +55,6 @@ let g_browser_ctrl: bool = false;
 let g_browser_replace_address: bool = false;
 let g_browser_loaded_dir: u32 = 256;
 let g_browser_state_saved: bool = false;
-let g_browser_downloaded: bool = false;
 let g_browser_private: bool = false;
 let g_browser_tabs: [u8; 1280] = [0; 1280];       // 4 workspaces x 4 tabs x 80 bytes
 let g_browser_tab_titles: [u8; 384] = [0; 384];   // 4 workspaces x 4 titles x 24
@@ -554,6 +556,91 @@ fn browser_state_load() {
     g_browser_state_saved = true;
 }
 
+fn browser_download_record(index: u32) -> u64 {
+    return &g_browser_download_index as u64
+        + 16 + ((index * BROWSER_DOWNLOAD_RECORD_SIZE) as u64);
+}
+
+fn browser_download_name(index: u32) -> u64 { return browser_download_record(index); }
+fn browser_download_length(index: u32) -> u32 {
+    return *((browser_download_record(index) + 24) as *u32);
+}
+fn browser_download_flags(index: u32) -> u32 {
+    return *((browser_download_record(index) + 28) as *u32);
+}
+
+fn browser_downloads_reset() {
+    browser_zero(&g_browser_download_index as u64, 512);
+    *(&g_browser_download_index as *u32) = BROWSER_DOWNLOAD_MAGIC;
+    g_browser_download_count = 0;
+    *((&g_browser_download_index as u64 + 4) as *u8) = 0;
+}
+
+fn browser_downloads_save() -> bool {
+    if !g_fs_ok || g_cwd > 255 { return false; }
+    let idx: u32 = fs_find_in(".vex-downloads", g_cwd);
+    if idx == 64 { idx = fs_create_full(".vex-downloads", g_cwd, 0); }
+    if idx == 64 || fs_type(idx) != 0 || !can_write(fs_uid(idx), fs_mode(idx)) { return false; }
+    let base: u32 = fs_entry_addr(idx); let start: u32 = *((base + 32) as *u32);
+    if start == 0 { return false; }
+    *((&g_browser_download_index as u64 + 4) as *u8) = g_browser_download_count as u8;
+    if !ata_write(start, &g_browser_download_index as *u8) { return false; }
+    *((base + 28) as *u32) = 512; *((base + 48) as *u32) = fs_now();
+    return fs_sync();
+}
+
+fn browser_downloads_load() {
+    browser_downloads_reset();
+    if !g_fs_ok || g_cwd > 255 { return; }
+    let idx: u32 = fs_find_in(".vex-downloads", g_cwd);
+    if idx == 64 { browser_downloads_save(); return; }
+    let base: u32 = fs_entry_addr(idx);
+    if fs_type(idx) != 0 || *((base + 28) as *u32) < 512 { return; }
+    if !ata_read(*((base + 32) as *u32), &g_browser_download_index as *u8) {
+        browser_downloads_reset(); return;
+    }
+    if *(&g_browser_download_index as *u32) != BROWSER_DOWNLOAD_MAGIC {
+        browser_downloads_reset(); return;
+    }
+    let count: u32 = *((&g_browser_download_index as u64 + 4) as *u8) as u32;
+    if count > BROWSER_DOWNLOAD_MAX { browser_downloads_reset(); return; }
+    for i: u32 in 0..count {
+        *((browser_download_name(i) + 23) as *u8) = 0;
+        if *(browser_download_name(i) as *u8) == 0
+            || browser_download_length(i) == 0
+            || browser_download_length(i) > 12288 {
+            browser_downloads_reset(); return;
+        }
+    }
+    g_browser_download_count = count;
+}
+
+fn browser_downloads_add(name: u64, length: u32, secure: bool, binary: bool) {
+    if g_browser_private || length == 0 || length > 12288 || *(name as *u8) == 0 { return; }
+    let target: u32 = g_browser_download_count;
+    if target >= BROWSER_DOWNLOAD_MAX {
+        for i: u32 in 0..(BROWSER_DOWNLOAD_MAX - 1) {
+            for b: u32 in 0..BROWSER_DOWNLOAD_RECORD_SIZE {
+                *((browser_download_record(i) + (b as u64)) as *u8)
+                    = *((browser_download_record(i + 1) + (b as u64)) as *u8);
+            }
+        }
+        target = BROWSER_DOWNLOAD_MAX - 1;
+    } else {
+        g_browser_download_count = g_browser_download_count + 1;
+    }
+    let record: u64 = browser_download_record(target);
+    browser_zero(record, BROWSER_DOWNLOAD_RECORD_SIZE);
+    browser_copy(record, name, 24);
+    *((record + 24) as *u32) = length;
+    let flags: u32 = 0;
+    if secure { flags = flags | 1; }
+    if binary { flags = flags | 2; }
+    *((record + 28) as *u32) = flags;
+    *((record + 32) as *u32) = fs_now();
+    browser_downloads_save();
+}
+
 fn browser_history_state_valid(count: u32, index: u32, bookmarks: u32) -> bool {
     if count > BROWSER_HISTORY_MAX || bookmarks > BROWSER_BOOKMARK_MAX { return false; }
     if count == 0 { return index == 0; }
@@ -1018,23 +1105,37 @@ fn browser_draw_list(base: u32, count: u32, empty: *u8) {
 }
 
 fn browser_draw_downloads() {
-    draw_text_abs("Downloads", 208, 272, 0x4fd1c5, 0x0b0f14);
-    let have_download: bool = g_browser_downloaded;
-    if !have_download && g_fs_ok && g_cwd <= 255 { have_download = fs_find_in("vex-page.txt", g_cwd) != 64; }
-    if have_download {
-        if g_browser_last_download_name[0] != 0 {
-            draw_text_abs(&g_browser_last_download_name as *u8, 208, 316, 0xffffff, 0x0b0f14);
-        } else { draw_text_abs("vex-page.txt", 208, 316, 0xffffff, 0x0b0f14); }
-        draw_text_abs("Saved into the current MortFS home directory.", 208, 344, 0x8fa1aa, 0x0b0f14);
-        if g_browser_last_download_len > 0 {
-            num_to_str(g_browser_last_download_len, g_numbuf);
-            draw_text_abs(g_numbuf, 208, 370, 0x4fd1c5, 0x0b0f14);
-            draw_text_abs("bytes", 280, 370, 0x8fa1aa, 0x0b0f14);
-        }
-    } else {
-        draw_text_abs("No page has been saved in this session.", 208, 316, 0x8fa1aa, 0x0b0f14);
+    draw_text_abs("Downloads", 208, 272, 0xd4a574, 0x0b0f14);
+    draw_text_abs("Persistent exact-byte saves in your MortFS home", 312, 272, 0x887765, 0x0b0f14);
+    if g_browser_private {
+        draw_text_abs("Download history is hidden and not recorded in private mode.", 208, 320, 0xc18cff, 0x0b0f14);
+        draw_text_abs("Explicit saves still write the requested file.", 208, 350, 0xa89882, 0x0b0f14);
+        return;
     }
-    draw_text_abs("Press D on text or staged binary content to save it.", 208, 410, 0xc8d0d4, 0x0b0f14);
+    if g_browser_download_count == 0 {
+        draw_text_abs("No downloads recorded yet.", 208, 320, 0x8fa1aa, 0x0b0f14);
+        draw_text_abs("Press D on text or staged binary content to save it.", 208, 356, 0xc8d0d4, 0x0b0f14);
+        return;
+    }
+    draw_text_abs("FILE", 220, 304, 0x887765, 0x0b0f14);
+    draw_text_abs("BYTES", 520, 304, 0x887765, 0x0b0f14);
+    draw_text_abs("TYPE", 616, 304, 0x887765, 0x0b0f14);
+    draw_text_abs("TRANSPORT", 720, 304, 0x887765, 0x0b0f14);
+    for row: u32 in 0..g_browser_download_count {
+        let index: u32 = g_browser_download_count - 1 - row;
+        let y: u32 = 332 + row * 34;
+        let bg: u32 = 0x17130f;
+        fill_round_rect(208, y - 7, 700, 28, 7, bg);
+        draw_text_abs(browser_download_name(index) as *u8, 220, y, 0xe7daca, bg);
+        num_to_str(browser_download_length(index), g_numbuf);
+        draw_text_abs(g_numbuf, 520, y, 0xb6a894, bg);
+        let flags: u32 = browser_download_flags(index);
+        if (flags & 2) != 0 { draw_text_abs("binary", 616, y, 0xd4a574, bg); }
+        else { draw_text_abs("text", 616, y, 0xb6a894, bg); }
+        if (flags & 1) != 0 { draw_text_abs("HTTPS", 720, y, 0x55d6a0, bg); }
+        else { draw_text_abs("HTTP", 720, y, 0xffcc66, bg); }
+    }
+    draw_text_abs("Newest first / maximum 8 records / private saves are omitted", 208, 592, 0x685b4d, 0x0b0f14);
 }
 
 fn browser_draw_settings_page() {
@@ -1152,7 +1253,9 @@ fn browser_draw_command() {
 
 fn browser_draw() {
     if !g_gfx { return; }
-    if g_browser_loaded_dir != g_cwd { browser_state_load(); browser_roots_load(); }
+    if g_browser_loaded_dir != g_cwd {
+        browser_state_load(); browser_roots_load(); browser_downloads_load();
+    }
     if g_browser_tab_count == 0 {
         g_browser_tab_count = 1; g_browser_active_tab = 0;
         browser_copy(browser_tab_slot(0), "vex://home" as u64, 80);
@@ -1305,10 +1408,8 @@ fn browser_save_binary() {
         *((base + 48) as *u32) = fs_now(); ok = fs_sync();
     }
     if ok {
-        g_browser_downloaded = true; g_browser_last_download_len = g_browser_binary_len;
-        browser_zero(&g_browser_last_download_name as u64, 24);
-        browser_copy(
-            &g_browser_last_download_name as u64, &g_browser_binary_name as u64, 24);
+        browser_downloads_add(
+            &g_browser_binary_name as u64, g_browser_binary_len, g_browser_secure_page, true);
         browser_set_status("Binary response saved to MortFS");
     } else { browser_set_status("Binary download write failed"); }
     browser_draw();
@@ -1331,9 +1432,8 @@ fn browser_save_page() {
         ok = fs_sync();
     }
     if ok {
-        g_browser_downloaded = true; g_browser_last_download_len = g_browser_content_len;
-        browser_zero(&g_browser_last_download_name as u64, 24);
-        browser_copy(&g_browser_last_download_name as u64, "vex-page.txt" as u64, 24);
+        browser_downloads_add(
+            "vex-page.txt" as u64, g_browser_content_len, g_browser_secure_page, false);
         browser_set_status("Saved as vex-page.txt");
     }
     else { browser_set_status("Download write failed"); }

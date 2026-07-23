@@ -778,7 +778,6 @@ def browser_ui():
     content_addr = _elf32_symbol(ELF, "m_g_browser_content")
     content_len_addr = _elf32_symbol(ELF, "m_g_browser_content_len")
     status_addr = _elf32_symbol(ELF, "m_g_browser_status")
-    downloaded_addr = _elf32_symbol(ELF, "m_g_browser_downloaded")
     links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
     tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
     browser_mode_addr = _elf32_symbol(ELF, "m_g_browser_mode")
@@ -799,8 +798,8 @@ def browser_ui():
     binary_ready_addr = _elf32_symbol(ELF, "m_g_browser_binary_ready")
     binary_len_addr = _elf32_symbol(ELF, "m_g_browser_binary_len")
     binary_name_addr = _elf32_symbol(ELF, "m_g_browser_binary_name")
-    last_download_name_addr = _elf32_symbol(ELF, "m_g_browser_last_download_name")
-    last_download_len_addr = _elf32_symbol(ELF, "m_g_browser_last_download_len")
+    download_index_addr = _elf32_symbol(ELF, "m_g_browser_download_index")
+    download_count_addr = _elf32_symbol(ELF, "m_g_browser_download_count")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
     results = []
@@ -1303,10 +1302,17 @@ def browser_ui():
                 if "HTTP text document" not in plain_status:
                     time.sleep(0.1)
             send_key(handle, "d")
+            check("Private downloads are saved without entering persistent history",
+                  (_guest_u32(handle, download_count_addr) == 0
+                   and (_guest_u32(handle, private_addr) & 0xff) != 0))
+            send_key(handle, "p")
+            _wait_guest_u32(
+                handle, private_addr, lambda value: (value & 0xff) == 0)
+            send_key(handle, "d")
             downloaded = _wait_guest_u32(
-                handle, downloaded_addr, lambda value: (value & 0xff) != 0)
+                handle, download_count_addr, lambda value: value == 1)
             check("Download command saves the rendered page to MortFS",
-                  (downloaded & 0xff) != 0)
+                  downloaded == 1)
             shot = os.path.join(BUILD, "browser-http.ppm").replace(os.sep, "/")
             _monitor(handle, f"screendump {shot}")
             check("Browser HTTP screenshot was captured",
@@ -1339,12 +1345,20 @@ def browser_ui():
                     handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
                 if "Binary response saved" not in binary_save_status:
                     time.sleep(0.1)
+            http_downloads = _wait_guest_u32(
+                handle, download_count_addr, lambda value: value == 2)
             check("Staged binary response saves under a sanitized URL filename",
-                  (_guest_bytes(
-                      handle, last_download_name_addr, 24).split(b"\0", 1)[0] == b"bad_name.bin"
-                   and _guest_u32(handle, last_download_len_addr) == len(binary_body)
+                  (http_downloads == 2
+                   and _guest_bytes(
+                       handle, download_index_addr + 56, 24).split(b"\0", 1)[0]
+                   == b"bad_name.bin"
+                   and _guest_u32(handle, download_index_addr + 56 + 24)
+                   == len(binary_body)
                    and "Binary response saved" in binary_save_status))
 
+            send_key(handle, "p")
+            _wait_guest_u32(
+                handle, private_addr, lambda value: (value & 0xff) != 0)
             send_key(handle, "slash")
             secure_address = f"https://10.0.2.2:{tls_port}/"
             for char in secure_address:
@@ -1504,11 +1518,31 @@ def browser_ui():
                     handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
                 if "Binary response saved" not in secure_binary_status:
                     time.sleep(0.1)
+            secure_downloads = _wait_guest_u32(
+                handle, download_count_addr, lambda value: value == 3)
             check("Authenticated HTTPS binary download saves exact bounded bytes",
-                  (_guest_bytes(
-                      handle, last_download_name_addr, 24).split(b"\0", 1)[0] == b"secure.bin"
-                   and _guest_u32(handle, last_download_len_addr) == len(tls_binary_body)
+                  (secure_downloads == 3
+                   and _guest_bytes(
+                       handle, download_index_addr + 96, 24).split(b"\0", 1)[0]
+                   == b"secure.bin"
+                   and _guest_u32(handle, download_index_addr + 96 + 24)
+                   == len(tls_binary_body)
                    and "Binary response saved" in secure_binary_status))
+            indexed_downloads = _wait_guest_u32(
+                handle, download_count_addr, lambda value: value == 3)
+            check("Vex download manager indexes text, HTTP binary, and HTTPS binary saves",
+                  (indexed_downloads == 3
+                   and _guest_bytes(
+                       handle, download_index_addr + 16, 24).split(b"\0", 1)[0]
+                   == b"vex-page.txt"
+                   and _guest_bytes(
+                       handle, download_index_addr + 56, 24).split(b"\0", 1)[0]
+                   == b"bad_name.bin"
+                   and _guest_u32(handle, download_index_addr + 56 + 28) == 2
+                   and _guest_bytes(
+                       handle, download_index_addr + 96, 24).split(b"\0", 1)[0]
+                   == b"secure.bin"
+                   and _guest_u32(handle, download_index_addr + 96 + 28) == 3))
             send_key(handle, "w")
             send_key(handle, "w")
             _wait_guest_u32(handle, workspace_addr, lambda value: value == 2)
@@ -1539,6 +1573,11 @@ def browser_ui():
               and _guest_bytes(handle, roots_addr + 4152, 32) == expected_bundle_hash)
         check("Active Vex workspace survives a full reboot",
               state[8] == 2 and _guest_u32(handle, workspace_addr) == 2)
+        check("Vex download manager survives a full reboot",
+              (_guest_u32(handle, download_count_addr) == 3
+               and _guest_bytes(
+                   handle, download_index_addr + 96, 24).split(b"\0", 1)[0]
+               == b"secure.bin"))
         send_key(handle, "8")
         send_key(handle, "a")
         rejected_bundle_status = ""
