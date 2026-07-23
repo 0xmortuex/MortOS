@@ -26,8 +26,13 @@ upstream/native boundary.
 - Back, forward, home, reload, scrolling, and find-in-page.
 - Persistent bookmarks and six-entry history in the current user's
   `.vex-state` MortFS file.
+- Case-insensitive search directly on the History page with `F`; matching stays
+  entirely on-device and selects the local entry for reopening.
 - Explicit session recovery: Home offers the last non-private HTTP page, but
   never reconnects automatically at startup.
+- Four named workspace snapshots persisted in `.vex-sessions`. Each restores
+  up to four tab URLs, titles, and the active tab through `session save NAME`,
+  `session open NAME`, and `session delete NAME` in the command bar.
 - Private mode, which prevents new visits from entering persistent history.
 - Content-Type-aware rendering for HTML and literal plain-text responses.
   Script/style bodies are never executed or displayed. Other response types
@@ -49,8 +54,8 @@ upstream/native boundary.
 - An eight-record, newest-first download manager persisted in
   `.vex-downloads`, with exact filename, byte count, text/binary kind, and
   HTTP/HTTPS metadata. Private-mode saves are deliberately not indexed.
-- Local pages for Home, About, History, Bookmarks, Downloads, Settings, and
-  Network status.
+- Local pages for Home, About, History, Bookmarks, Downloads, Saved Sessions,
+  Settings, and Network status.
 
 ## Controls
 
@@ -58,6 +63,7 @@ upstream/native boundary.
 | --- | --- |
 | `F3` | Open Vex from anywhere in the desktop |
 | `Ctrl+K` | Open the Vex command bar |
+| `S` | Open Saved Sessions |
 | `/` | Edit the address; Up/Down chooses a local suggestion |
 | Left / Right | Back / forward |
 | Up / Down | Scroll the page or move through a list |
@@ -65,7 +71,7 @@ upstream/native boundary.
 | `5` / `6` / `7` / `8` | Bookmarks / history / downloads / settings |
 | `9` | Restore the last normal HTTP page from Home |
 | `B` | Bookmark the current page |
-| `F` | Find text in the current HTTP document |
+| `F` | Find page text, or search entries on the History page |
 | `L` | Open the extracted-links panel |
 | `D` | Save the rendered document to MortFS |
 | `T` / `X` | New tab / close tab |

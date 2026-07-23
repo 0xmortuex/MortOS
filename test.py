@@ -778,6 +778,7 @@ def browser_ui():
     content_addr = _elf32_symbol(ELF, "m_g_browser_content")
     content_len_addr = _elf32_symbol(ELF, "m_g_browser_content_len")
     status_addr = _elf32_symbol(ELF, "m_g_browser_status")
+    page_addr = _elf32_symbol(ELF, "m_g_browser_page")
     links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
     tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
     browser_mode_addr = _elf32_symbol(ELF, "m_g_browser_mode")
@@ -800,6 +801,9 @@ def browser_ui():
     binary_name_addr = _elf32_symbol(ELF, "m_g_browser_binary_name")
     download_index_addr = _elf32_symbol(ELF, "m_g_browser_download_index")
     download_count_addr = _elf32_symbol(ELF, "m_g_browser_download_count")
+    sessions_addr = _elf32_symbol(ELF, "m_g_browser_sessions")
+    session_count_addr = _elf32_symbol(ELF, "m_g_browser_session_count")
+    list_sel_addr = _elf32_symbol(ELF, "m_g_browser_list_sel")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
     results = []
@@ -1144,6 +1148,28 @@ def browser_ui():
             send_key(handle, "ret")
             _wait_guest_u32(handle, workspace_addr, lambda value: value == 0)
 
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "session save focus":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            saved_sessions = _wait_guest_u32(
+                handle, session_count_addr, lambda value: value == 1)
+            send_key(handle, "t")
+            _wait_guest_u32(handle, tabs_addr, lambda value: value == 2)
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "session open focus":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            restored_session_tabs = _wait_guest_u32(
+                handle, tabs_addr, lambda value: value == 1)
+            check("Named Vex sessions save and restore an isolated tab snapshot",
+                  (saved_sessions == 1 and restored_session_tabs == 1
+                   and _guest_bytes(
+                       handle, sessions_addr + 16, 24).split(b"\0", 1)[0]
+                   == b"focus"))
+
             send_key(handle, "slash")
             address = f"http://10.0.2.2:{port}/"
             for char in address:
@@ -1220,6 +1246,21 @@ def browser_ui():
             private = _wait_guest_u32(
                 handle, private_addr, lambda value: (value & 0xff) != 0)
             check("Private browsing mode toggles on", (private & 0xff) != 0)
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "session save secret":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            private_session_status = ""
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and "Private tabs cannot be saved" not in private_session_status:
+                private_session_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "Private tabs cannot be saved" not in private_session_status:
+                    time.sleep(0.1)
+            check("Private tabs cannot enter the persistent session library",
+                  (_guest_u32(handle, session_count_addr) == 1
+                   and "Private tabs cannot be saved" in private_session_status))
             send_key(handle, "8")
             send_key(handle, "i")
             private_root_status = _guest_bytes(
@@ -1321,6 +1362,36 @@ def browser_ui():
                     time.sleep(0.25)
             check("text/plain responses render without HTML tag stripping",
                   plain_marker in plain_text and "<literal-text>" in plain_text)
+            send_key(handle, "6")
+            _wait_guest_u32(handle, page_addr, lambda value: value == 2)
+            send_key(handle, "f")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 2)
+            for char in "HTTP":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            history_search_status = ""
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and "History match selected" not in history_search_status:
+                history_search_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "History match selected" not in history_search_status:
+                    time.sleep(0.1)
+            selected_history = _guest_u32(handle, list_sel_addr)
+            selected_history_url = _guest_bytes(
+                handle, state_addr + 16 + selected_history * 80, 80).split(b"\0", 1)[0]
+            check("Vex History searches local entries case-insensitively",
+                  ("History match selected" in history_search_status
+                   and selected_history_url.startswith(b"http://")))
+            send_key(handle, "ret")
+            reopened_history_text = ""
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and marker not in reopened_history_text:
+                reopened_length = _guest_u32(handle, content_len_addr)
+                reopened_history_text = _guest_bytes(
+                    handle, content_addr, min(max(reopened_length, 1), 512)
+                ).decode("ascii", "replace")
+                if marker not in reopened_history_text:
+                    time.sleep(0.25)
             plain_status = ""
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and "HTTP text document" not in plain_status:
@@ -1596,6 +1667,8 @@ def browser_ui():
             handle, workspace_addr, lambda value: value == 2, timeout_s=10)
         restored_downloads = _wait_guest_u32(
             handle, download_count_addr, lambda value: value == 3, timeout_s=10)
+        restored_sessions = _wait_guest_u32(
+            handle, session_count_addr, lambda value: value == 1, timeout_s=10)
         state = _guest_bytes(handle, state_addr, 9)
         check("Browser bookmarks and imported CA roots survive a full reboot",
               state[6] >= 1 and state[7] == 0
@@ -1609,6 +1682,11 @@ def browser_ui():
                and _guest_bytes(
                    handle, download_index_addr + 96, 24).split(b"\0", 1)[0]
                == b"secure.bin"))
+        check("Named Vex sessions survive a full reboot",
+              (restored_sessions == 1
+               and _guest_bytes(
+                   handle, sessions_addr + 16, 24).split(b"\0", 1)[0]
+               == b"focus"))
         send_key(handle, "8")
         send_key(handle, "a")
         rejected_bundle_status = ""

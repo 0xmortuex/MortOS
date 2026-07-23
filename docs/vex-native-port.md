@@ -17,7 +17,7 @@ a native Mort subsystem:
 | Vertical tabs and new-tab workflow | Four isolated bounded tab stacks in a native sidebar |
 | Workspaces | Personal, Work, School, and Dev stacks with persisted selection |
 | Address / command surface | `Ctrl+K` actions, local suggestions, and `vex://` / HTTP / HTTPS navigation |
-| History, bookmarks, sessions | Per-user MortFS records |
+| History, bookmarks, sessions | Searchable history plus named tab snapshots in per-user MortFS records |
 | Private browsing | No persistent history, session recovery, pins, or CA imports |
 | Downloads manager | Eight persistent exact-byte MortFS records with type and transport metadata |
 | Network and TLS | `mortnet`, RTL8139, DNS, TCP, and the Mort TLS 1.3 client |
