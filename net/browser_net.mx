@@ -351,7 +351,6 @@ fn browser_tls_leaf_rsa(message: u64, message_length: u32,
     if !tls13_parse_certificate_message(message, message_length,
         &certificate_offset as u64, &certificate_length as u64) { return false; }
     let certificate: u64 = message + (certificate_offset as u64);
-    tls_sha256(certificate, certificate_length, &g_browser_tls_leaf_fingerprint as u64);
     let tbs_offset: u32 = 0; let tbs_length: u32 = 0;
     let signature_offset: u32 = 0; let signature_length: u32 = 0;
     if !tls_x509_certificate_shape(certificate, certificate_length,
@@ -375,6 +374,41 @@ fn browser_tls_leaf_rsa(message: u64, message_length: u32,
     for i: u32 in 0..found_length {
         *((modulus + (i as u64)) as *u8) =
             *((certificate + ((spki_offset + modulus_offset + i) as u64)) as *u8);
+    }
+    let certificate_count: u32 = tls13_certificate_count(message, message_length);
+    if certificate_count == 0 { return false; }
+    let chain_now: u64 = 0;
+    if !tls_x509_rtc_snapshot(&chain_now as u64) { return false; }
+    for index: u32 in 0..certificate_count {
+        let current_offset: u32 = 0; let current_length: u32 = 0;
+        if !tls13_certificate_at(message, message_length, index,
+            &current_offset as u64, &current_length as u64) { return false; }
+        let current: u64 = message + (current_offset as u64);
+        let current_tbs_offset: u32 = 0; let current_tbs_length: u32 = 0;
+        let current_signature_offset: u32 = 0; let current_signature_length: u32 = 0;
+        let current_validity_offset: u32 = 0; let current_validity_length: u32 = 0;
+        let current_spki_offset: u32 = 0; let current_spki_length: u32 = 0;
+        let current_extensions_offset: u32 = 0; let current_extensions_length: u32 = 0;
+        let current_not_before: u64 = 0; let current_not_after: u64 = 0;
+        if !tls_x509_certificate_shape(current, current_length,
+            &current_tbs_offset as u64, &current_tbs_length as u64,
+            &current_signature_offset as u64, &current_signature_length as u64)
+            || !tls_x509_tbs_fields(current, current_tbs_offset, current_tbs_length,
+                &current_validity_offset as u64, &current_validity_length as u64,
+                &current_spki_offset as u64, &current_spki_length as u64,
+                &current_extensions_offset as u64, &current_extensions_length as u64)
+            || !tls_x509_parse_validity(current + (current_validity_offset as u64),
+                current_validity_length, &current_not_before as u64, &current_not_after as u64)
+            || !tls_x509_valid_at(current_not_before, current_not_after, chain_now) { return false; }
+        if index + 1 < certificate_count {
+            let issuer_offset: u32 = 0; let issuer_length: u32 = 0;
+            if !tls13_certificate_at(message, message_length, index + 1,
+                &issuer_offset as u64, &issuer_length as u64)
+                || !tls_x509_verify_rsa_issuer(current, current_length,
+                    message + (issuer_offset as u64), issuer_length) { return false; }
+        } else {
+            tls_sha256(current, current_length, &g_browser_tls_leaf_fingerprint as u64);
+        }
     }
     *((modulus_length) as *u32) = found_length;
     *((exponent) as *u32) = found_exponent; return true;

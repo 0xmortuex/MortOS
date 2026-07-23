@@ -98,6 +98,51 @@ fn tls13_parse_certificate_message(message: u64, message_length: u32,
     return pos == end && count > 0;
 }
 
+fn tls13_certificate_count(message: u64, message_length: u32) -> u32 {
+    if message_length < 12 || *((message + 0) as *u8) != 11
+        || tls13_read_u24(message, 1) + 4 != message_length { return 0; }
+    let pos: u32 = 4; let context_length: u32 = *((message + (pos as u64)) as *u8) as u32;
+    pos = pos + 1; if context_length > message_length - pos { return 0; }
+    pos = pos + context_length; if message_length - pos < 3 { return 0; }
+    let list_length: u32 = tls13_read_u24(message, pos); pos = pos + 3;
+    if list_length == 0 || list_length != message_length - pos { return 0; }
+    let count: u32 = 0;
+    while pos < message_length {
+        if count >= 16 || message_length - pos < 5 { return 0; }
+        let certificate_length: u32 = tls13_read_u24(message, pos); pos = pos + 3;
+        if certificate_length == 0 || certificate_length > message_length - pos { return 0; }
+        let der_offset: u32 = 0; let der_length: u32 = 0;
+        if tls_der_read(message + (pos as u64), certificate_length, 0x30,
+                        &der_offset as u64, &der_length as u64) != certificate_length { return 0; }
+        pos = pos + certificate_length;
+        if message_length - pos < 2 { return 0; }
+        let extensions_length: u32 = tls13_read_u16(message, pos); pos = pos + 2;
+        if extensions_length > message_length - pos { return 0; }
+        pos = pos + extensions_length; count = count + 1;
+    }
+    if pos != message_length { return 0; }
+    return count;
+}
+
+fn tls13_certificate_at(message: u64, message_length: u32, wanted: u32,
+                        certificate_offset: u64, certificate_length_output: u64) -> bool {
+    let count: u32 = tls13_certificate_count(message, message_length);
+    if count == 0 || wanted >= count { return false; }
+    let pos: u32 = 4; let context_length: u32 = *((message + (pos as u64)) as *u8) as u32;
+    pos = pos + 1 + context_length + 3;
+    for index: u32 in 0..count {
+        let certificate_length: u32 = tls13_read_u24(message, pos); pos = pos + 3;
+        if index == wanted {
+            *((certificate_offset) as *u32) = pos;
+            *((certificate_length_output) as *u32) = certificate_length; return true;
+        }
+        pos = pos + certificate_length;
+        let extensions_length: u32 = tls13_read_u16(message, pos);
+        pos = pos + 2 + extensions_length;
+    }
+    return false;
+}
+
 fn tls_x509_dns_lower(ch: u8) -> u8 {
     if ch >= 65 && ch <= 90 { return ch + 32; }
     return ch;
@@ -362,6 +407,39 @@ fn tls_x509_tbs_fields(certificate: u64, tbs_offset: u32, tbs_length: u32,
     return pos == end;
 }
 
+fn tls_x509_tbs_names(certificate: u64, tbs_offset: u32, tbs_length: u32,
+                      issuer_offset: u64, issuer_length: u64,
+                      subject_offset: u64, subject_length: u64) -> bool {
+    let content_offset: u32 = 0; let content_length: u32 = 0;
+    if tls_der_read(certificate + (tbs_offset as u64), tbs_length, 0x30,
+                    &content_offset as u64, &content_length as u64) != tbs_length { return false; }
+    let pos: u32 = tbs_offset + content_offset; let end: u32 = pos + content_length;
+    let item_offset: u32 = 0; let item_length: u32 = 0; let total: u32 = 0;
+    if pos < end && *((certificate + (pos as u64)) as *u8) == 0xa0 {
+        total = tls_der_read(certificate + (pos as u64), end - pos, 0xa0,
+                             &item_offset as u64, &item_length as u64);
+        if total == 0 { return false; } pos = pos + total;
+    }
+    total = tls_der_read(certificate + (pos as u64), end - pos, 0x02,
+                         &item_offset as u64, &item_length as u64);
+    if total == 0 { return false; } pos = pos + total;
+    total = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+                         &item_offset as u64, &item_length as u64);
+    if total == 0 { return false; } pos = pos + total; // signature AlgorithmIdentifier
+    total = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+                         &item_offset as u64, &item_length as u64);
+    if total == 0 { return false; }
+    *((issuer_offset) as *u32) = pos; *((issuer_length) as *u32) = total; pos = pos + total;
+    total = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+                         &item_offset as u64, &item_length as u64);
+    if total == 0 { return false; } pos = pos + total; // validity
+    total = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+                         &item_offset as u64, &item_length as u64);
+    if total == 0 { return false; }
+    *((subject_offset) as *u32) = pos; *((subject_length) as *u32) = total;
+    return true;
+}
+
 fn tls_x509_find_san(certificate: u64, extensions_offset: u32, extensions_length: u32,
                      san_offset: u64, san_length: u64) -> bool {
     let content_offset: u32 = 0; let content_length: u32 = 0;
@@ -468,6 +546,75 @@ fn tls_x509_spki_rsa(spki: u64, spki_length: u32,
     *((modulus_length) as *u32) = raw_length;
     *((exponent_output) as *u32) = exponent;
     return true;
+}
+
+fn tls_x509_sha256_rsa_algorithm(certificate: u64, certificate_length: u32) -> bool {
+    let outer_offset: u32 = 0; let outer_length: u32 = 0;
+    if tls_der_read(certificate, certificate_length, 0x30,
+                    &outer_offset as u64, &outer_length as u64) != certificate_length { return false; }
+    let pos: u32 = outer_offset; let end: u32 = outer_offset + outer_length;
+    let item_offset: u32 = 0; let item_length: u32 = 0;
+    let total: u32 = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+                                  &item_offset as u64, &item_length as u64);
+    if total == 0 { return false; } pos = pos + total;
+    total = tls_der_read(certificate + (pos as u64), end - pos, 0x30,
+                         &item_offset as u64, &item_length as u64);
+    if total == 0 { return false; }
+    let scan: u32 = pos + item_offset; let algorithm_end: u32 = scan + item_length;
+    let oid_offset: u32 = 0; let oid_length: u32 = 0;
+    let oid_total: u32 = tls_der_read(certificate + (scan as u64), algorithm_end - scan, 0x06,
+                                      &oid_offset as u64, &oid_length as u64);
+    let oid: [u8; 9] = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b];
+    if oid_total == 0 || oid_length != 9
+        || !tls_bytes_equal(certificate + ((scan + oid_offset) as u64), &oid as u64, 9) { return false; }
+    scan = scan + oid_total;
+    let null_offset: u32 = 0; let null_length: u32 = 0;
+    let null_total: u32 = tls_der_read(certificate + (scan as u64), algorithm_end - scan, 0x05,
+                                       &null_offset as u64, &null_length as u64);
+    return null_total != 0 && null_length == 0 && scan + null_total == algorithm_end;
+}
+
+fn tls_x509_verify_rsa_issuer(child: u64, child_length: u32,
+                              issuer: u64, issuer_certificate_length: u32) -> bool {
+    let child_tbs_offset: u32 = 0; let child_tbs_length: u32 = 0;
+    let child_signature_offset: u32 = 0; let child_signature_length: u32 = 0;
+    if !tls_x509_certificate_shape(child, child_length,
+        &child_tbs_offset as u64, &child_tbs_length as u64,
+        &child_signature_offset as u64, &child_signature_length as u64)
+        || !tls_x509_sha256_rsa_algorithm(child, child_length) { return false; }
+    let child_issuer_offset: u32 = 0; let child_issuer_length: u32 = 0;
+    let child_subject_offset: u32 = 0; let child_subject_length: u32 = 0;
+    let issuer_issuer_offset: u32 = 0; let issuer_issuer_length: u32 = 0;
+    let issuer_subject_offset: u32 = 0; let issuer_subject_length: u32 = 0;
+    let issuer_tbs_offset: u32 = 0; let issuer_tbs_length: u32 = 0;
+    let issuer_signature_offset: u32 = 0; let issuer_signature_length: u32 = 0;
+    if !tls_x509_tbs_names(child, child_tbs_offset, child_tbs_length,
+        &child_issuer_offset as u64, &child_issuer_length as u64,
+        &child_subject_offset as u64, &child_subject_length as u64)
+        || !tls_x509_certificate_shape(issuer, issuer_certificate_length,
+            &issuer_tbs_offset as u64, &issuer_tbs_length as u64,
+            &issuer_signature_offset as u64, &issuer_signature_length as u64)
+        || !tls_x509_tbs_names(issuer, issuer_tbs_offset, issuer_tbs_length,
+            &issuer_issuer_offset as u64, &issuer_issuer_length as u64,
+            &issuer_subject_offset as u64, &issuer_subject_length as u64)
+        || child_issuer_length != issuer_subject_length
+        || !tls_bytes_equal(child + (child_issuer_offset as u64),
+                            issuer + (issuer_subject_offset as u64), child_issuer_length) { return false; }
+    let validity_offset: u32 = 0; let validity_length: u32 = 0;
+    let spki_offset: u32 = 0; let spki_length: u32 = 0;
+    let extensions_offset: u32 = 0; let extensions_length: u32 = 0;
+    if !tls_x509_tbs_fields(issuer, issuer_tbs_offset, issuer_tbs_length,
+        &validity_offset as u64, &validity_length as u64,
+        &spki_offset as u64, &spki_length as u64,
+        &extensions_offset as u64, &extensions_length as u64) { return false; }
+    let modulus_offset: u32 = 0; let modulus_length: u32 = 0; let exponent: u32 = 0;
+    if !tls_x509_spki_rsa(issuer + (spki_offset as u64), spki_length,
+        &modulus_offset as u64, &modulus_length as u64, &exponent as u64) { return false; }
+    let digest: [u8; 32] = [0; 32];
+    tls_sha256(child + (child_tbs_offset as u64), child_tbs_length, &digest as u64);
+    return tls_rsa_pkcs1_sha256_verify_hash(
+        child + (child_signature_offset as u64), child_signature_length,
+        issuer + ((spki_offset + modulus_offset) as u64), modulus_length, exponent, &digest as u64);
 }
 
 fn tls_x509_self_test() {

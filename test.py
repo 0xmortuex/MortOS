@@ -20,6 +20,7 @@ API for other tests:
     shutdown(handle)                     # monitor `quit` + kill, always safe
 """
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -859,17 +860,70 @@ def browser_ui():
         server_thread.start()
         openssl = (shutil.which("openssl")
                    or r"C:\Program Files\Git\mingw64\bin\openssl.exe")
-        tls_key = os.path.join(webroot, "tls-key.pem")
-        tls_cert = os.path.join(webroot, "tls-cert.pem")
+        tls_root_key = os.path.join(webroot, "tls-root-key.pem")
+        tls_root_cert = os.path.join(webroot, "tls-root-cert.pem")
+        tls_key = os.path.join(webroot, "tls-leaf-key.pem")
+        tls_csr = os.path.join(webroot, "tls-leaf.csr")
+        tls_leaf_cert = os.path.join(webroot, "tls-leaf-cert.pem")
+        tls_chain = os.path.join(webroot, "tls-chain.pem")
+        tls_extensions = os.path.join(webroot, "tls-leaf.ext")
         subprocess.run(
             [openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-             "-subj", "/CN=10.0.2.2", "-days", "1",
-             "-keyout", tls_key, "-out", tls_cert],
+             "-subj", "/CN=Mort Vex Test Root", "-days", "1",
+             "-addext", "basicConstraints=critical,CA:TRUE",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+             "-keyout", tls_root_key, "-out", tls_root_cert],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        tls_context.minimum_version = ssl.TLSVersion.TLSv1_3
-        tls_context.maximum_version = ssl.TLSVersion.TLSv1_3
-        tls_context.load_cert_chain(tls_cert, tls_key)
+        subprocess.run(
+            [openssl, "req", "-new", "-newkey", "rsa:2048", "-nodes",
+             "-subj", "/CN=10.0.2.2", "-keyout", tls_key, "-out", tls_csr],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(tls_extensions, "w", encoding="ascii", newline="\n") as stream:
+            stream.write(
+                "basicConstraints=critical,CA:FALSE\n"
+                "keyUsage=critical,digitalSignature\n"
+                "extendedKeyUsage=serverAuth\n"
+                "subjectAltName=IP:10.0.2.2\n")
+        subprocess.run(
+            [openssl, "x509", "-req", "-in", tls_csr,
+             "-CA", tls_root_cert, "-CAkey", tls_root_key, "-CAcreateserial",
+             "-days", "1", "-sha256", "-extfile", tls_extensions,
+             "-out", tls_leaf_cert],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(tls_chain, "wb") as output:
+            for certificate_path in (tls_leaf_cert, tls_root_cert):
+                with open(certificate_path, "rb") as certificate_stream:
+                    output.write(certificate_stream.read())
+        tls_key_renewed = os.path.join(webroot, "tls-leaf-renewed-key.pem")
+        tls_csr_renewed = os.path.join(webroot, "tls-leaf-renewed.csr")
+        tls_leaf_renewed = os.path.join(webroot, "tls-leaf-renewed-cert.pem")
+        tls_chain_renewed = os.path.join(webroot, "tls-chain-renewed.pem")
+        subprocess.run(
+            [openssl, "req", "-new", "-newkey", "rsa:2048", "-nodes",
+             "-subj", "/CN=10.0.2.2", "-keyout", tls_key_renewed, "-out", tls_csr_renewed],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            [openssl, "x509", "-req", "-in", tls_csr_renewed,
+             "-CA", tls_root_cert, "-CAkey", tls_root_key,
+             "-days", "1", "-sha256", "-extfile", tls_extensions,
+             "-out", tls_leaf_renewed],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(tls_chain_renewed, "wb") as output:
+            for certificate_path in (tls_leaf_renewed, tls_root_cert):
+                with open(certificate_path, "rb") as certificate_stream:
+                    output.write(certificate_stream.read())
+        tls_contexts = []
+        for certificate_path, key_path in (
+                (tls_chain, tls_key), (tls_chain_renewed, tls_key_renewed)):
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_3
+            context.maximum_version = ssl.TLSVersion.TLSv1_3
+            context.load_cert_chain(certificate_path, key_path)
+            tls_contexts.append(context)
+        root_der = subprocess.check_output(
+            [openssl, "x509", "-in", tls_root_cert, "-outform", "DER"],
+            stderr=subprocess.DEVNULL)
+        expected_anchor_hash = hashlib.sha256(root_der).digest()
         tls_port = 18443
         tls_ready = threading.Event()
         tls_complete = threading.Event()
@@ -891,7 +945,7 @@ def browser_ui():
                         connection.settimeout(30)
                         with connection:
                             try:
-                                with tls_context.wrap_socket(connection, server_side=True) as secure:
+                                with tls_contexts[_attempt].wrap_socket(connection, server_side=True) as secure:
                                     tls_completed.append(True)
                                     request = b""
                                     while b"\r\n\r\n" not in request and len(request) < 2048:
@@ -1099,6 +1153,13 @@ def browser_ui():
                     time.sleep(0.25)
             check("text/plain responses render without HTML tag stripping",
                   plain_marker in plain_text and "<literal-text>" in plain_text)
+            plain_status = ""
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and "HTTP text document" not in plain_status:
+                plain_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "HTTP text document" not in plain_status:
+                    time.sleep(0.1)
             send_key(handle, "d")
             downloaded = _wait_guest_u32(
                 handle, downloaded_addr, lambda value: (value & 0xff) != 0)
@@ -1166,7 +1227,7 @@ def browser_ui():
             check("Explicit host-scoped certificate pin is saved to MortFS",
                   (_guest_bytes(handle, state_addr + 7, 1)[0] == 1
                    and pin_host == "10.0.2.2" and pin_port == tls_port
-                   and any(pin_hash) and "pin saved" in pin_status))
+                   and pin_hash == expected_anchor_hash and "pin saved" in pin_status))
             send_key(handle, "slash")
             for char in secure_address:
                 send_key(handle, key_name(char))
@@ -1181,7 +1242,7 @@ def browser_ui():
             https_length = _guest_u32(handle, content_len_addr)
             https_text = _guest_bytes(
                 handle, content_addr, min(max(https_length, 1), 512)).decode("ascii", "replace")
-            check("Pinned reconnect completes TLS and renders authenticated HTTPS",
+            check("Renewed leaf under pinned CA completes authenticated HTTPS",
                   ((https_loaded & 0xff) != 0
                    and (_guest_u32(handle, tls_http_ok_addr) & 0xff) != 0
                    and https_stage == 10
@@ -1205,6 +1266,7 @@ def browser_ui():
                         timeout_s=20)
         send_key(handle, "esc")
         send_key(handle, "f3")
+        _wait_guest_u32(handle, app_addr, lambda value: value == 2, timeout_s=10)
         state = _guest_bytes(handle, state_addr, 8)
         check("Browser bookmarks and certificate pin survive a full reboot",
               state[6] >= 1 and state[7] == 1)
