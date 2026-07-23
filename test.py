@@ -432,6 +432,8 @@ def smoke(disk_img=None):
     finished_test_addr = _elf32_symbol(ELF, "m_g_tls13_finished_test")
     reassembly_ok_addr = _elf32_symbol(ELF, "m_g_tls13_reassembly_ok")
     reassembly_payload_addr = _elf32_symbol(ELF, "m_g_tls13_reassembly_payload_test")
+    certificate_verify_ok_addr = _elf32_symbol(ELF, "m_g_tls13_certificate_verify_ok")
+    certificate_verify_hash_addr = _elf32_symbol(ELF, "m_g_tls13_certificate_verify_hash_test")
     input_bounds_ok_addr = _elf32_symbol(ELF, "m_g_input_bounds_ok")
     x509_der_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_der_ok")
     x509_message_ok_addr = _elf32_symbol(ELF, "m_g_tls_x509_certificate_message_ok")
@@ -527,6 +529,10 @@ def smoke(disk_img=None):
         check("Mort reassembles fragmented and coalesced TLS handshake messages",
               (_guest_u32(handle, reassembly_ok_addr) & 0xff) != 0
               and _guest_bytes(handle, reassembly_payload_addr, 3) == b"\x01\x02\x03", handle)
+        check("Mort verifies the RFC 8448 TLS 1.3 RSA CertificateVerify message",
+              (_guest_u32(handle, certificate_verify_ok_addr) & 0xff) != 0
+              and _guest_bytes(handle, certificate_verify_hash_addr, 32) == bytes.fromhex(
+                  "beed95af404e23dd553ebcfb4a00b8dbbf2244db2a9aa39a37925651267c141f"), handle)
         check("Network, persisted-state, and USB parser bounds checks reject hostile lengths",
               (_guest_u32(handle, input_bounds_ok_addr) & 0xff) != 0, handle)
         check("Mort parses canonical DER and bounded TLS Certificate lists",

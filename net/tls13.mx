@@ -61,6 +61,14 @@ let TLS13_SERVER_FINISHED1: [u8; 32] = [
     0x9b, 0x9b, 0x14, 0x1d, 0x90, 0x63, 0x37, 0xfb, 0xd2, 0xcb, 0xdc, 0xe7, 0x1d, 0xf4, 0xde, 0xda,
     0x4a, 0xb4, 0x2c, 0x30, 0x95, 0x72, 0xcb, 0x7f, 0xff, 0xee, 0x54, 0x54, 0xb7, 0x8f, 0x07, 0x18
 ];
+let TLS13_CERT_VERIFY_TRANSCRIPT1: [u8; 32] = [
+    0x76, 0x4d, 0x66, 0x32, 0xb3, 0xc3, 0x5c, 0x3f, 0x32, 0x05, 0xe3, 0x49, 0x9a, 0xc3, 0xed, 0xba,
+    0xab, 0xb8, 0x82, 0x95, 0xfb, 0xa7, 0x51, 0x46, 0x1d, 0x36, 0x78, 0xe2, 0xe5, 0xea, 0x06, 0x87
+];
+let TLS13_CERT_VERIFY_HASH1: [u8; 32] = [
+    0xbe, 0xed, 0x95, 0xaf, 0x40, 0x4e, 0x23, 0xdd, 0x55, 0x3e, 0xbc, 0xfb, 0x4a, 0x00, 0xb8, 0xdb,
+    0xbf, 0x22, 0x44, 0xdb, 0x2a, 0x9a, 0xa3, 0x9a, 0x37, 0x92, 0x56, 0x51, 0x26, 0x7c, 0x14, 0x1f
+];
 
 let g_tls13_key_schedule_ok: bool = false;
 let g_tls13_client_hello_ok: bool = false;
@@ -84,6 +92,8 @@ let g_tls13_handshake_buffered: u32 = 0;
 let g_tls13_reassembly_ok: bool = false;
 let g_tls13_reassembly_type_test: u8 = 0;
 let g_tls13_reassembly_payload_test: [u8; 3] = [0; 3];
+let g_tls13_certificate_verify_ok: bool = false;
+let g_tls13_certificate_verify_hash_test: [u8; 32] = [0; 32];
 
 fn tls13_write_u16(output: u64, position: u32, value: u32) {
     *((output + (position as u64)) as *u8) = (value >> 8) as u8;
@@ -312,6 +322,37 @@ fn tls13_handshake_consume() -> bool {
     g_tls13_handshake_buffered = remaining; return true;
 }
 
+fn tls13_parse_certificate_verify(message: u64, message_length: u32, expected_scheme: u32,
+                                  signature_offset: u64, signature_length: u64) -> bool {
+    if message_length < 72 || message_length > 520 || *((message + 0) as *u8) != 15
+        || tls13_read_u24(message, 1) + 4 != message_length
+        || tls13_read_u16(message, 4) != expected_scheme { return false; }
+    let length: u32 = tls13_read_u16(message, 6);
+    if length < 64 || length > 512 || length + 8 != message_length { return false; }
+    *((signature_offset) as *u32) = 8; *((signature_length) as *u32) = length; return true;
+}
+
+fn tls13_certificate_verify_hash(transcript_hash: u64, output: u64) {
+    let input: [u8; 130] = [0; 130];
+    for i: u32 in 0..64 { input[i] = 32; }
+    let context: u64 = "TLS 1.3, server CertificateVerify" as u64;
+    for i: u32 in 0..33 { input[64 + i] = *((context + (i as u64)) as *u8); }
+    input[97] = 0;
+    for i: u32 in 0..32 { input[98 + i] = *((transcript_hash + (i as u64)) as *u8); }
+    tls_sha256(&input as u64, 130, output);
+}
+
+fn tls13_verify_rsa_certificate_verify(message: u64, message_length: u32,
+                                       transcript_hash: u64, modulus: u64,
+                                       modulus_length: u32, exponent: u32) -> bool {
+    let signature_offset: u32 = 0; let signature_length: u32 = 0;
+    if !tls13_parse_certificate_verify(message, message_length, 0x0804,
+        &signature_offset as u64, &signature_length as u64) { return false; }
+    let digest: [u8; 32] = [0; 32]; tls13_certificate_verify_hash(transcript_hash, &digest as u64);
+    return tls_rsa_pss_sha256_verify_hash(message + (signature_offset as u64), signature_length,
+                                          modulus, modulus_length, exponent, &digest as u64);
+}
+
 fn tls13_self_test() {
     let derived: [u8; 32] = [0; 32];
     let ok: bool = tls13_derive_secret(&TLS13_DERIVED_PRK1 as u64, "derived" as u64, 7, "" as u64, 0, &derived as u64);
@@ -383,4 +424,20 @@ fn tls13_self_test() {
     g_tls13_reassembly_ok = first_partial && first_ready && consumed && second_ready && oversized_rejected
         && tls_bytes_equal(&g_tls13_reassembly_payload_test as u64, &fragment3 as u64 + 1, 3);
     tls13_handshake_reset();
+    let certificate_verify: [u8; 136] = [0; 136];
+    certificate_verify[0] = 15; certificate_verify[1] = 0; certificate_verify[2] = 0; certificate_verify[3] = 132;
+    certificate_verify[4] = 0x08; certificate_verify[5] = 0x04;
+    certificate_verify[6] = 0; certificate_verify[7] = 128;
+    for i: u32 in 0..128 { certificate_verify[8 + i] = TLS_RSA_PSS_SIGNATURE1[i]; }
+    tls13_certificate_verify_hash(&TLS13_CERT_VERIFY_TRANSCRIPT1 as u64,
+                                  &g_tls13_certificate_verify_hash_test as u64);
+    let verify_ok: bool = tls13_verify_rsa_certificate_verify(
+        &certificate_verify as u64, 136, &TLS13_CERT_VERIFY_TRANSCRIPT1 as u64,
+        &TLS_RSA_MODULUS1 as u64, 128, 65537);
+    certificate_verify[5] = 0x05; // rsa_pss_rsae_sha384 was not negotiated.
+    let bad_offset: u32 = 0; let bad_length: u32 = 0;
+    g_tls13_certificate_verify_ok = verify_ok
+        && tls_bytes_equal(&g_tls13_certificate_verify_hash_test as u64, &TLS13_CERT_VERIFY_HASH1 as u64, 32)
+        && !tls13_parse_certificate_verify(&certificate_verify as u64, 136, 0x0804,
+                                           &bad_offset as u64, &bad_length as u64);
 }

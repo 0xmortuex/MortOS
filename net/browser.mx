@@ -473,7 +473,7 @@ fn browser_draw_about() {
         && g_tls_crypto_x25519_ok && g_tls13_key_schedule_ok && g_tls13_client_hello_ok
         && g_tls13_client_hello_test[0] == 22 && g_tls13_server_hello_ok
         && g_tls13_handshake_keys_ok && g_tls13_record_ok && g_tls13_finished_ok
-        && g_tls13_reassembly_ok && g_input_bounds_ok && g_tls_x509_der_ok
+        && g_tls13_reassembly_ok && g_tls13_certificate_verify_ok && g_input_bounds_ok && g_tls_x509_der_ok
         && g_tls_x509_certificate_message_ok && g_tls_x509_hostname_ok && g_tls_x509_fields_ok
         && g_tls_x509_time_test[0] != 0 && g_tls_x509_rtc_ok && g_tls_x509_rtc_test[0] != 0
         && g_tls_x509_rsa_spki_ok && g_tls_rsa_modexp_ok && g_tls_rsa_output_test[1] == 1

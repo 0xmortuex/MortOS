@@ -135,6 +135,11 @@ at least eight `FF` padding octets, and no trailing data. TLS CertificateVerify
 uses RSA-PSS-SHA256 with MGF1-SHA256, a 32-byte salt, the modulus top-bit rule,
 and full delimiter/padding/hash validation. Both accept/reject paths use RFC
 8448 values and deliberately corrupted digests at boot.
+The TLS CertificateVerify parser enforces the negotiated
+`rsa_pss_rsae_sha256` scheme and exact signature framing. Mort constructs the
+TLS 1.3 server verification input (`64 * 0x20`, context string, separator, and
+transcript hash), reproduces RFC 8448's message digest, and validates its actual
+CertificateVerify signature end to end.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
