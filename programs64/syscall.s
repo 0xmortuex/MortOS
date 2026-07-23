@@ -22,6 +22,14 @@ mortos_getpid:
     ret
 .size mortos_getpid, . - mortos_getpid
 
+.global mortos_yield
+.type mortos_yield, @function
+mortos_yield:
+    mov $24, %rax                  /* SYS_yield */
+    syscall
+    ret
+.size mortos_yield, . - mortos_yield
+
 /*
  * A second fixed ELF entry used only by the kernel isolation test. It attempts
  * a direct read from the supervisor-only kernel mapping. Reaching SYS_exit

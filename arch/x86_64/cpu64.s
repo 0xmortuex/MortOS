@@ -168,8 +168,39 @@ mort64_enter_user:
     iretq
 .size mort64_enter_user, . - mort64_enter_user
 
+.global mort64_resume_user
+.type mort64_resume_user, @function
+mort64_resume_user:
+    /* rdi=saved cooperative context, rsi=process CR3 */
+    push %rbx
+    push %rbp
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    mov %rsp, mort64_kernel_rsp(%rip)
+    mov %rsp, mort64_tss+4(%rip)
+    mov %cr3, %rax
+    mov %rax, mort64_kernel_cr3(%rip)
+    mov %rsi, %cr3
+
+    mov 8(%rdi), %rcx              /* SYSRET RIP */
+    mov 16(%rdi), %r11             /* SYSRET RFLAGS */
+    mov 24(%rdi), %rbx
+    mov 32(%rdi), %rbp
+    mov 40(%rdi), %r12
+    mov 48(%rdi), %r13
+    mov 56(%rdi), %r14
+    mov 64(%rdi), %r15
+    mov 0(%rdi), %rsp
+    xor %eax, %eax                 /* yield returns success */
+    sysretq
+.size mort64_resume_user, . - mort64_resume_user
+
 .type mort64_syscall_entry, @function
 mort64_syscall_entry:
+    cmp $24, %rax                   /* cooperative process yield */
+    je .Lsyscall_yield
     cmp $60, %rax                   /* process exit */
     je .Lsyscall_exit
 
@@ -213,6 +244,57 @@ mort64_syscall_entry:
     pop %r11
     mov mort64_user_rsp(%rip), %rsp
     sysretq
+
+.Lsyscall_yield:
+    /*
+     * A syscall is a natural cooperative switch boundary: RCX/R11 contain the
+     * resume RIP/RFLAGS and the System V callee-saved registers must survive
+     * the Mort-callable yield wrapper.
+     */
+    mov %rsp, mort64_yield_rsp(%rip)
+    mov %rcx, mort64_yield_rip(%rip)
+    mov %r11, mort64_yield_rflags(%rip)
+    mov %rbx, mort64_yield_rbx(%rip)
+    mov %rbp, mort64_yield_rbp(%rip)
+    mov %r12, mort64_yield_r12(%rip)
+    mov %r13, mort64_yield_r13(%rip)
+    mov %r14, mort64_yield_r14(%rip)
+    mov %r15, mort64_yield_r15(%rip)
+    mov mort64_kernel_rsp(%rip), %rsp
+    cld
+    sub $8, %rsp
+    call mort_on_user_yield64
+    add $8, %rsp
+    test %rax, %rax
+    jz .Lyield_return_kernel
+    mov mort64_yield_rsp(%rip), %rdx
+    mov %rdx, 0(%rax)
+    mov mort64_yield_rip(%rip), %rdx
+    mov %rdx, 8(%rax)
+    mov mort64_yield_rflags(%rip), %rdx
+    mov %rdx, 16(%rax)
+    mov mort64_yield_rbx(%rip), %rdx
+    mov %rdx, 24(%rax)
+    mov mort64_yield_rbp(%rip), %rdx
+    mov %rdx, 32(%rax)
+    mov mort64_yield_r12(%rip), %rdx
+    mov %rdx, 40(%rax)
+    mov mort64_yield_r13(%rip), %rdx
+    mov %rdx, 48(%rax)
+    mov mort64_yield_r14(%rip), %rdx
+    mov %rdx, 56(%rax)
+    mov mort64_yield_r15(%rip), %rdx
+    mov %rdx, 64(%rax)
+.Lyield_return_kernel:
+    mov mort64_kernel_cr3(%rip), %rax
+    mov %rax, %cr3
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %rbp
+    pop %rbx
+    ret
 
 .Lsyscall_exit:
     /* rdi already contains the userspace exit status. */
@@ -395,4 +477,22 @@ mort64_kernel_rsp:
 mort64_user_rsp:
     .quad 0
 mort64_kernel_cr3:
+    .quad 0
+mort64_yield_rsp:
+    .quad 0
+mort64_yield_rip:
+    .quad 0
+mort64_yield_rflags:
+    .quad 0
+mort64_yield_rbx:
+    .quad 0
+mort64_yield_rbp:
+    .quad 0
+mort64_yield_r12:
+    .quad 0
+mort64_yield_r13:
+    .quad 0
+mort64_yield_r14:
+    .quad 0
+mort64_yield_r15:
     .quad 0

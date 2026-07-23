@@ -6,6 +6,7 @@
 
 extern fn mortos_write(text: *u8, length: u64) -> u64;
 extern fn mortos_getpid() -> u64;
+extern fn mortos_yield() -> u64;
 
 fn main() -> int {
     if mortos_getpid() != 1 {
@@ -14,6 +15,12 @@ fn main() -> int {
     let denied: u64 = mortos_write((0x00200000 as u64) as *u8, 4);
     if denied != ~(13 as u64) {
         return 1;
+    }
+    if mortos_yield() != 0 || mortos_getpid() != 1 {
+        return 4;
+    }
+    if mortos_write("MORT64 PROCESS 1 RESUMED\r\n", 26) != 26 {
+        return 5;
     }
     let written: u64 = mortos_write("MORT64 USERSPACE OK\r\n", 21);
     if written != 21 {

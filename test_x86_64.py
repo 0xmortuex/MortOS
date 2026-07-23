@@ -60,6 +60,8 @@ def main():
         "MORT64: ring 3 Mort program invoked write",
         "MORT64: user CPU fault contained",
         "MORT64 PROCESS 3 OK",
+        "MORT64 PROCESS 1 RESUMED",
+        "MORT64: cooperative context switch passed",
         "MORT64: protected Mort userspace passed",
         "MORT64: supervisor page fault isolation passed",
         "MORT64: scheduler continued after process fault",

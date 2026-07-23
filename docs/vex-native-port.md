@@ -49,7 +49,7 @@ This is only the architectural bootstrap. It does not yet run Vex.
 | --- | --- | --- |
 | 64-bit architecture | Long-mode boot, page tables, 64-bit Mort entry | Boot-tested foundation |
 | Kernel isolation | GDT/TSS/IDT, NX, ring 3, supervisor/user page protection, user-fault containment | Boot-tested across distinct process roots |
-| Process runtime | Validating ELF64 ET_EXEC loader, W^X PT_LOAD mappings, PID/exit/fault states, run-to-completion scheduler | Boot-tested foundation; preemption, threads, handles, IPC next |
+| Process runtime | Validating ELF64 ET_EXEC loader, W^X PT_LOAD mappings, PID/exit/fault states, cooperative saved contexts | Boot-tested foundation; timer preemption, threads, handles, IPC next |
 | MortOS ABI | Stable syscalls for files, memory, time, networking, graphics, input, audio, and entropy | Specified in `x86_64-userspace-abi.md` |
 | C/C++ platform | LLVM target, libc/libc++, atomics, pthread-compatible layer, build tools | Planned |
 | Node/V8 | V8 JIT permissions, libuv event loop, Node filesystem/network/process APIs | Planned |
