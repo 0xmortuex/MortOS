@@ -430,6 +430,8 @@ def smoke(disk_img=None):
     record_content_type_addr = _elf32_symbol(ELF, "m_g_tls13_record_content_type")
     finished_ok_addr = _elf32_symbol(ELF, "m_g_tls13_finished_ok")
     finished_test_addr = _elf32_symbol(ELF, "m_g_tls13_finished_test")
+    reassembly_ok_addr = _elf32_symbol(ELF, "m_g_tls13_reassembly_ok")
+    reassembly_payload_addr = _elf32_symbol(ELF, "m_g_tls13_reassembly_payload_test")
     input_bounds_ok_addr = _elf32_symbol(ELF, "m_g_input_bounds_ok")
     ticks_addr = _elf32_symbol(ELF, "m_g_ticks")
 
@@ -508,6 +510,9 @@ def smoke(disk_img=None):
               (_guest_u32(handle, finished_ok_addr) & 0xff) != 0
               and _guest_bytes(handle, finished_test_addr, 32) == bytes.fromhex(
                   "9b9b141d906337fbd2cbdce71df4deda4ab42c309572cb7fffee5454b78f0718"), handle)
+        check("Mort reassembles fragmented and coalesced TLS handshake messages",
+              (_guest_u32(handle, reassembly_ok_addr) & 0xff) != 0
+              and _guest_bytes(handle, reassembly_payload_addr, 3) == b"\x01\x02\x03", handle)
         check("Network, persisted-state, and USB parser bounds checks reject hostile lengths",
               (_guest_u32(handle, input_bounds_ok_addr) & 0xff) != 0, handle)
 

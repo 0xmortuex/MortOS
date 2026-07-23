@@ -101,8 +101,11 @@ type and padding. The AEAD path accepts the full TLS ciphertext limit rather
 than only small test messages. Mort derives the Finished key and verifies the
 server's constant-time HMAC over the authenticated transcript; the RFC 8448
 transcript-through-CertificateVerify and Finished values are checked at boot.
+The handshake byte stream is reassembled independently of record boundaries,
+including split four-byte headers, split bodies, and multiple messages in one
+record, behind a fail-closed 64 KiB per-message resource limit.
 This does **not** enable HTTPS by itself:
-handshake-message reassembly, authentication, X.509 parsing, trust
+authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.
 
 Ephemeral TLS material is also fail-closed behind an x86 hardware-entropy gate.
