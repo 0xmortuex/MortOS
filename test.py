@@ -793,6 +793,11 @@ def browser_ui():
     tls_root_matched_addr = _elf32_symbol(ELF, "m_g_browser_tls_root_matched")
     state_addr = _elf32_symbol(ELF, "m_g_browser_state")
     roots_addr = _elf32_symbol(ELF, "m_g_browser_roots")
+    binary_ready_addr = _elf32_symbol(ELF, "m_g_browser_binary_ready")
+    binary_len_addr = _elf32_symbol(ELF, "m_g_browser_binary_len")
+    binary_name_addr = _elf32_symbol(ELF, "m_g_browser_binary_name")
+    last_download_name_addr = _elf32_symbol(ELF, "m_g_browser_last_download_name")
+    last_download_len_addr = _elf32_symbol(ELF, "m_g_browser_last_download_len")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
     results = []
@@ -816,12 +821,25 @@ def browser_ui():
                     return
         raise RuntimeError(f"MortFS test file {name} was not found")
 
+    def read_mortfs_file(image_path, name):
+        with open(image_path, "rb") as disk:
+            table = disk.read(512 + 64 * 64)
+            for entry_index in range(64):
+                entry = 512 + entry_index * 64
+                stored_name = table[entry:entry + 24].split(b"\0", 1)[0]
+                used, size, start = struct.unpack_from("<III", table, entry + 24)
+                if used == 1 and stored_name == name.encode("ascii"):
+                    disk.seek(start * 512)
+                    return disk.read(size)
+        return None
+
     with tempfile.TemporaryDirectory(prefix="mort_web_") as webroot:
         marker = "MORT-VEX-HTTP-OK"
         second_marker = "MORT-VEX-LINK-OK"
         redirect_marker = "MORT-VEX-REDIRECT-OK"
         chunked_marker = "MORT-VEX-CHUNKED-OK"
         plain_marker = "MORT-VEX-PLAIN-OK"
+        binary_body = b"\x00\x01\x02MORT-BINARY"
         with open(os.path.join(webroot, "index.html"), "w", encoding="ascii") as fh:
             fh.write("<!doctype html><html><head><title>Vex Network Test</title>"
                      "<style>hidden-style{color:red}</style></head><body>"
@@ -859,8 +877,8 @@ def browser_ui():
                     self.end_headers()
                     self.wfile.write(body)
                     return
-                if self.path == "/binary":
-                    body = b"\x00\x01\x02MORT-BINARY"
+                if self.path.startswith("/binary/"):
+                    body = binary_body
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
                     self.send_header("Content-Length", str(len(body)))
@@ -951,7 +969,7 @@ def browser_ui():
         tls_contexts = []
         for certificate_path, key_path in (
                 (tls_chain, tls_key), (tls_chain_renewed, tls_key_renewed),
-                (tls_chain_ca, tls_key_ca)):
+                (tls_chain_ca, tls_key_ca), (tls_chain_ca, tls_key_ca)):
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.minimum_version = ssl.TLSVersion.TLSv1_3
             context.maximum_version = ssl.TLSVersion.TLSv1_3
@@ -993,15 +1011,16 @@ def browser_ui():
         tls_completed = []
         tls_requests = []
         tls_marker = "MORT TLS APPLICATION DATA"
+        tls_binary_body = b"\x00\xffMORT-TLS-BINARY"
 
         def serve_tls_probe():
             with socket.socket() as listener:
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind(("127.0.0.1", tls_port))
-                listener.listen(3)
+                listener.listen(4)
                 listener.settimeout(180)
                 tls_ready.set()
-                for _attempt in range(3):
+                for _attempt in range(4):
                     try:
                         connection, _address = listener.accept()
                         connection.settimeout(30)
@@ -1016,13 +1035,19 @@ def browser_ui():
                                             break
                                         request += part
                                     tls_requests.append(request)
-                                    body = (
-                                        f"<html><head><title>Vex TLS</title></head>"
-                                        f"<body>{tls_marker}"
-                                        f"<a href=\"/secure-next\">Secure next</a>"
-                                        f"</body></html>").encode("ascii")
+                                    if request.startswith(b"GET /secure.bin "):
+                                        body = tls_binary_body
+                                        content_type = b"application/octet-stream"
+                                    else:
+                                        body = (
+                                            f"<html><head><title>Vex TLS</title></head>"
+                                            f"<body>{tls_marker}"
+                                            f"<a href=\"/secure-next\">Secure next</a>"
+                                            f"</body></html>").encode("ascii")
+                                        content_type = b"text/html"
                                     secure.sendall(
-                                        b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n"
+                                        b"HTTP/1.0 200 OK\r\nContent-Type: " + content_type
+                                        + b"\r\n"
                                         + f"Content-Length: {len(body)}\r\n".encode("ascii")
                                         + b"Connection: close\r\n\r\n" + body)
                                     tls_complete.set()
@@ -1240,18 +1265,37 @@ def browser_ui():
                   os.path.exists(os.path.join(BUILD, "browser-http.ppm")))
 
             send_key(handle, "slash")
-            binary_address = f"http://10.0.2.2:{port}/binary"
+            binary_address = f"http://10.0.2.2:{port}/binary/bad:name.bin?x=1"
             for char in binary_address:
                 send_key(handle, key_name(char))
             send_key(handle, "ret")
-            deadline = time.monotonic() + 25
-            binary_status = ""
-            while time.monotonic() < deadline and "Unsupported HTTP content type" not in binary_status:
-                binary_status = _guest_bytes(handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
-                if "Unsupported HTTP content type" not in binary_status:
-                    time.sleep(0.25)
-            check("Unsupported binary responses are rejected safely",
-                  "Unsupported HTTP content type" in binary_status)
+            staged_binary = _wait_guest_u32(
+                handle, binary_ready_addr, lambda value: (value & 0xff) != 0,
+                timeout_s=25)
+            binary_name = _guest_bytes(
+                handle, binary_name_addr, 24).split(b"\0", 1)[0].decode("ascii", "replace")
+            binary_view = _guest_bytes(
+                handle, content_addr, min(_guest_u32(handle, content_len_addr), 512)
+            ).decode("ascii", "replace")
+            check("Binary HTTP responses are staged without text rendering",
+                  ((staged_binary & 0xff) != 0
+                   and _guest_u32(handle, binary_len_addr) == len(binary_body)
+                   and binary_name == "bad_name.bin"
+                   and "Binary response is not rendered" in binary_view
+                   and "MORT-BINARY" not in binary_view))
+            send_key(handle, "d")
+            binary_save_status = ""
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and "Binary response saved" not in binary_save_status:
+                binary_save_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "Binary response saved" not in binary_save_status:
+                    time.sleep(0.1)
+            check("Staged binary response saves under a sanitized URL filename",
+                  (_guest_bytes(
+                      handle, last_download_name_addr, 24).split(b"\0", 1)[0] == b"bad_name.bin"
+                   and _guest_u32(handle, last_download_len_addr) == len(binary_body)
+                   and "Binary response saved" in binary_save_status))
 
             send_key(handle, "slash")
             secure_address = f"https://10.0.2.2:{tls_port}/"
@@ -1381,6 +1425,42 @@ def browser_ui():
                    and tls_requests[1].startswith(b"GET / HTTP/1.0\r\n")
                    and tls_marker in ca_text
                    and "CA-authenticated HTTPS" in ca_status))
+
+            send_key(handle, "slash")
+            secure_binary_address = f"https://10.0.2.2:{tls_port}/secure.bin"
+            for char in secure_binary_address:
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            _wait_guest_u32(
+                handle, tls_probe_stage_addr, lambda value: value == 10,
+                timeout_s=40)
+            secure_binary_ready = _wait_guest_u32(
+                handle, binary_ready_addr, lambda value: (value & 0xff) != 0,
+                timeout_s=15)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and len(tls_requests) < 3:
+                time.sleep(0.1)
+            check("Authenticated HTTPS stages binary content without rendering it",
+                  ((secure_binary_ready & 0xff) != 0
+                   and (_guest_u32(handle, tls_root_matched_addr) & 0xff) != 0
+                   and _guest_u32(handle, binary_len_addr) == len(tls_binary_body)
+                   and _guest_bytes(
+                       handle, binary_name_addr, 24).split(b"\0", 1)[0] == b"secure.bin"
+                   and len(tls_requests) == 3
+                   and tls_requests[2].startswith(b"GET /secure.bin HTTP/1.0\r\n")))
+            send_key(handle, "d")
+            secure_binary_status = ""
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and "Binary response saved" not in secure_binary_status:
+                secure_binary_status = _guest_bytes(
+                    handle, status_addr, 64).split(b"\0", 1)[0].decode("ascii", "replace")
+                if "Binary response saved" not in secure_binary_status:
+                    time.sleep(0.1)
+            check("Authenticated HTTPS binary download saves exact bounded bytes",
+                  (_guest_bytes(
+                      handle, last_download_name_addr, 24).split(b"\0", 1)[0] == b"secure.bin"
+                   and _guest_u32(handle, last_download_len_addr) == len(tls_binary_body)
+                   and "Binary response saved" in secure_binary_status))
         finally:
             shutdown(handle)
             server.shutdown()
@@ -1388,6 +1468,10 @@ def browser_ui():
             server_thread.join(timeout=5)
             tls_thread.join(timeout=12)
 
+    check("MortFS preserves the exact HTTP binary payload",
+          read_mortfs_file(temp_disk, "bad_name.bin") == binary_body)
+    check("MortFS preserves the exact authenticated HTTPS binary payload",
+          read_mortfs_file(temp_disk, "secure.bin") == tls_binary_body)
     corrupt_mortfs_file_byte(temp_disk, "vex-roots.der", len(root_der))
     handle = boot_iso(kernel_build.ISO, temp_disk)
     try:

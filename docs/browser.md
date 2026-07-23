@@ -19,8 +19,8 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
   never reconnects automatically at startup.
 - Private mode, which prevents new visits from entering persistent history.
 - Content-Type-aware rendering for HTML and literal plain-text responses.
-  Script/style bodies are never executed or displayed, and unsupported binary
-  media is rejected instead of being misrendered.
+  Script/style bodies are never executed or displayed. Other response types
+  are staged as bounded binary downloads instead of being misrendered.
 - Link extraction, relative-link resolution, a keyboard link picker, and up to
   three HTTP redirects.
 - DHCP lease parsing for address/subnet/router/DNS, DNS A queries, subnet-aware
@@ -31,7 +31,7 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
   imported CA roots, encrypted HTTP requests, and authenticated HTML/plain-text
   responses.
 - Saving the current rendered document as `vex-page.txt` in the user's home
-  directory.
+  directory, plus exact binary downloads under a sanitized URL-derived name.
 - Local pages for Home, About, History, Bookmarks, Downloads, Settings, and
   Network status.
 
@@ -90,6 +90,14 @@ out of the box. It also does not execute
 JavaScript, accept cookies, load images or media, apply CSS layout, submit
 forms, or provide a general-purpose DOM. Plain HTTP remains unencrypted and
 must not be used for passwords or other sensitive data.
+
+Non-text HTTP and authenticated HTTPS bodies are kept out of the renderer and
+copied into a separate zero-padded 12 KiB staging buffer. The proposed filename
+comes only from the final URL path segment and is restricted to ASCII letters,
+digits, dot, dash, and underscore; empty or special `.`/`..` names fall back to
+`vex-download.bin`. Pressing `D` writes the exact bounded payload to a normal
+MortFS file after capacity and permission checks. The Downloads page reports
+the saved name and byte count for the current session.
 
 The TLS foundation is being built as independently testable Mort primitives.
 SHA-256, HMAC-SHA256, HKDF-SHA256, X25519, ChaCha20, Poly1305, and their
@@ -238,7 +246,8 @@ python test.py smoke
 ```
 
 The browser regression covers real DHCP configuration, ARP, TCP, HTTP, and TLS
-loading, HTML and literal plain-text rendering, binary-content rejection,
+loading, HTML and literal plain-text rendering, bounded HTTP and authenticated
+HTTPS binary staging with byte-exact MortFS saves,
 script/style removal, links, redirects, chunked responses, local suggestions,
 keyboard and mouse tab controls, private mode, bookmarks, downloads,
 explicit normal-session recovery, screenshots, live ServerHello through

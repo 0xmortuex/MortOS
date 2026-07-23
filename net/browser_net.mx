@@ -855,6 +855,58 @@ fn browser_plain_to_text(body: u32) {
     if g_browser_content_len < 8192 { g_browser_content[g_browser_content_len] = 0; }
 }
 
+fn browser_binary_filename() {
+    browser_zero(&g_browser_binary_name as u64, 24);
+    let start: u32 = 0; let pos: u32 = 0;
+    while g_browser_net_path[pos] != 0 && g_browser_net_path[pos] != 63
+        && g_browser_net_path[pos] != 35 {
+        if g_browser_net_path[pos] == 47 { start = pos + 1; }
+        pos = pos + 1;
+    }
+    let out: u32 = 0; pos = start;
+    while g_browser_net_path[pos] != 0 && g_browser_net_path[pos] != 63
+        && g_browser_net_path[pos] != 35 && out < 23 {
+        let ch: u8 = g_browser_net_path[pos];
+        let safe: bool = (ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90)
+            || (ch >= 97 && ch <= 122) || ch == 45 || ch == 46 || ch == 95;
+        if safe { g_browser_binary_name[out] = ch; }
+        else { g_browser_binary_name[out] = 95; }
+        out = out + 1; pos = pos + 1;
+    }
+    if out == 0 || browser_streq(&g_browser_binary_name as u64, "." as u64)
+        || browser_streq(&g_browser_binary_name as u64, ".." as u64) {
+        browser_zero(&g_browser_binary_name as u64, 24);
+        browser_copy(&g_browser_binary_name as u64, "vex-download.bin" as u64, 24);
+    }
+}
+
+fn browser_binary_text_append(text: u64) {
+    if g_browser_content_len >= 8191 { return; }
+    let copied: u32 = browser_copy(
+        &g_browser_content as u64 + (g_browser_content_len as u64),
+        text, 8192 - g_browser_content_len);
+    g_browser_content_len = g_browser_content_len + copied;
+}
+
+fn browser_binary_prepare(body: u32) -> bool {
+    if body > g_browser_http_raw_len { return false; }
+    let length: u32 = g_browser_http_raw_len - body;
+    if length == 0 || length > 12288 { return false; }
+    browser_zero(&g_browser_binary_data as u64, 12288);
+    for i: u32 in 0..length { g_browser_binary_data[i] = g_browser_http_raw[body + i]; }
+    g_browser_binary_len = length; g_browser_binary_ready = true;
+    browser_binary_filename();
+    browser_zero(&g_browser_content as u64, 8192); g_browser_content_len = 0;
+    browser_links_reset(); browser_set_title("Download ready");
+    browser_binary_text_append("Binary response is not rendered.\n\nFile: " as u64);
+    browser_binary_text_append(&g_browser_binary_name as u64);
+    browser_binary_text_append("\nSize: " as u64);
+    num_to_str(g_browser_binary_len, g_numbuf);
+    browser_binary_text_append(g_numbuf as u64);
+    browser_binary_text_append(" bytes\n\nPress D to save it safely to MortFS.\n" as u64);
+    return true;
+}
+
 fn browser_hex_digit(ch: u8) -> u32 {
     if ch >= 48 && ch <= 57 { return (ch - 48) as u32; }
     let lower: u8 = browser_net_lower(ch);
@@ -950,9 +1002,9 @@ fn browser_http_parse() -> bool {
     if code < 200 || code >= 300 {
         browser_set_status("HTTP server returned a non-success status"); return false;
     }
-    let kind: u32 = browser_content_kind(body);
-    if kind == 2 { browser_set_status("Unsupported HTTP content type"); return false; }
     if browser_headers_chunked(body) && !browser_decode_chunked(body) { return false; }
+    let kind: u32 = browser_content_kind(body);
+    if kind == 2 { return browser_binary_prepare(body); }
     if kind == 1 { browser_plain_to_text(body); }
     else { browser_http_to_text(body); }
     return g_browser_content_len > 0;
