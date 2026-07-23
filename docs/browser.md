@@ -1,12 +1,18 @@
 # Vex browser
 
-Vex is MortOS's native, keyboard-first web browser. Its browser shell, state
-management, HTTP client, TCP connection handling, HTML-to-text renderer, and
-MortFS integration are written in Mort and run inside the kernel. It does not
-embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
+Vex is MortuexOS's native port of the canonical
+[`0xmortuex/Vex`](https://github.com/0xmortuex/Vex) browser. Its gold-diamond
+identity, vertical-tab model, library navigation, privacy model, and workflows
+come from Vex; its browser shell, state management, HTTP client, TCP connection
+handling, HTML-to-text renderer, and MortFS integration are implemented in Mort
+and run inside the kernel. It does not embed Chromium, WebKit, Gecko, libc, or
+a host-side proxy. See [the port mapping](vex-native-port.md) for the exact
+upstream/native boundary.
 
 ## What works
 
+- Canonical Vex chrome with its gold diamond, vertical tab sidebar, workspace
+  header, library navigation, and new-tab surface.
 - Up to four tabs with page titles, switching, creation, and closing.
 - Clickable tabs, new-tab control, navigation buttons, address bar, history,
   bookmarks, and extracted-link rows when a mouse is attached.

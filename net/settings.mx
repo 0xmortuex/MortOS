@@ -1,8 +1,8 @@
 // MORT OS Settings control center. User preferences persist in .mort-settings
 // in the current home directory when MortFS is available.
-let g_accent: u32 = 0x2c5364;
-let g_wall_top: u32 = 0x0a1830;
-let g_wall_bottom: u32 = 0x2c5364;
+let g_accent: u32 = 0x877bff;
+let g_wall_top: u32 = 0x08090e;
+let g_wall_bottom: u32 = 0x17172b;
 let g_clock_24h: bool = true;
 let g_clock_seconds: bool = true;
 let g_settings_view: u32 = 0;       // 0 sidebar, 1 personalization, 2 clock
@@ -23,13 +23,13 @@ let g_settings_loaded_dir: u32 = 256;
 let g_settings_persisted: bool = false;
 
 fn settings_apply_palette() {
-    if g_settings_accent == 0 { g_accent = 0x2c5364; }
+    if g_settings_accent == 0 { g_accent = 0x877bff; }
     if g_settings_accent == 1 { g_accent = 0x654a91; }
     if g_settings_accent == 2 { g_accent = 0x276749; }
     if g_settings_accent == 3 { g_accent = 0xa94f55; }
     if g_settings_accent == 4 { g_accent = 0xb06d18; }
     if g_settings_accent == 5 { g_accent = 0x397d96; }
-    if g_settings_wall == 0 { g_wall_top = 0x0a1830; g_wall_bottom = 0x2c5364; }
+    if g_settings_wall == 0 { g_wall_top = 0x08090e; g_wall_bottom = 0x17172b; }
     if g_settings_wall == 1 { g_wall_top = 0x102a2b; g_wall_bottom = 0x315f58; }
     if g_settings_wall == 2 { g_wall_top = 0x2b1735; g_wall_bottom = 0x7b3f48; }
     if g_settings_wall == 3 { g_wall_top = 0x11151a; g_wall_bottom = 0x303942; }
@@ -457,7 +457,7 @@ fn settings_draw_sidebar() {
 }
 
 fn settings_accent_name() -> *u8 {
-    if g_settings_accent == 0 { return "Ocean"; }
+    if g_settings_accent == 0 { return "Iris"; }
     if g_settings_accent == 1 { return "Violet"; }
     if g_settings_accent == 2 { return "Forest"; }
     if g_settings_accent == 3 { return "Coral"; }
@@ -466,7 +466,7 @@ fn settings_accent_name() -> *u8 {
 }
 
 fn settings_wall_name() -> *u8 {
-    if g_settings_wall == 0 { return "Midnight"; }
+    if g_settings_wall == 0 { return "Iris Night"; }
     if g_settings_wall == 1 { return "Aurora"; }
     if g_settings_wall == 2 { return "Sunset"; }
     return "Graphite";

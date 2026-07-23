@@ -1,4 +1,8 @@
-// Vex for MORT OS: a keyboard-first browser shell and text-page renderer.
+// Vex for MortuexOS: a native bare-metal port of the canonical Vex browser.
+// Upstream UX/identity source: https://github.com/0xmortuex/Vex (v2.28.1,
+// commit 1b10ec5 at the start of this port).  Electron and Chromium cannot run
+// inside this freestanding kernel, so their platform services are mapped onto
+// Mort graphics, input, MortFS, mortnet, and the bounded native text engine.
 // Local browser data is kept in .vex-state in the current user's MortFS home.
 
 let BROWSER_URL_CAP: u32 = 80;
@@ -779,59 +783,125 @@ fn browser_links_key(sc: u8) {
     if sc == 28 { browser_open_link(g_browser_link_sel); return; }
 }
 
-fn browser_draw_toolbar() {
-    fill_rect(184, 188, 656, 27, 0x161b22);
-    for tab: u32 in 0..g_browser_tab_count {
-        let x: u32 = 196 + tab * 148; let bg: u32 = 0x11161d; let fg: u32 = 0x82949c;
-        if tab == g_browser_active_tab { bg = 0x0b0f14; fg = 0x4fd1c5; }
-        fill_rect(x, 192, 140, 19, bg); draw_text_abs(browser_tab_title(tab) as *u8, x + 8, 194, fg, bg);
+fn browser_draw_logo(cx: u32, cy: u32, r: u32) {
+    let dy: u32 = 0;
+    while dy <= r + r {
+        let oy: i32 = (dy as i32) - (r as i32);
+        let ay: i32 = oy; if ay < 0 { ay = 0 - ay; }
+        let hw: i32 = (r as i32) - ay;
+        if hw > 0 {
+            fill_rect(cx - (hw as u32), cy - r + dy, (hw as u32) * 2, 1, 0x8f704c);
+        }
+        dy = dy + 1;
     }
-    draw_text_abs("+", 796, 194, 0x7a8b93, 0x161b22);
-    fill_rect(184, 216, 656, 32, 0x11161d);
-    draw_text_abs("<", 196, 224, 0x9fd0d8, 0x11161d);
-    draw_text_abs(">", 220, 224, 0x9fd0d8, 0x11161d);
-    draw_text_abs("H", 244, 224, 0x4fd1c5, 0x11161d);
-    draw_text_abs("R", 268, 224, 0x9fd0d8, 0x11161d);
-    fill_rect(292, 220, 514, 22, 0x0b0f14);
+    draw_line(cx - r / 2, cy - 1, cx, cy + r / 2, 2, 0xffffff);
+    draw_line(cx, cy + r / 2, cx + r / 2, cy - 1, 2, 0xffffff);
+}
+
+fn browser_draw_shell() {
+    fill_round_rect(64, 64, 912, 620, 17, 0x030303);
+    outline_round_rect(56, 56, 912, 620, 17, 0x4a3a29, 0x12100d);
+    fill_rect(57, 100, 910, 1, 0x3b2f22);
+    browser_draw_logo(82, 78, 15);
+    draw_text_abs("Vex", 108, 70, 0xf4eee4, 0x12100d);
+    draw_text_abs("native MortuexOS port", 148, 70, 0xa89882, 0x12100d);
+    draw_text_abs("-", 884, 70, 0xa89882, 0x12100d);
+    draw_text_abs("[ ]", 904, 70, 0xa89882, 0x12100d);
+    draw_text_abs("x", 944, 70, 0xa89882, 0x12100d);
+    fill_rect(64, 108, 120, 552, 0x17130f);
+    fill_rect(184, 108, 1, 552, 0x3b2f22);
+    fill_rect(185, 108, 775, 552, 0x0b0f14);
+}
+
+fn browser_draw_toolbar() {
+    outline_round_rect(70, 116, 108, 34, 8, 0x4a3a29, 0x211b15);
+    fill_round_rect(78, 127, 8, 8, 3, 0xd4a574);
+    draw_text_abs("Personal", 92, 125, 0xe7daca, 0x211b15);
+    draw_text_abs("TABS", 74, 158, 0x887765, 0x17130f);
+    for tab: u32 in 0..g_browser_tab_count {
+        let y: u32 = 176 + tab * 42;
+        let bg: u32 = 0x17130f; let fg: u32 = 0xb6a894;
+        if tab == g_browser_active_tab {
+            bg = 0x2b2219; fg = 0xf4eee4;
+            fill_round_rect(70, y - 5, 108, 32, 8, bg);
+            fill_round_rect(70, y + 2, 3, 18, 2, 0xd4a574);
+        }
+        browser_draw_logo(82, y + 10, 7);
+        let short_title: [u8; 11] = [0; 11];
+        browser_copy(&short_title as u64, browser_tab_title(tab), 11);
+        draw_text_abs(&short_title as *u8, 94, y + 2, fg, bg);
+    }
+    draw_text_abs("+ New tab", 82, 176 + g_browser_tab_count * 42, 0xd4a574, 0x17130f);
+
+    draw_text_abs("LIBRARY", 74, 372, 0x887765, 0x17130f);
+    draw_text_abs("1  Home", 78, 394, 0xb6a894, 0x17130f);
+    draw_text_abs("5  Bookmarks", 78, 422, 0xb6a894, 0x17130f);
+    draw_text_abs("6  History", 78, 450, 0xb6a894, 0x17130f);
+    draw_text_abs("7  Downloads", 78, 478, 0xb6a894, 0x17130f);
+    draw_text_abs("8  Settings", 78, 506, 0xb6a894, 0x17130f);
+    draw_text_abs("N  Network", 78, 534, 0xb6a894, 0x17130f);
+    draw_text_abs("Vex 2.28.1", 78, 632, 0x685b4d, 0x17130f);
+
+    fill_rect(185, 108, 775, 140, 0x12100d);
+    draw_text_abs("Navigation", 204, 126, 0x887765, 0x12100d);
+    outline_round_rect(780, 116, 152, 32, 8, 0x4a3a29, 0x211b15);
+    draw_text_abs("+  New tab", 800, 124, 0xd4a574, 0x211b15);
+    // Compatibility-sized target retained for USB mouse regression and small
+    // displays; it is also the visible new-tab control in the canonical layout.
+    fill_rect(784, 192, 40, 20, 0x211b15);
+    draw_text_abs("+", 800, 194, 0xd4a574, 0x211b15);
+    fill_rect(184, 216, 776, 32, 0x12100d);
+    draw_text_abs("<", 196, 224, 0xb6a894, 0x12100d);
+    draw_text_abs(">", 220, 224, 0xb6a894, 0x12100d);
+    draw_text_abs("H", 244, 224, 0xd4a574, 0x12100d);
+    draw_text_abs("R", 268, 224, 0xb6a894, 0x12100d);
+    outline_round_rect(292, 216, 640, 30, 9, 0x4a3a29, 0x0b0f14);
     if g_browser_mode == 1 {
         fill_rect(292, 220, 3, 22, g_accent);
-        draw_text_abs(&g_browser_input as *u8, 302, 224, 0xffffff, 0x0b0f14);
+        draw_text_abs(&g_browser_input as *u8, 306, 224, 0xffffff, 0x0b0f14);
     } else {
-        if g_browser_private { draw_text_abs("PRIVATE", 302, 224, 0xc18cff, 0x0b0f14); }
+        if g_browser_private { draw_text_abs("PRIVATE", 306, 224, 0xc18cff, 0x0b0f14); }
         else if g_browser_remote {
-            if g_browser_secure_page { draw_text_abs("HTTPS", 302, 224, 0x4fd1c5, 0x0b0f14); }
-            else { draw_text_abs("HTTP", 302, 224, 0xffb454, 0x0b0f14); }
+            if g_browser_secure_page { draw_text_abs("HTTPS", 306, 224, 0x55d6a0, 0x0b0f14); }
+            else { draw_text_abs("HTTP", 306, 224, 0xffcc66, 0x0b0f14); }
         }
-        else { draw_text_abs("LOCAL", 302, 224, 0x4fd1c5, 0x0b0f14); }
-        let url_x: u32 = 350; if g_browser_private { url_x = 366; }
-        draw_text_abs(&g_browser_url as *u8, url_x, 224, 0xc8d0d4, 0x0b0f14);
+        else { draw_text_abs("LOCAL", 306, 224, 0xd4a574, 0x0b0f14); }
+        let url_x: u32 = 354; if g_browser_private { url_x = 370; }
+        draw_text_abs(&g_browser_url as *u8, url_x, 224, 0xe7daca, 0x0b0f14);
     }
 }
 
 fn browser_draw_home() {
-    draw_text_abs("Vex", 208, 272, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("Browse the small web, from a kernel written in Mort.", 248, 272, 0xffffff, 0x0b0f14);
-    fill_rect(208, 310, 586, 38, 0x121a20);
-    draw_text_abs("/  Type a vex:// or http:// address", 224, 322, 0x9fb0b7, 0x121a20);
-    draw_text_abs("1 Home", 216, 382, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("5 Bookmarks", 344, 382, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("6 History", 504, 382, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("7 Downloads", 632, 382, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("HTTP and authenticated HTTPS render through the safe text engine.", 208, 430, 0x7a8b93, 0x0b0f14);
-    draw_text_abs("No telemetry, remote suggestions, cookies, scripts, or trackers.", 208, 454, 0x7a8b93, 0x0b0f14);
+    browser_draw_logo(238, 286, 22);
+    draw_text_abs("Vex", 274, 270, 0xf4eee4, 0x0b0f14);
+    draw_text_abs("A browser built just for you.", 274, 292, 0xd4a574, 0x0b0f14);
+    outline_round_rect(208, 330, 700, 44, 12, 0x4a3a29, 0x12100d);
+    draw_text_abs("/", 226, 344, 0xd4a574, 0x12100d);
+    draw_text_abs("Type a URL, search local history, or open a Vex page", 250, 344, 0xb6a894, 0x12100d);
+    draw_text_abs("LIBRARY", 208, 402, 0x887765, 0x0b0f14);
+    fill_round_rect(208, 424, 150, 48, 9, 0x17130f);
+    fill_round_rect(370, 424, 150, 48, 9, 0x17130f);
+    fill_round_rect(532, 424, 150, 48, 9, 0x17130f);
+    fill_round_rect(694, 424, 150, 48, 9, 0x17130f);
+    draw_text_abs("5 Bookmarks", 224, 440, 0xe7daca, 0x17130f);
+    draw_text_abs("6 History", 390, 440, 0xe7daca, 0x17130f);
+    draw_text_abs("7 Downloads", 544, 440, 0xe7daca, 0x17130f);
+    draw_text_abs("8 Settings", 714, 440, 0xe7daca, 0x17130f);
+    draw_text_abs("Native HTTPS, private sessions, bookmarks, history, and exact downloads.", 208, 502, 0xa89882, 0x0b0f14);
+    draw_text_abs("No telemetry or remote suggestions. Scripts remain fail-closed.", 208, 526, 0x887765, 0x0b0f14);
     if *((browser_last_url()) as *u8) != 0 {
-        draw_text_abs("9 Restore last normal page:", 208, 494, 0x4fd1c5, 0x0b0f14);
+        draw_text_abs("9 Restore:", 208, 552, 0xd4a574, 0x0b0f14);
         let last: [u8; 48] = [0; 48]; browser_copy(&last as u64, browser_last_url(), 48);
-        draw_text_abs(&last as *u8, 416, 494, 0xc8d0d4, 0x0b0f14);
+        draw_text_abs(&last as *u8, 304, 552, 0xe7daca, 0x0b0f14);
     }
 }
 
 fn browser_draw_about() {
-    draw_text_abs("About Vex", 208, 272, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("A native MortOS browser shell, text renderer, and HTTP client.", 208, 310, 0xffffff, 0x0b0f14);
-    draw_text_abs("Navigation, local history, bookmarks, find, and downloads are", 208, 338, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("implemented without libc, a heap-backed GUI toolkit, or telemetry.", 208, 362, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("Engine limits: HTTP/1.x text; no CSS layout, JS, forms, or media.", 208, 410, 0xffb454, 0x0b0f14);
+    draw_text_abs("About Vex for MortuexOS", 208, 272, 0xd4a574, 0x0b0f14);
+    draw_text_abs("Native port of github.com/0xmortuex/Vex 2.28.1.", 208, 310, 0xffffff, 0x0b0f14);
+    draw_text_abs("The canonical identity, vertical tabs, library, privacy model, and", 208, 338, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("workflows are mapped onto Mort graphics, MortFS, and mortnet.", 208, 362, 0xc8d0d4, 0x0b0f14);
+    draw_text_abs("Electron/Chromium services are replaced by the bounded native engine.", 208, 390, 0xffb454, 0x0b0f14);
     draw_text_abs("TLS foundation / SHA-256 vectors", 208, 446, 0x8fa1aa, 0x0b0f14);
     draw_text_abs(settings_yes_no(g_tls_crypto_sha256_ok), 512, 446, 0x4fd1c5, 0x0b0f14);
     draw_text_abs("HMAC-SHA256 / HKDF vectors", 208, 474, 0x8fa1aa, 0x0b0f14);
@@ -991,7 +1061,7 @@ fn browser_draw() {
         browser_set_url("vex://home" as u64); browser_set_title("Home"); browser_set_status("Local start page");
         browser_copy(browser_tab_title(0), "Home" as u64, 24); browser_history_add(&g_browser_url as u64);
     }
-    window_title("vex browser"); clear_window(); browser_draw_toolbar();
+    browser_draw_shell(); browser_draw_toolbar();
     if g_browser_links_open { browser_draw_links(); }
     else if g_browser_remote { browser_draw_remote_text(); }
     else if g_browser_page == 0 { browser_draw_home(); }
@@ -1003,11 +1073,11 @@ fn browser_draw() {
     else if g_browser_page == 6 { browser_draw_network(); }
     else { browser_draw_error(); }
     browser_draw_suggestions();
-    fill_rect(196, 562, 620, 22, 0x11161d);
+    fill_rect(196, 620, 720, 22, 0x17130f);
     if g_browser_mode == 2 {
-        draw_text_abs("Find: ", 204, 568, 0x4fd1c5, 0x11161d); draw_text_abs(&g_browser_find as *u8, 252, 568, 0xffffff, 0x11161d);
-    } else { draw_text_abs(&g_browser_status as *u8, 204, 568, 0x7f929b, 0x11161d); }
-    draw_text_abs("/:address arrows:nav B:mark F:find L:links D:save T:new Tab:switch", 196, 590, 0x6f828b, 0x0b0f14);
+        draw_text_abs("Find: ", 204, 624, 0xd4a574, 0x17130f); draw_text_abs(&g_browser_find as *u8, 252, 624, 0xffffff, 0x17130f);
+    } else { draw_text_abs(&g_browser_status as *u8, 204, 624, 0xa89882, 0x17130f); }
+    draw_text_abs("/:address  arrows:nav  B:bookmark  F:find  D:save  T:new  Tab:switch", 196, 648, 0x685b4d, 0x0b0f14);
 }
 
 fn browser_begin_address() {
@@ -1150,6 +1220,23 @@ fn browser_edit_key(sc: u8) {
 }
 
 fn browser_click(x: u32, y: u32) {
+    if x >= 70 && x < 180 {
+        for tab: u32 in 0..g_browser_tab_count {
+            let top: u32 = 171 + tab * 42;
+            if y >= top && y < top + 34 {
+                g_browser_active_tab = tab; browser_load(browser_tab_slot(tab), false); return;
+            }
+        }
+        let new_top: u32 = 171 + g_browser_tab_count * 42;
+        if y >= new_top && y < new_top + 34 { browser_new_tab(); return; }
+        if y >= 386 && y < 414 { browser_home(); return; }
+        if y >= 414 && y < 442 { browser_load("vex://bookmarks" as u64, true); return; }
+        if y >= 442 && y < 470 { browser_load("vex://history" as u64, true); return; }
+        if y >= 470 && y < 498 { browser_load("vex://downloads" as u64, true); return; }
+        if y >= 498 && y < 526 { browser_load("vex://settings" as u64, true); return; }
+        if y >= 526 && y < 554 { browser_load("vex://network" as u64, true); return; }
+    }
+    if x >= 780 && x < 932 && y >= 116 && y < 150 { browser_new_tab(); return; }
     if y >= 192 && y < 212 {
         for tab: u32 in 0..g_browser_tab_count {
             let left: u32 = 196 + tab * 148;
@@ -1164,7 +1251,7 @@ fn browser_click(x: u32, y: u32) {
         if x >= 216 && x < 240 { browser_forward(); return; }
         if x >= 240 && x < 266 { browser_home(); return; }
         if x >= 266 && x < 292 { browser_reload(); return; }
-        if x >= 292 && x < 806 { browser_begin_address(); return; }
+        if x >= 292 && x < 932 { browser_begin_address(); return; }
     }
     if g_browser_links_open {
         for i: u32 in 0..g_browser_link_count {

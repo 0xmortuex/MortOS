@@ -377,6 +377,68 @@ fn fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) {
     }
 }
 
+// Small software-rounded rectangle used by the MortuexOS chrome.  The kernel
+// has no compositor or alpha channel yet, so rounded surfaces are rasterized
+// directly into the framebuffer with progressively inset edge scanlines.
+fn fill_round_rect(x: u32, y: u32, w: u32, h: u32, radius: u32, color: u32) {
+    if w == 0 || h == 0 { return; }
+    if radius == 0 { fill_rect(x, y, w, h, color); return; }
+    let yy: u32 = 0;
+    while yy < h {
+        let edge: u32 = yy;
+        let bottom: u32 = h - 1 - yy;
+        if bottom < edge { edge = bottom; }
+        let inset: u32 = 0;
+        if edge < radius {
+            let left: u32 = radius - edge;
+            inset = (left * left + radius - 1) / (radius * 2);
+        }
+        if inset * 2 < w { fill_rect(x + inset, y + yy, w - inset * 2, 1, color); }
+        yy = yy + 1;
+    }
+}
+
+fn outline_round_rect(x: u32, y: u32, w: u32, h: u32, radius: u32, border: u32, inside: u32) {
+    fill_round_rect(x, y, w, h, radius, border);
+    if w > 2 && h > 2 {
+        let inner_radius: u32 = radius;
+        if inner_radius > 1 { inner_radius = inner_radius - 1; }
+        fill_round_rect(x + 1, y + 1, w - 2, h - 2, inner_radius, inside);
+    }
+}
+
+// Integer line rasterizer for compact vector marks and app glyphs.
+fn draw_line(x0: u32, y0: u32, x1: u32, y1: u32, thickness: u32, color: u32) {
+    let ax: i32 = x0 as i32;
+    let ay: i32 = y0 as i32;
+    let dx: i32 = (x1 as i32) - ax;
+    let dy: i32 = (y1 as i32) - ay;
+    let adx: i32 = dx; if adx < 0 { adx = 0 - adx; }
+    let ady: i32 = dy; if ady < 0 { ady = 0 - ady; }
+    let steps: i32 = adx; if ady > steps { steps = ady; }
+    if steps == 0 { fill_rect(x0, y0, thickness, thickness, color); return; }
+    let i: i32 = 0;
+    while i <= steps {
+        let px: i32 = ax + dx * i / steps;
+        let py: i32 = ay + dy * i / steps;
+        if px >= 0 && py >= 0 {
+            fill_rect(px as u32, py as u32, thickness, thickness, color);
+        }
+        i = i + 1;
+    }
+}
+
+// The MortuexOS mark from the desktop design: an iris tile and open M path.
+fn draw_brand_mark(cx: u32, cy: u32) {
+    fill_round_rect(cx - 18, cy - 18, 36, 36, 9, 0x877bff);
+    draw_line(cx - 10, cy + 9, cx - 10, cy - 9, 3, 0x0a0b12);
+    draw_line(cx - 10, cy - 9, cx - 4, cy + 1, 3, 0x0a0b12);
+    draw_line(cx - 4, cy + 1, cx, cy - 4, 3, 0x0a0b12);
+    draw_line(cx, cy - 4, cx + 4, cy + 1, 3, 0x0a0b12);
+    draw_line(cx + 4, cy + 1, cx + 10, cy - 9, 3, 0x0a0b12);
+    draw_line(cx + 10, cy - 9, cx + 10, cy + 9, 3, 0x0a0b12);
+}
+
 fn mouse_hide() {
     if !g_gfx || !g_mouse_visible { return; }
     for yy: u32 in 0..18 {
@@ -407,11 +469,35 @@ fn mouse_show() {
 }
 
 fn mouse_click() {
+    if g_gfx && (g_overlay == 0 || g_overlay == 4) {
+        let dock_x: u32 = (g_fb_w - 520) / 2;
+        let dock_y: u32 = g_fb_h - 72;
+        if g_mouse_y >= dock_y && g_mouse_y < dock_y + 56 {
+            if g_mouse_x >= dock_x && g_mouse_x < dock_x + 246 {
+                if g_overlay == 0 { open_launcher(); }
+                return;
+            }
+            for app: u32 in 0..4 {
+                let cx: u32 = dock_x + 278 + app * 50;
+                if g_mouse_x >= cx - 22 && g_mouse_x < cx + 22 {
+                    g_overlay = 0;
+                    g_app = app;
+                    restore_desktop();
+                    return;
+                }
+            }
+            if g_mouse_x >= dock_x + 460 && g_mouse_x < dock_x + 504 {
+                if g_overlay == 4 { g_overlay = 0; restore_desktop(); }
+                open_power_menu();
+                return;
+            }
+        }
+    }
     if g_overlay == 4 {
-        let startx: u32 = (g_fb_w - 730) / 2;
-        if g_mouse_y >= 297 && g_mouse_y < 463 && g_mouse_x >= startx - 3 {
-            let tile: u32 = (g_mouse_x - (startx - 3)) / 150;
-            if tile < 5 && g_mouse_x < startx + tile * 150 + 136 {
+        let startx: u32 = 164;
+        if g_mouse_y >= 320 && g_mouse_y < 464 && g_mouse_x >= startx - 2 {
+            let tile: u32 = (g_mouse_x - (startx - 2)) / 140;
+            if tile < 5 && g_mouse_x < startx + tile * 140 + 126 {
                 g_launch_sel = tile;
                 launcher_on_key(28);
             }
@@ -533,22 +619,30 @@ fn draw_tab(label: *u8, x: u32, id: u32) {
 // The top bar: the OS name, app switcher tabs (F1/F2/F3), a power hint, and the
 // clock (drawn by draw_clock, called at the end).
 fn draw_topbar() {
-    fill_rect(0, 0, g_fb_w, 24, 0x0d141c);
-    draw_text_abs("MORT OS", 12, 4, 0x9fd0d8, 0x0d141c);
-    draw_text_abs("F5 home", g_fb_w - 290, 4, 0x6a7b83, 0x0d141c);
-    draw_text_abs("F12 power", g_fb_w - 190, 4, 0x6a7b83, 0x0d141c);
+    fill_rect(0, 0, g_fb_w, 44, 0x0b0d14);
+    fill_rect(0, 43, g_fb_w, 1, 0x262a3a);
+    draw_brand_mark(28, 22);
+    draw_text_abs("mortuexOS", 56, 14, 0xe9ebf5, 0x0b0d14);
+    draw_text_abs("bare metal / Mort native", 152, 14, 0x5d6379, 0x0b0d14);
+    draw_text_abs("F5 home", g_fb_w - 280, 4, 0x6a7b83, 0x0b0d14);
+    draw_text_abs("F12 power", g_fb_w - 280, 24, 0x6a7b83, 0x0b0d14);
     draw_clock();
 }
 
 // Set the window title bar text (each app names its own window).
 fn window_title(s: *u8) {
-    fill_rect(182, 162, 660, 24, g_accent);
-    draw_text_abs(s, 192, 166, 0xdfeef2, g_accent);
+    fill_rect(182, 162, 660, 24, 0x191c28);
+    fill_rect(182, 185, 660, 1, 0x262a3a);
+    fill_round_rect(192, 169, 10, 10, 3, g_accent);
+    draw_text_abs(s, 212, 166, 0xe9ebf5, 0x191c28);
+    draw_text_abs("-", 776, 166, 0x969cb3, 0x191c28);
+    draw_text_abs("[ ]", 792, 166, 0x969cb3, 0x191c28);
+    draw_text_abs("x", 828, 166, 0x969cb3, 0x191c28);
 }
 
 // Clear the window interior (shared by every app).
 fn clear_window() {
-    fill_rect(184, 188, 656, 424, 0x0b0f14);
+    fill_rect(184, 188, 656, 424, 0x08090e);
 }
 
 // Paint the whole desktop: gradient wallpaper, top bar, and the window frame.
@@ -557,9 +651,11 @@ fn clear_window() {
 fn draw_desktop() {
     fill_gradient(g_wall_top, g_wall_bottom);
     draw_topbar();
-    fill_rect(180, 160, 664, 456, 0x1b2733);                   // window frame
+    fill_round_rect(188, 170, 664, 456, 14, 0x05060a);         // soft offset shadow
+    outline_round_rect(180, 160, 664, 456, 14, 0x363b4f, 0x12141d);
     window_title("terminal");
     clear_window();
+    draw_dock();
 }
 
 // ----- text output (framebuffer glyphs when g_gfx, else VGA text memory) -----
@@ -2878,6 +2974,7 @@ fn switch_app(app: u32) {
     }
     if app == 2 { browser_draw(); }
     if app == 3 { settings_draw(); }
+    draw_dock();
 }
 
 // ----- users, authentication & permissions -----
@@ -3112,8 +3209,8 @@ fn draw_clock() {
         pos = pos + 3;
     }
     let term: *u8 = (b + (pos as u64)) as *u8; *term = 0;
-    fill_rect(g_fb_w - 108, 0, 108, 24, 0x0d141c);
-    draw_text_abs(&buf as *u8, g_fb_w - 100, 4, 0x9fd0d8, 0x0d141c);
+    outline_round_rect(g_fb_w - 132, 7, 116, 30, 10, 0x262a3a, 0x191c28);
+    draw_text_abs(&buf as *u8, g_fb_w - 122, 14, 0xe9ebf5, 0x191c28);
 }
 
 // ---- power flyout ----
@@ -3189,7 +3286,8 @@ fn open_power_menu() {
 // Repaint the desktop and re-render the active app after a full-screen overlay.
 fn restore_desktop() {
     fill_gradient(g_wall_top, g_wall_bottom);
-    fill_rect(180, 160, 664, 456, 0x1b2733);        // window frame
+    fill_round_rect(188, 170, 664, 456, 14, 0x05060a);
+    outline_round_rect(180, 160, 664, 456, 14, 0x363b4f, 0x12141d);
     switch_app(g_app);                              // top bar + active app content
     draw_clock();
 }
@@ -3326,7 +3424,7 @@ fn draw_app_icon(app: u32, cx: u32, cy: u32, bg: u32) {
         fill_rect(x, y, 24, 8, 0xd9a441);
         fill_rect(x, y + 6, 60, 40, 0xf0c060);
         fill_rect(x + 3, y + 12, 54, 31, 0xf7d79a);
-    } else if app == 2 {                            // Vex (the diamond logo)
+    } else if app == 2 {                            // Canonical Vex gold diamond + V
         let r: u32 = 26;
         let dy: u32 = 0;
         while dy <= r + r {
@@ -3335,10 +3433,12 @@ fn draw_app_icon(app: u32, cx: u32, cy: u32, bg: u32) {
             if ay < 0 { ay = 0 - ay; }
             let hw: i32 = (r as i32) - ay;
             if hw > 0 {
-                fill_rect(cx - (hw as u32), cy - r + dy, (hw as u32) * 2, 1, 0x22d3ee);
+                fill_rect(cx - (hw as u32), cy - r + dy, (hw as u32) * 2, 1, 0x8f704c);
             }
             dy = dy + 1;
         }
+        draw_line(cx - 13, cy - 2, cx, cy + 15, 3, 0xffffff);
+        draw_line(cx, cy + 15, cx + 13, cy - 2, 3, 0xffffff);
     } else if app == 3 {                            // Settings (sliders)
         let x: u32 = cx - 28;
         fill_rect(x, cy - 18, 56, 4, 0x5a6b73);
@@ -3348,11 +3448,96 @@ fn draw_app_icon(app: u32, cx: u32, cy: u32, bg: u32) {
         fill_rect(x, cy + 14, 56, 4, 0x5a6b73);
         fill_rect(x + 20, cy + 10, 10, 12, 0xdfeef2);
     } else {                                        // Power (ring + bar)
-        fill_circle(cx, cy + 2, 26, 0x3fb950);
+        fill_circle(cx, cy + 2, 26, 0x877bff);
         fill_circle(cx, cy + 2, 19, bg);
         fill_rect(cx - 8, cy - 24, 16, 20, bg);
-        fill_rect(cx - 3, cy - 22, 6, 22, 0x3fb950);
+        fill_rect(cx - 3, cy - 22, 6, 22, 0x877bff);
     }
+}
+
+fn draw_dock_icon(app: u32, cx: u32, cy: u32, active: bool) {
+    let tile: u32 = 0x191c28;
+    if active { tile = 0x24213f; }
+    fill_round_rect(cx - 21, cy - 21, 42, 42, 11, tile);
+    if app == 0 {
+        outline_round_rect(cx - 13, cy - 10, 26, 20, 4, 0x969cb3, tile);
+        draw_text_abs(">_", cx - 9, cy - 7, 0x877bff, tile);
+    } else if app == 1 {
+        fill_round_rect(cx - 13, cy - 7, 26, 18, 4, 0x969cb3);
+        fill_rect(cx - 12, cy - 11, 10, 6, 0x969cb3);
+        fill_rect(cx - 10, cy - 4, 22, 12, tile);
+    } else if app == 2 {
+        let r: u32 = 13;
+        let dy: u32 = 0;
+        while dy <= r + r {
+            let oy: i32 = (dy as i32) - (r as i32);
+            let ay: i32 = oy; if ay < 0 { ay = 0 - ay; }
+            let hw: i32 = (r as i32) - ay;
+            if hw > 0 { fill_rect(cx - (hw as u32), cy - r + dy, (hw as u32) * 2, 1, 0x8f704c); }
+            dy = dy + 1;
+        }
+        draw_line(cx - 6, cy - 1, cx, cy + 7, 2, 0xffffff);
+        draw_line(cx, cy + 7, cx + 6, cy - 1, 2, 0xffffff);
+    } else if app == 3 {
+        fill_rect(cx - 12, cy - 8, 24, 2, 0x969cb3);
+        fill_rect(cx - 12, cy, 24, 2, 0x969cb3);
+        fill_rect(cx - 12, cy + 8, 24, 2, 0x969cb3);
+        fill_round_rect(cx - 7, cy - 11, 6, 8, 2, 0x877bff);
+        fill_round_rect(cx + 3, cy - 3, 6, 8, 2, 0x877bff);
+        fill_round_rect(cx - 2, cy + 5, 6, 8, 2, 0x877bff);
+    } else {
+        fill_circle(cx, cy, 11, 0x969cb3);
+        fill_circle(cx, cy, 7, tile);
+        fill_rect(cx - 4, cy - 13, 8, 8, tile);
+        fill_rect(cx - 1, cy - 12, 3, 10, 0x969cb3);
+    }
+    if active { fill_round_rect(cx - 8, cy + 24, 16, 3, 2, 0x877bff); }
+}
+
+fn draw_dock_clock(x: u32, y: u32) {
+    let stb: u8 = rtc_reg(0x0B);
+    let binmode: bool = (stb & 4) != 0;
+    let m: u8 = rtc_conv(rtc_reg(2), binmode);
+    let h: u8 = rtc_conv(rtc_reg(4), binmode);
+    let shown_h: u8 = h;
+    if !g_clock_24h {
+        shown_h = h % 12;
+        if shown_h == 0 { shown_h = 12; }
+    }
+    let buf: [u8; 9] = [0; 9];
+    let base: u64 = &buf as u64;
+    write2(base, 0, shown_h);
+    *((base + 2) as *u8) = 58;
+    write2(base, 3, m);
+    let pos: u32 = 5;
+    if !g_clock_24h {
+        *((base + 5) as *u8) = 32;
+        if h < 12 { *((base + 6) as *u8) = 65; } else { *((base + 6) as *u8) = 80; }
+        *((base + 7) as *u8) = 77;
+        pos = 8;
+    }
+    *((base + (pos as u64)) as *u8) = 0;
+    draw_text_abs(&buf as *u8, x + 34, y + 10, 0xe9ebf5, 0x191c28);
+    draw_text_abs("MortuexOS", x + 28, y + 31, 0x969cb3, 0x191c28);
+}
+
+fn draw_dock() {
+    if !g_gfx || g_overlay == 2 || g_overlay == 3 { return; }
+    let x: u32 = (g_fb_w - 520) / 2;
+    let y: u32 = g_fb_h - 72;
+    outline_round_rect(x, y, 520, 56, 16, 0x363b4f, 0x191c28);
+    draw_brand_mark(x + 28, y + 28);
+    outline_round_rect(x + 54, y + 8, 192, 40, 12, 0x363b4f, 0x12141d);
+    draw_text_abs("/", x + 67, y + 20, 0x877bff, 0x12141d);
+    draw_text_abs("Search apps and files", x + 84, y + 20, 0x969cb3, 0x12141d);
+    fill_rect(x + 254, y + 14, 1, 28, 0x363b4f);
+    for app: u32 in 0..4 {
+        draw_dock_icon(app, x + 278 + app * 50, y + 27, g_overlay == 0 && g_app == app);
+    }
+    draw_dock_icon(4, x + 482, y + 27, false);
+
+    outline_round_rect(x + 532, y, 148, 56, 16, 0x363b4f, 0x191c28);
+    draw_dock_clock(x + 532, y);
 }
 
 fn launcher_label(i: u32) -> u64 {
@@ -3364,30 +3549,48 @@ fn launcher_label(i: u32) -> u64 {
 }
 
 fn draw_launcher() {
-    fill_rect(0, 0, g_fb_w, g_fb_h, 0x0b1220);
-    draw_center("MORT OS", g_fb_w / 2, 96, 0xffffff, 0x0b1220);
-    let wl: [u8; 40] = [0; 40];
-    str_copy((&wl as u64) as *u8, "welcome, ");
-    str_copy(((&wl as u64) + 9) as *u8, (&g_username as u64) as *u8);
-    draw_center((&wl as u64) as *u8, g_fb_w / 2, 124, 0x9fd0d8, 0x0b1220);
+    fill_gradient(g_wall_top, g_wall_bottom);
+    draw_topbar();
+    fill_round_rect(128, 80, 784, 548, 18, 0x05060a);
+    outline_round_rect(120, 72, 784, 548, 18, 0x363b4f, 0x12141d);
+    fill_rect(121, 116, 782, 1, 0x262a3a);
+    draw_brand_mark(150, 94);
+    draw_text_abs("Home", 178, 87, 0xe9ebf5, 0x12141d);
+    draw_text_abs("-", 836, 87, 0x969cb3, 0x12141d);
+    draw_text_abs("x", 876, 87, 0x969cb3, 0x12141d);
 
-    let startx: u32 = (g_fb_w - 730) / 2;
-    let ty: u32 = 300;
+    draw_center("Welcome to mortuexOS", g_fb_w / 2, 150, 0xe9ebf5, 0x12141d);
+    let wl: [u8; 40] = [0; 40];
+    str_copy((&wl as u64) as *u8, "Ready for you, ");
+    str_copy(((&wl as u64) + 15) as *u8, (&g_username as u64) as *u8);
+    draw_center((&wl as u64) as *u8, g_fb_w / 2, 178, 0x969cb3, 0x12141d);
+
+    outline_round_rect(202, 216, 620, 46, 13, 0x363b4f, 0x0b0d14);
+    draw_text_abs("/", 220, 231, 0x877bff, 0x0b0d14);
+    draw_text_abs("Search apps, settings, files, or enter a web address", 244, 231, 0x969cb3, 0x0b0d14);
+    draw_text_abs("QUICK LAUNCH", 164, 294, 0x969cb3, 0x12141d);
+
+    let startx: u32 = 164;
+    let ty: u32 = 322;
     let i: u32 = 0;
     while i < 5 {
-        let tx: u32 = startx + i * 150;
-        let bg: u32 = 0x141b24;
+        let tx: u32 = startx + i * 140;
+        let bg: u32 = 0x191c28;
         if i == g_launch_sel {
-            fill_rect(tx - 3, ty - 3, 136, 166, 0x3fb950);   // selection frame
-            bg = 0x1e2d3d;
+            fill_round_rect(tx - 2, ty - 2, 128, 144, 13, 0x877bff);
+            bg = 0x24213f;
         }
-        fill_rect(tx, ty, 130, 160, bg);
-        draw_app_icon(i, tx + 65, ty + 52, bg);
-        draw_center(launcher_label(i) as *u8, tx + 65, ty + 126, 0xdfeef2, bg);
+        fill_round_rect(tx, ty, 124, 140, 12, bg);
+        draw_app_icon(i, tx + 62, ty + 52, bg);
+        draw_center(launcher_label(i) as *u8, tx + 62, ty + 112, 0xe9ebf5, bg);
         i = i + 1;
     }
-    draw_center("arrows move   Enter open   Esc close   (F5 = home)",
-                g_fb_w / 2, 524, 0x5a6b73, 0x0b1220);
+
+    outline_round_rect(164, 492, 684, 74, 12, 0x262a3a, 0x0b0d14);
+    draw_text_abs("Mort native", 184, 508, 0x55d6a0, 0x0b0d14);
+    draw_text_abs("Filesystem, hardware, settings, and Vex are running in the kernel.", 288, 508, 0x969cb3, 0x0b0d14);
+    draw_text_abs("Arrow keys move   Enter opens   Esc returns   F5 opens Home", 184, 534, 0x5d6379, 0x0b0d14);
+    draw_dock();
 }
 
 fn open_launcher() {
