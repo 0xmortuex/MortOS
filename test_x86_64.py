@@ -69,6 +69,7 @@ def main():
         "MORT64: scheduler continued after process fault",
         "MORT64: process lifecycle and PID ABI passed",
         "MORT64 PREEMPTED PROCESS OK",
+        "MORT64: W^X JIT mapping transition passed",
         "MORT64: timer preemption context switch passed",
         "MORT64: process address spaces reclaimed",
         "MORT64: bootstrap foundation ready",

@@ -16,6 +16,7 @@ let g_user_exit_seen64: bool = false;
 let g_user_exit_status64: u64 = 0;
 let g_user_entry64: u64 = 0;
 let g_user_pt64: u64 = 0;
+let g_user_mmap_pt64: u64 = 0;
 let g_user_pointer_rejected64: bool = false;
 let g_user_fault_seen64: bool = false;
 let g_user_fault_vector64: u64 = 0;
@@ -25,6 +26,7 @@ let g_process_state64: [u8; 8] = [0; 8];
 let g_process_pid64: [u64; 8] = [0; 8];
 let g_process_root64: [u64; 8] = [0; 8];
 let g_process_pt64: [u64; 8] = [0; 8];
+let g_process_mmap_pt64: [u64; 8] = [0; 8];
 let g_process_entry64: [u64; 8] = [0; 8];
 let g_process_exit64: [u64; 8] = [0; 8];
 let g_process_fault64: [u64; 8] = [0; 8];
@@ -36,6 +38,7 @@ let g_process_context64: [u64; 144] = [0; 144];
 let g_process_context_valid64: [u8; 8] = [0; 8];
 let g_process_preemptions64: [u64; 8] = [0; 8];
 let g_process_clock_seen64: [u8; 8] = [0; 8];
+let g_process_mmap_seen64: [u8; 8] = [0; 8];
 let g_current_process64: u32 = 8;
 let g_next_pid64: u64 = 1;
 let g_timer_ticks64: u64 = 0;
@@ -297,12 +300,19 @@ fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
     let pdpt: u64 = page_table_alloc64();
     let pd: u64 = page_table_alloc64();
     let user_pt: u64 = page_table_alloc64();
-    if pml4 == 0 || pdpt == 0 || pd == 0 || user_pt == 0 {
+    let mmap_pd: u64 = page_table_alloc64();
+    let mmap_pt: u64 = page_table_alloc64();
+    if pml4 == 0 || pdpt == 0 || pd == 0 || user_pt == 0
+        || mmap_pd == 0 || mmap_pt == 0 {
         return 0;
     }
 
     page_table_set64(pml4, 0, pdpt | 0x7);
     page_table_set64(pdpt, 0, pd | 0x7);
+    // A separate high user arena starts at 1 GiB. It does not replace any
+    // part of the kernel's low 1 GiB physical direct map.
+    page_table_set64(pdpt, 1, mmap_pd | 0x7);
+    page_table_set64(mmap_pd, 0, mmap_pt | 0x7);
     let directory_index: u32 = 0;
     while directory_index < 512 {
         if directory_index != 8 {
@@ -411,6 +421,7 @@ fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
         stack_frame | no_execute | 0x7); // user RW, NX
     g_user_entry64 = entry;
     g_user_pt64 = user_pt;
+    g_user_mmap_pt64 = mmap_pt;
     return pml4;
 }
 
@@ -429,6 +440,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_pid64[slot] = g_next_pid64;
             g_process_root64[slot] = root;
             g_process_pt64[slot] = g_user_pt64;
+            g_process_mmap_pt64[slot] = g_user_mmap_pt64;
             g_process_entry64[slot] = g_user_entry64;
             g_process_exit64[slot] = 0;
             g_process_fault64[slot] = 0;
@@ -437,6 +449,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_context_valid64[slot] = 0;
             g_process_preemptions64[slot] = 0;
             g_process_clock_seen64[slot] = 0;
+            g_process_mmap_seen64[slot] = 0;
             g_next_pid64 = g_next_pid64 + 1;
             return slot;
         }
@@ -461,6 +474,7 @@ fn process_schedule64() -> u32 {
                 g_current_process64 = slot;
                 g_process_state64[slot] = 2;
                 g_user_pt64 = g_process_pt64[slot];
+                g_user_mmap_pt64 = g_process_mmap_pt64[slot];
                 if g_process_context_valid64[slot] != 0 {
                     let context: u64 = (&g_process_context64 as u64)
                         + ((slot as u64) * 144);
@@ -497,7 +511,8 @@ fn process_reap64(slot: u32) -> bool {
     }
     let root: u64 = g_process_root64[slot];
     let user_pt: u64 = g_process_pt64[slot];
-    if root == 0 || user_pt == 0 {
+    let mmap_pt: u64 = g_process_mmap_pt64[slot];
+    if root == 0 || user_pt == 0 || mmap_pt == 0 {
         return false;
     }
     let index: u32 = 0;
@@ -510,15 +525,29 @@ fn process_reap64(slot: u32) -> bool {
         }
         index = index + 1;
     }
+    index = 0;
+    while index < 512 {
+        let entry: *u64 =
+            (mmap_pt + ((index as u64) * 8)) as *u64;
+        if (*entry & 1) != 0 {
+            frame_free64(*entry & 0x000FFFFFFFFFF000);
+            *entry = 0;
+        }
+        index = index + 1;
+    }
     let pdpt: u64 = *((root + 0) as *u64) & 0x000FFFFFFFFFF000;
     if pdpt == 0 {
         return false;
     }
     let pd: u64 = *((pdpt + 0) as *u64) & 0x000FFFFFFFFFF000;
-    if pd == 0 {
+    let mmap_pd: u64 = *((pdpt + 8) as *u64)
+        & 0x000FFFFFFFFFF000;
+    if pd == 0 || mmap_pd == 0 {
         return false;
     }
     frame_free64(user_pt);
+    frame_free64(mmap_pt);
+    frame_free64(mmap_pd);
     frame_free64(pd);
     frame_free64(pdpt);
     frame_free64(root);
@@ -526,6 +555,7 @@ fn process_reap64(slot: u32) -> bool {
     g_process_pid64[slot] = 0;
     g_process_root64[slot] = 0;
     g_process_pt64[slot] = 0;
+    g_process_mmap_pt64[slot] = 0;
     g_process_entry64[slot] = 0;
     g_process_context_valid64[slot] = 0;
     return true;
@@ -594,22 +624,37 @@ fn on_exception64(
     return 0;
 }
 
+fn user_page_entry64(address: u64) -> *u64 {
+    if address >= 0x01000000 && address < 0x01200000
+        && g_user_pt64 != 0 {
+        let index: u32 =
+            ((address - 0x01000000) / 4096) as u32;
+        return (g_user_pt64 + ((index as u64) * 8)) as *u64;
+    }
+    if address >= 0x40000000 && address < 0x40200000
+        && g_user_mmap_pt64 != 0 {
+        let index: u32 =
+            ((address - 0x40000000) / 4096) as u32;
+        return (g_user_mmap_pt64 + ((index as u64) * 8)) as *u64;
+    }
+    return (0 as u64) as *u64;
+}
+
 fn user_range_readable64(address: u64, length: u64) -> bool {
     if length == 0 {
         return true;
     }
     let limit: u64 = address + length;
-    if limit < address
-        || address < 0x01000000
-        || limit > 0x01200000
-        || g_user_pt64 == 0 {
+    if limit < address || length > 0x00200000 {
         return false;
     }
     let page: u64 = (address / 4096) * 4096;
     while page < limit {
-        let index: u32 = ((page - 0x01000000) / 4096) as u32;
-        let entry: u64 = *((g_user_pt64
-            + ((index as u64) * 8)) as *u64);
+        let slot: *u64 = user_page_entry64(page);
+        if slot == ((0 as u64) as *u64) {
+            return false;
+        }
+        let entry: u64 = *slot;
         if (entry & 0x5) != 0x5 {               // present and user-accessible
             return false;
         }
@@ -623,17 +668,16 @@ fn user_range_writable64(address: u64, length: u64) -> bool {
         return true;
     }
     let limit: u64 = address + length;
-    if limit < address
-        || address < 0x01000000
-        || limit > 0x01200000
-        || g_user_pt64 == 0 {
+    if limit < address || length > 0x00200000 {
         return false;
     }
     let page: u64 = (address / 4096) * 4096;
     while page < limit {
-        let index: u32 = ((page - 0x01000000) / 4096) as u32;
-        let entry: u64 = *((g_user_pt64
-            + ((index as u64) * 8)) as *u64);
+        let slot: *u64 = user_page_entry64(page);
+        if slot == ((0 as u64) as *u64) {
+            return false;
+        }
+        let entry: u64 = *slot;
         if (entry & 0x7) != 0x7 {
             return false;
         }
@@ -714,12 +758,210 @@ fn process_brk64(requested: u64) -> u64 {
     return requested;
 }
 
+fn mmap_range_free64(first: u32, pages: u32) -> bool {
+    if first >= 512 || pages == 0 || pages > 512 - first
+        || g_user_mmap_pt64 == 0 {
+        return false;
+    }
+    let index: u32 = first;
+    let limit: u32 = first + pages;
+    while index < limit {
+        if *((g_user_mmap_pt64 + ((index as u64) * 8)) as *u64) != 0 {
+            return false;
+        }
+        index = index + 1;
+    }
+    return true;
+}
+
+fn process_mmap64(
+    address: u64,
+    length: u64,
+    protection: u64,
+    flags: u64,
+    descriptor: u64,
+    offset: u64
+) -> u64 {
+    // Bootstrap supports private anonymous mappings. MAP_FIXED is honored
+    // only for aligned addresses inside the dedicated 1 GiB arena.
+    if g_current_process64 >= 8 || g_user_mmap_pt64 == 0
+        || length == 0 || length > 0x00200000
+        || (protection & 2) != 0 && (protection & 4) != 0
+        || (flags & 0x22) != 0x22
+        || descriptor != ~(0 as u64)
+        || offset != 0 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    let rounded: u64 = ((length + 4095) / 4096) * 4096;
+    if rounded == 0 || rounded > 0x00200000 {
+        return ~(11 as u64);                    // -ENOMEM
+    }
+    let pages: u32 = (rounded / 4096) as u32;
+    let first: u32 = 512;
+    if address != 0 {
+        if (address & 0xFFF) == 0
+            && address >= 0x40000000
+            && address < 0x40200000 {
+            let hinted: u32 =
+                ((address - 0x40000000) / 4096) as u32;
+            if mmap_range_free64(hinted, pages) {
+                first = hinted;
+            }
+        }
+        if first == 512 && (flags & 0x10) != 0 {
+            return ~(21 as u64);                // -EINVAL
+        }
+    }
+    if first == 512 {
+        let candidate: u32 = 0;
+        while candidate <= 512 - pages {
+            if mmap_range_free64(candidate, pages) {
+                first = candidate;
+                candidate = 513;
+            } else {
+                candidate = candidate + 1;
+            }
+        }
+    }
+    if first >= 512 {
+        return ~(11 as u64);                    // -ENOMEM
+    }
+
+    let no_execute: u64 = (1 as u64) << 63;
+    let mapped: u32 = 0;
+    while mapped < pages {
+        let frame: u64 = frame_alloc64();
+        if frame == 0 {
+            let rollback: u32 = 0;
+            while rollback < mapped {
+                let entry: *u64 = (g_user_mmap_pt64
+                    + (((first + rollback) as u64) * 8)) as *u64;
+                frame_free64(*entry & 0x000FFFFFFFFFF000);
+                *entry = 0;
+                rollback = rollback + 1;
+            }
+            mort64_flush_tlb();
+            return ~(11 as u64);                // -ENOMEM
+        }
+        page_zero64(frame);
+        let page_flags: u64 = 1;
+        if protection != 0 {
+            page_flags = page_flags | 4;
+        }
+        if (protection & 2) != 0 {
+            page_flags = page_flags | 2;
+        }
+        if (protection & 4) == 0 {
+            page_flags = page_flags | no_execute;
+        }
+        *((g_user_mmap_pt64
+            + (((first + mapped) as u64) * 8)) as *u64) =
+            frame | page_flags;
+        mapped = mapped + 1;
+    }
+    g_process_mmap_seen64[g_current_process64] = 1;
+    mort64_flush_tlb();
+    return 0x40000000 + ((first as u64) * 4096);
+}
+
+fn process_mprotect64(
+    address: u64,
+    length: u64,
+    protection: u64
+) -> u64 {
+    if g_current_process64 >= 8 || g_user_mmap_pt64 == 0
+        || length == 0 || (address & 0xFFF) != 0
+        || address < 0x40000000 || address >= 0x40200000
+        || length > 0x00200000
+        || (protection & 2) != 0 && (protection & 4) != 0 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    let rounded: u64 = ((length + 4095) / 4096) * 4096;
+    let limit: u64 = address + rounded;
+    if limit < address || limit > 0x40200000 {
+        return ~(11 as u64);                    // -ENOMEM
+    }
+    let first: u32 = ((address - 0x40000000) / 4096) as u32;
+    let pages: u32 = (rounded / 4096) as u32;
+    let index: u32 = 0;
+    while index < pages {
+        let entry: u64 = *((g_user_mmap_pt64
+            + (((first + index) as u64) * 8)) as *u64);
+        if (entry & 1) == 0 {
+            return ~(11 as u64);                // -ENOMEM
+        }
+        index = index + 1;
+    }
+    let no_execute: u64 = (1 as u64) << 63;
+    index = 0;
+    while index < pages {
+        let entry: *u64 = (g_user_mmap_pt64
+            + (((first + index) as u64) * 8)) as *u64;
+        let replacement: u64 = (*entry & 0x000FFFFFFFFFF000) | 1;
+        if protection != 0 {
+            replacement = replacement | 4;
+        }
+        if (protection & 2) != 0 {
+            replacement = replacement | 2;
+        }
+        if (protection & 4) == 0 {
+            replacement = replacement | no_execute;
+        }
+        *entry = replacement;
+        index = index + 1;
+    }
+    mort64_flush_tlb();
+    return 0;
+}
+
+fn process_munmap64(address: u64, length: u64) -> u64 {
+    if g_current_process64 >= 8 || g_user_mmap_pt64 == 0
+        || length == 0 || (address & 0xFFF) != 0
+        || address < 0x40000000 || address >= 0x40200000
+        || length > 0x00200000 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    let rounded: u64 = ((length + 4095) / 4096) * 4096;
+    let limit: u64 = address + rounded;
+    if limit < address || limit > 0x40200000 {
+        return ~(21 as u64);
+    }
+    let first: u32 = ((address - 0x40000000) / 4096) as u32;
+    let pages: u32 = (rounded / 4096) as u32;
+    let index: u32 = 0;
+    while index < pages {
+        let entry: *u64 = (g_user_mmap_pt64
+            + (((first + index) as u64) * 8)) as *u64;
+        if (*entry & 1) != 0 {
+            frame_free64(*entry & 0x000FFFFFFFFFF000);
+            *entry = 0;
+        }
+        index = index + 1;
+    }
+    mort64_flush_tlb();
+    return 0;
+}
+
 fn syscall_dispatch64(
     number: u64,
     argument0: u64,
     argument1: u64,
-    argument2: u64
+    argument2: u64,
+    argument3: u64,
+    argument4: u64,
+    argument5: u64
 ) -> u64 {
+    if number == 9 {
+        return process_mmap64(
+            argument0, argument1, argument2,
+            argument3, argument4, argument5);
+    }
+    if number == 10 {
+        return process_mprotect64(argument0, argument1, argument2);
+    }
+    if number == 11 {
+        return process_munmap64(argument0, argument1);
+    }
     if number == 1 {
         if argument0 != 1 {
             return ~(8 as u64);                 // -EBADF
@@ -877,7 +1119,11 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_exit64[preempt_slot] == 11
                 && g_process_preemptions64[preempt_slot] > 0
                 && g_process_clock_seen64[preempt_slot] != 0
+                && g_process_mmap_seen64[preempt_slot] != 0
+                && *((g_process_mmap_pt64[preempt_slot] + 0) as *u64) == 0
                 && g_timer_ticks64 > 0 {
+                serial_write64(
+                    "MORT64: W^X JIT mapping transition passed\r\n");
                 serial_write64(
                     "MORT64: timer preemption context switch passed\r\n");
             } else {

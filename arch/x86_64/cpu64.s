@@ -244,12 +244,19 @@ mort64_syscall_entry:
     push %r8
     push %r9
     push %r10
-    /* System V call: dispatcher(number, arg0, arg1, arg2). */
-    mov %rdx, %rcx
-    mov %rsi, %rdx
-    mov %rdi, %rsi
+    /*
+     * System V call:
+     * dispatcher(number, arg0, arg1, arg2, arg3, arg4, arg5).
+     * The seventh C argument is passed on the stack.
+     */
+    mov 8(%rsp), %r11              /* original R9: syscall arg5 */
+    mov 0(%rsp), %r8               /* original R10: syscall arg3 */
+    mov 16(%rsp), %r9              /* original R8: syscall arg4 */
+    mov 24(%rsp), %rcx             /* original RDX: syscall arg2 */
+    mov 32(%rsp), %rdx             /* original RSI: syscall arg1 */
+    mov 40(%rsp), %rsi             /* original RDI: syscall arg0 */
     mov %rax, %rdi
-    sub $8, %rsp                    /* align before the System V call */
+    push %r11                      /* arg5 and call-site alignment */
     call mort_syscall_dispatch64
     add $8, %rsp
     pop %r10

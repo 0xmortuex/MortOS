@@ -6,6 +6,17 @@ extern fn mortos_getpid() -> u64;
 extern fn mortos_spin(iterations: u64);
 extern fn mortos_brk(address: u64) -> u64;
 extern fn mortos_clock_gettime(clock_id: u64, timespec: u64) -> u64;
+extern fn mortos_mmap(
+    address: u64,
+    length: u64,
+    protection: u64,
+    flags: u64,
+    descriptor: u64,
+    offset: u64
+) -> u64;
+extern fn mortos_mprotect(address: u64, length: u64, protection: u64) -> u64;
+extern fn mortos_munmap(address: u64, length: u64) -> u64;
+extern fn mortos_call0(address: u64) -> u64;
 
 fn main() -> int {
     if mortos_getpid() != 4 {
@@ -29,6 +40,25 @@ fn main() -> int {
     if after_seconds < before_seconds
         || (after_seconds == before_seconds && after_nanos <= before_nanos) {
         return 10;
+    }
+    let code: u64 = mortos_mmap(
+        0, 4096, 3, 0x22, ~(0 as u64), 0);
+    if code != 0x40000000 {
+        return 12;
+    }
+    *((code + 0) as *u8) = 0xB8;   // mov eax, 77
+    *((code + 1) as *u8) = 77;
+    *((code + 2) as *u8) = 0;
+    *((code + 3) as *u8) = 0;
+    *((code + 4) as *u8) = 0;
+    *((code + 5) as *u8) = 0xC3;   // ret
+    if mortos_mprotect(code, 4096, 5) != 0
+        || mortos_call0(code) != 77 {
+        return 13;
+    }
+    if mortos_mprotect(code, 4096, 3) != 0
+        || mortos_munmap(code, 4096) != 0 {
+        return 14;
     }
     if mortos_getpid() != 4 {
         return 5;

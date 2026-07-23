@@ -47,6 +47,42 @@ mortos_clock_gettime:
     ret
 .size mortos_clock_gettime, . - mortos_clock_gettime
 
+.global mortos_mmap
+.type mortos_mmap, @function
+mortos_mmap:
+    /* System V arg3 is RCX; the syscall ABI uses R10. */
+    mov %rcx, %r10
+    mov $9, %rax                   /* SYS_mmap */
+    syscall
+    ret
+.size mortos_mmap, . - mortos_mmap
+
+.global mortos_mprotect
+.type mortos_mprotect, @function
+mortos_mprotect:
+    mov $10, %rax                  /* SYS_mprotect */
+    syscall
+    ret
+.size mortos_mprotect, . - mortos_mprotect
+
+.global mortos_munmap
+.type mortos_munmap, @function
+mortos_munmap:
+    mov $11, %rax                  /* SYS_munmap */
+    syscall
+    ret
+.size mortos_munmap, . - mortos_munmap
+
+.global mortos_call0
+.type mortos_call0, @function
+mortos_call0:
+    mov %rdi, %rax
+    sub $8, %rsp
+    call *%rax
+    add $8, %rsp
+    ret
+.size mortos_call0, . - mortos_call0
+
 .global mortos_spin
 .type mortos_spin, @function
 mortos_spin:
