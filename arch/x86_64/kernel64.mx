@@ -30,12 +30,15 @@ let g_process_exit64: [u64; 8] = [0; 8];
 let g_process_fault64: [u64; 8] = [0; 8];
 let g_process_brk64: [u64; 8] = [0; 8];
 let g_process_brk_seen64: [u8; 8] = [0; 8];
-// Nine u64 values per saved cooperative context:
-// RSP, RIP, RFLAGS, RBX, RBP, R12, R13, R14, R15.
-let g_process_context64: [u64; 72] = [0; 72];
+// Eighteen u64 values per saved context: all general registers followed by
+// RIP, RFLAGS, and RSP. This supports both cooperative and timer preemption.
+let g_process_context64: [u64; 144] = [0; 144];
 let g_process_context_valid64: [u8; 8] = [0; 8];
+let g_process_preemptions64: [u64; 8] = [0; 8];
+let g_process_clock_seen64: [u8; 8] = [0; 8];
 let g_current_process64: u32 = 8;
 let g_next_pid64: u64 = 1;
+let g_timer_ticks64: u64 = 0;
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
@@ -45,6 +48,8 @@ extern fn mort64_isolation_image() -> u64;
 extern fn mort64_isolation_image_size() -> u64;
 extern fn mort64_survivor_image() -> u64;
 extern fn mort64_survivor_image_size() -> u64;
+extern fn mort64_preempt_image() -> u64;
+extern fn mort64_preempt_image_size() -> u64;
 extern fn mort64_enter_user(entry: u64, stack_top: u64, page_root: u64);
 extern fn mort64_resume_user(context: u64, page_root: u64);
 extern fn mort64_flush_tlb();
@@ -78,6 +83,26 @@ fn serial_write64(text: *u8) {
         address = address + 1;
         value = *(address as *u8);
     }
+}
+
+fn timer_init64() {
+    // Remap the legacy PIC and expose only IRQ0. APIC routing replaces this
+    // bootstrap path once SMP is introduced.
+    outb(0x20, 0x11);
+    outb(0xA0, 0x11);
+    outb(0x21, 0x20);
+    outb(0xA1, 0x28);
+    outb(0x21, 0x04);
+    outb(0xA1, 0x02);
+    outb(0x21, 0x01);
+    outb(0xA1, 0x01);
+    outb(0x21, 0xFE);
+    outb(0xA1, 0xFF);
+
+    // PIT channel 0, rate generator, approximately 100 Hz.
+    outb(0x43, 0x36);
+    outb(0x40, 0x9B);
+    outb(0x40, 0x2E);
 }
 
 fn frame_byte64(index: u32) -> *u8 {
@@ -410,6 +435,8 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_brk64[slot] = 0x01100000;
             g_process_brk_seen64[slot] = 0;
             g_process_context_valid64[slot] = 0;
+            g_process_preemptions64[slot] = 0;
+            g_process_clock_seen64[slot] = 0;
             g_next_pid64 = g_next_pid64 + 1;
             return slot;
         }
@@ -425,7 +452,7 @@ fn process_schedule64() -> u32 {
     let dispatched: u32 = 0;
     let rounds: u32 = 0;
     let found_ready: bool = true;
-    while found_ready && rounds < 64 {
+    while found_ready && rounds < 256 {
         found_ready = false;
         let slot: u32 = 0;
         while slot < 8 {
@@ -436,7 +463,7 @@ fn process_schedule64() -> u32 {
                 g_user_pt64 = g_process_pt64[slot];
                 if g_process_context_valid64[slot] != 0 {
                     let context: u64 = (&g_process_context64 as u64)
-                        + ((slot as u64) * 72);
+                        + ((slot as u64) * 144);
                     mort64_resume_user(context, g_process_root64[slot]);
                 } else {
                     mort64_enter_user(
@@ -514,7 +541,24 @@ fn on_user_yield64() -> u64 {
     g_process_state64[g_current_process64] = 1;
     g_process_context_valid64[g_current_process64] = 1;
     return (&g_process_context64 as u64)
-        + ((g_current_process64 as u64) * 72);
+        + ((g_current_process64 as u64) * 144);
+}
+
+// IRQ0 policy. Returning a context pointer asks the assembly interrupt path to
+// save the complete interrupted state and return to the scheduler.
+fn on_timer_tick64(code_segment: u64) -> u64 {
+    g_timer_ticks64 = g_timer_ticks64 + 1;
+    if (code_segment & 3) != 3
+        || g_current_process64 >= 8
+        || g_process_state64[g_current_process64] != 2 {
+        return 0;
+    }
+    g_process_state64[g_current_process64] = 1;
+    g_process_context_valid64[g_current_process64] = 1;
+    g_process_preemptions64[g_current_process64] =
+        g_process_preemptions64[g_current_process64] + 1;
+    return (&g_process_context64 as u64)
+        + ((g_current_process64 as u64) * 144);
 }
 
 fn on_exception64(
@@ -567,6 +611,30 @@ fn user_range_readable64(address: u64, length: u64) -> bool {
         let entry: u64 = *((g_user_pt64
             + ((index as u64) * 8)) as *u64);
         if (entry & 0x5) != 0x5 {               // present and user-accessible
+            return false;
+        }
+        page = page + 4096;
+    }
+    return true;
+}
+
+fn user_range_writable64(address: u64, length: u64) -> bool {
+    if length == 0 {
+        return true;
+    }
+    let limit: u64 = address + length;
+    if limit < address
+        || address < 0x01000000
+        || limit > 0x01200000
+        || g_user_pt64 == 0 {
+        return false;
+    }
+    let page: u64 = (address / 4096) * 4096;
+    while page < limit {
+        let index: u32 = ((page - 0x01000000) / 4096) as u32;
+        let entry: u64 = *((g_user_pt64
+            + ((index as u64) * 8)) as *u64);
+        if (entry & 0x7) != 0x7 {
             return false;
         }
         page = page + 4096;
@@ -681,6 +749,22 @@ fn syscall_dispatch64(
     if number == 12 {
         return process_brk64(argument0);
     }
+    if number == 228 {
+        if argument0 != 1 {
+            return ~(21 as u64);                // -EINVAL
+        }
+        if !user_range_writable64(argument1, 16) {
+            return ~(13 as u64);                // -EFAULT
+        }
+        let ticks: u64 = g_timer_ticks64;
+        *((argument1 + 0) as *u64) = ticks / 100;
+        *((argument1 + 8) as *u64) =
+            (ticks % 100) * 10000000;
+        if g_current_process64 < 8 {
+            g_process_clock_seen64[g_current_process64] = 1;
+        }
+        return 0;
+    }
     return ~(37 as u64); // -ENOSYS
 }
 
@@ -722,6 +806,9 @@ fn kmain64(multiboot_info: u64) {
         } else {
             serial_write64("MORT64 ERROR: IDT breakpoint was not handled\r\n");
         }
+        timer_init64();
+        asm("sti");
+        serial_write64("MORT64: PIT timer interrupts active\r\n");
 
         let frames_before_processes: u32 = g_frame_free64;
         let probe_slot: u32 = process_create64(
@@ -730,17 +817,26 @@ fn kmain64(multiboot_info: u64) {
             mort64_isolation_image(), mort64_isolation_image_size());
         let survivor_slot: u32 = process_create64(
             mort64_survivor_image(), mort64_survivor_image_size());
+        let preempt_slot: u32 = process_create64(
+            mort64_preempt_image(), mort64_preempt_image_size());
         if probe_slot < 8 && isolation_slot < 8 && survivor_slot < 8
+            && preempt_slot < 8
             && g_process_root64[probe_slot]
                 != g_process_root64[isolation_slot]
             && g_process_root64[probe_slot]
                 != g_process_root64[survivor_slot]
             && g_process_root64[isolation_slot]
+                != g_process_root64[survivor_slot]
+            && g_process_root64[preempt_slot]
+                != g_process_root64[probe_slot]
+            && g_process_root64[preempt_slot]
+                != g_process_root64[isolation_slot]
+            && g_process_root64[preempt_slot]
                 != g_process_root64[survivor_slot] {
             serial_write64(
-                "MORT64: ELF64 loader mapped three isolated processes\r\n");
+                "MORT64: ELF64 loader mapped four isolated processes\r\n");
             let dispatched: u32 = process_schedule64();
-            if dispatched == 4
+            if dispatched >= 5
                 && g_process_state64[probe_slot] == 3
                 && g_process_exit64[probe_slot] == 42
                 && g_user_probe_seen64
@@ -777,9 +873,21 @@ fn kmain64(multiboot_info: u64) {
                 serial_write64(
                     "MORT64 ERROR: scheduler lifecycle failed\r\n");
             }
+            if g_process_state64[preempt_slot] == 3
+                && g_process_exit64[preempt_slot] == 11
+                && g_process_preemptions64[preempt_slot] > 0
+                && g_process_clock_seen64[preempt_slot] != 0
+                && g_timer_ticks64 > 0 {
+                serial_write64(
+                    "MORT64: timer preemption context switch passed\r\n");
+            } else {
+                serial_write64(
+                    "MORT64 ERROR: timer preemption failed\r\n");
+            }
             if process_reap64(probe_slot)
                 && process_reap64(isolation_slot)
                 && process_reap64(survivor_slot)
+                && process_reap64(preempt_slot)
                 && g_frame_free64 == frames_before_processes {
                 serial_write64(
                     "MORT64: process address spaces reclaimed\r\n");

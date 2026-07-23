@@ -3,8 +3,9 @@
 Status: active implementation contract for the canonical Vex platform port.
 Long mode, ring-3 execution, a validating static ELF64 loader, distinct
 per-process W^X/NX mappings, PID assignment, cooperative context switching,
-terminal-process frame reclamation, user-fault containment, a demand-paged
-`brk` heap, `write`, `yield`, `getpid`, and `exit` are boot-tested. Other
+PIT-driven full-context preemption, terminal-process frame reclamation,
+user-fault containment, a demand-paged `brk` heap, monotonic time, `write`,
+`yield`, `getpid`, `clock_gettime`, and `exit` are boot-tested. Other
 facilities remain planned unless explicitly marked otherwise.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
@@ -53,10 +54,11 @@ The initial numeric assignments are:
 | 24 | `yield()` | Implemented with per-process saved context and round-robin resumption |
 | 39 | `getpid()` | Implemented for scheduled processes |
 | 60 | `exit(status)` | Implemented for the current process |
+| 228 | `clock_gettime(clock_id, timespec)` | Implemented for `CLOCK_MONOTONIC` from the 100 Hz kernel tick |
 
 The remaining implementation order is:
 
-1. `read`, `close`, and `clock_gettime`.
+1. `read` and `close`.
 2. `mmap`, `munmap`, `mprotect`, shared memory, and page-fault reporting.
 3. `openat`, `stat`, `getdents`, `pread`, `pwrite`, `fsync`, and file mapping.
 4. `spawn`, `execve`, `wait`, process groups, threads, TLS, and futex-style waits.

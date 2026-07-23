@@ -22,6 +22,13 @@ mort64_survivor_image_blob:
 .global mort64_survivor_image_end
 mort64_survivor_image_end:
 
+.align 16
+.global mort64_preempt_image_blob
+mort64_preempt_image_blob:
+.incbin "build/x86_64/user_preempt.elf"
+.global mort64_preempt_image_end
+mort64_preempt_image_end:
+
 .section .text.user_image, "ax", @progbits
 .global mort64_probe_image
 .type mort64_probe_image, @function
@@ -57,4 +64,16 @@ mort64_survivor_image:
 .type mort64_survivor_image_size, @function
 mort64_survivor_image_size:
     mov $(mort64_survivor_image_end - mort64_survivor_image_blob), %rax
+    ret
+
+.global mort64_preempt_image
+.type mort64_preempt_image, @function
+mort64_preempt_image:
+    lea mort64_preempt_image_blob(%rip), %rax
+    ret
+
+.global mort64_preempt_image_size
+.type mort64_preempt_image_size, @function
+mort64_preempt_image_size:
+    mov $(mort64_preempt_image_end - mort64_preempt_image_blob), %rax
     ret

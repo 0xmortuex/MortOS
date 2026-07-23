@@ -1,0 +1,40 @@
+// Process 4 never yields while doing its long-running work. IRQ0 must suspend
+// and later resume it with the full general-register and interrupt context.
+
+extern fn mortos_write(text: *u8, length: u64) -> u64;
+extern fn mortos_getpid() -> u64;
+extern fn mortos_spin(iterations: u64);
+extern fn mortos_brk(address: u64) -> u64;
+extern fn mortos_clock_gettime(clock_id: u64, timespec: u64) -> u64;
+
+fn main() -> int {
+    if mortos_getpid() != 4 {
+        return 4;
+    }
+    let heap: u64 = mortos_brk(0);
+    if heap != 0x01100000 || mortos_brk(heap + 4096) != heap + 4096 {
+        return 7;
+    }
+    if mortos_clock_gettime(1, heap) != 0 {
+        return 8;
+    }
+    let before_seconds: u64 = *(heap as *u64);
+    let before_nanos: u64 = *((heap + 8) as *u64);
+    mortos_spin(20000000);
+    if mortos_clock_gettime(1, heap + 16) != 0 {
+        return 9;
+    }
+    let after_seconds: u64 = *((heap + 16) as *u64);
+    let after_nanos: u64 = *((heap + 24) as *u64);
+    if after_seconds < before_seconds
+        || (after_seconds == before_seconds && after_nanos <= before_nanos) {
+        return 10;
+    }
+    if mortos_getpid() != 4 {
+        return 5;
+    }
+    if mortos_write("MORT64 PREEMPTED PROCESS OK\r\n", 29) != 29 {
+        return 6;
+    }
+    return 11;
+}

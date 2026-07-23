@@ -38,6 +38,26 @@ mortos_brk:
     ret
 .size mortos_brk, . - mortos_brk
 
+.global mortos_clock_gettime
+.type mortos_clock_gettime, @function
+mortos_clock_gettime:
+    /* rdi=clock id, rsi=timespec pointer */
+    mov $228, %rax                 /* SYS_clock_gettime */
+    syscall
+    ret
+.size mortos_clock_gettime, . - mortos_clock_gettime
+
+.global mortos_spin
+.type mortos_spin, @function
+mortos_spin:
+    /* Deliberately non-cooperative work used by the IRQ0 preemption test. */
+    mov %rdi, %rcx
+.Lmortos_spin_loop:
+    dec %rcx
+    jnz .Lmortos_spin_loop
+    ret
+.size mortos_spin, . - mortos_spin
+
 /*
  * A second fixed ELF entry used only by the kernel isolation test. It attempts
  * a direct read from the supervisor-only kernel mapping. Reaching SYS_exit

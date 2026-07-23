@@ -84,7 +84,7 @@ PAYLOAD64 = os.path.join(BUILD64, "kernel64.elf")   # genuine ELF64 Mort kernel
 PAYLOAD64_BIN = os.path.join(BUILD64, "payload.bin")
 USER64_ELFS = {
     name: os.path.join(BUILD64, f"user_{name}.elf")
-    for name in ("probe", "isolation", "survivor")
+    for name in ("probe", "isolation", "survivor", "preempt")
 }
 USER64_ELF = USER64_ELFS["probe"]
 DISK = os.path.join(BUILD, "disk.img")
@@ -401,7 +401,7 @@ def check64():
                 f"userspace {user_name} is not embedded in kernel payload")
 
     print(f"OK: genuine ELF64 Mort payload at 0x200000")
-    print("OK: three isolated W^X ELF64 Mort images at 0x01000000")
+    print("OK: four isolated W^X ELF64 Mort images at 0x01000000")
     print(f"OK: ELF32 Multiboot trampoline; valid header at file offset {offset}")
     print("OK: ELF64 payload embedded in the bootable image")
     print("Boot it with:  python build.py run64")

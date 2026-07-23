@@ -36,10 +36,12 @@ Windows package is only one host build. MortOS will become another host target:
 
 `python test_x86_64.py` boots the image, enables PAE and long mode, installs an
 identity map, crosses the 32-to-64-bit boundary, and verifies serial output
-from `arch/x86_64/kernel64.mx`. It also loads three independently linked Mort
+from `arch/x86_64/kernel64.mx`. It also loads four independently linked Mort
 ELF64 executables into different page-table roots, assigns PIDs, dispatches
 them at ring 3, exercises SYSCALL/SYSRET, rejects a supervisor pointer, and
-continues scheduling after containing a deliberate user page fault.
+continues scheduling after containing a deliberate user page fault. A PIT IRQ
+also preempts and resumes non-cooperative user work from a complete register
+context while driving the monotonic clock.
 
 This is only the architectural bootstrap. It does not yet run Vex.
 
@@ -49,7 +51,7 @@ This is only the architectural bootstrap. It does not yet run Vex.
 | --- | --- | --- |
 | 64-bit architecture | Long-mode boot, page tables, 64-bit Mort entry | Boot-tested foundation |
 | Kernel isolation | GDT/TSS/IDT, NX, ring 3, supervisor/user page protection, user-fault containment | Boot-tested across distinct process roots |
-| Process runtime | Validating ELF64 ET_EXEC loader, W^X PT_LOAD mappings, demand-paged heap, PID/exit/fault states, cooperative saved contexts, terminal address-space reclamation | Boot-tested foundation; timer preemption, threads, handles, IPC next |
+| Process runtime | Validating ELF64 ET_EXEC loader, W^X PT_LOAD mappings, demand-paged heap, PID/exit/fault states, cooperative and PIT-preemptive full contexts, terminal address-space reclamation | Boot-tested foundation; threads, handles, IPC next |
 | MortOS ABI | Stable syscalls for files, memory, time, networking, graphics, input, audio, and entropy | Specified in `x86_64-userspace-abi.md` |
 | C/C++ platform | LLVM target, libc/libc++, atomics, pthread-compatible layer, build tools | Planned |
 | Node/V8 | V8 JIT permissions, libuv event loop, Node filesystem/network/process APIs | Planned |

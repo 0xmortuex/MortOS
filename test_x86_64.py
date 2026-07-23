@@ -53,7 +53,8 @@ def main():
         "MORT64: physical frame allocator passed",
         "MORT64: GDT TSS IDT and SYSCALL active",
         "MORT64: IDT breakpoint self-test passed",
-        "MORT64: ELF64 loader mapped three isolated processes",
+        "MORT64: PIT timer interrupts active",
+        "MORT64: ELF64 loader mapped four isolated processes",
         "MORT64: syscall rejected supervisor pointer",
         "MORT64 USERSPACE OK",
         "MORT64 PROCESS 2 START",
@@ -67,6 +68,8 @@ def main():
         "MORT64: supervisor page fault isolation passed",
         "MORT64: scheduler continued after process fault",
         "MORT64: process lifecycle and PID ABI passed",
+        "MORT64 PREEMPTED PROCESS OK",
+        "MORT64: timer preemption context switch passed",
         "MORT64: process address spaces reclaimed",
         "MORT64: bootstrap foundation ready",
     ]

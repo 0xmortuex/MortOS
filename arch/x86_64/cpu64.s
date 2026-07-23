@@ -92,6 +92,10 @@ mort64_cpu_init:
     inc %r12d
     cmp $32, %r12d
     jb .Linstall_exception_gate
+    mov $32, %edi
+    lea mort64_irq0(%rip), %rsi
+    mov $0x8E, %edx
+    call mort64_set_idt_gate
     lidt mort64_idt_pointer(%rip)
 
     /* NX is mandatory for the userspace security contract. */
@@ -162,7 +166,7 @@ mort64_enter_user:
 
     pushq $USER_DATA
     push %rsi
-    pushq $0x2                      /* reserved RFLAGS bit; interrupts off */
+    pushq $0x202                    /* reserved bit + user interrupts enabled */
     pushq $USER_CODE
     push %rdi
     iretq
@@ -171,7 +175,7 @@ mort64_enter_user:
 .global mort64_resume_user
 .type mort64_resume_user, @function
 mort64_resume_user:
-    /* rdi=saved cooperative context, rsi=process CR3 */
+    /* rdi=full saved context, rsi=process CR3 */
     push %rbx
     push %rbp
     push %r12
@@ -184,17 +188,29 @@ mort64_resume_user:
     mov %rax, mort64_kernel_cr3(%rip)
     mov %rsi, %cr3
 
-    mov 8(%rdi), %rcx              /* SYSRET RIP */
-    mov 16(%rdi), %r11             /* SYSRET RFLAGS */
-    mov 24(%rdi), %rbx
-    mov 32(%rdi), %rbp
-    mov 40(%rdi), %r12
-    mov 48(%rdi), %r13
-    mov 56(%rdi), %r14
-    mov 64(%rdi), %r15
-    mov 0(%rdi), %rsp
-    xor %eax, %eax                 /* yield returns success */
-    sysretq
+    mov %rdi, mort64_resume_context(%rip)
+    pushq $USER_DATA
+    pushq 136(%rdi)                /* user RSP */
+    pushq 128(%rdi)                /* user RFLAGS */
+    pushq $USER_CODE
+    pushq 120(%rdi)                /* user RIP */
+    mov 0(%rdi), %r15
+    mov 8(%rdi), %r14
+    mov 16(%rdi), %r13
+    mov 24(%rdi), %r12
+    mov 32(%rdi), %r11
+    mov 40(%rdi), %r10
+    mov 48(%rdi), %r9
+    mov 56(%rdi), %r8
+    mov 64(%rdi), %rsi
+    mov 80(%rdi), %rbp
+    mov 88(%rdi), %rdx
+    mov 96(%rdi), %rcx
+    mov 104(%rdi), %rbx
+    mov 72(%rdi), %rdi
+    mov mort64_resume_context(%rip), %rax
+    mov 112(%rax), %rax
+    iretq
 .size mort64_resume_user, . - mort64_resume_user
 
 .global mort64_flush_tlb
@@ -275,24 +291,34 @@ mort64_syscall_entry:
     add $8, %rsp
     test %rax, %rax
     jz .Lyield_return_kernel
-    mov mort64_yield_rsp(%rip), %rdx
-    mov %rdx, 0(%rax)
-    mov mort64_yield_rip(%rip), %rdx
-    mov %rdx, 8(%rax)
-    mov mort64_yield_rflags(%rip), %rdx
-    mov %rdx, 16(%rax)
-    mov mort64_yield_rbx(%rip), %rdx
-    mov %rdx, 24(%rax)
-    mov mort64_yield_rbp(%rip), %rdx
-    mov %rdx, 32(%rax)
-    mov mort64_yield_r12(%rip), %rdx
-    mov %rdx, 40(%rax)
-    mov mort64_yield_r13(%rip), %rdx
-    mov %rdx, 48(%rax)
-    mov mort64_yield_r14(%rip), %rdx
-    mov %rdx, 56(%rax)
     mov mort64_yield_r15(%rip), %rdx
-    mov %rdx, 64(%rax)
+    mov %rdx, 0(%rax)
+    mov mort64_yield_r14(%rip), %rdx
+    mov %rdx, 8(%rax)
+    mov mort64_yield_r13(%rip), %rdx
+    mov %rdx, 16(%rax)
+    mov mort64_yield_r12(%rip), %rdx
+    mov %rdx, 24(%rax)
+    movq $0, 32(%rax)               /* syscall-clobbered R11 */
+    movq $0, 40(%rax)
+    movq $0, 48(%rax)
+    movq $0, 56(%rax)
+    movq $0, 64(%rax)
+    movq $0, 72(%rax)
+    mov mort64_yield_rbp(%rip), %rdx
+    mov %rdx, 80(%rax)
+    movq $0, 88(%rax)
+    movq $0, 96(%rax)               /* syscall-clobbered RCX */
+    mov mort64_yield_rbx(%rip), %rdx
+    mov %rdx, 104(%rax)
+    movq $0, 112(%rax)              /* successful yield return */
+    mov mort64_yield_rip(%rip), %rdx
+    mov %rdx, 120(%rax)
+    mov mort64_yield_rflags(%rip), %rdx
+    or $0x200, %rdx                 /* keep timer delivery enabled */
+    mov %rdx, 128(%rax)
+    mov mort64_yield_rsp(%rip), %rdx
+    mov %rdx, 136(%rax)
 .Lyield_return_kernel:
     mov mort64_kernel_cr3(%rip), %rax
     mov %rax, %cr3
@@ -345,6 +371,8 @@ mort64_exception_common:
     push %r14
     push %r15
     mov %rsp, %r12
+    cmpq $32, 120(%r12)
+    je .Ltimer_interrupt
     mov 120(%r12), %rdi             /* vector */
     mov 128(%r12), %rsi             /* error */
     mov 136(%r12), %rdx             /* RIP */
@@ -353,6 +381,7 @@ mort64_exception_common:
     call mort_on_exception64
     cmp $1, %rax
     je .Lexception_abort_user
+.Lexception_restore:
     mov %r12, %rsp
     pop %r15
     pop %r14
@@ -371,6 +400,55 @@ mort64_exception_common:
     pop %rax
     add $16, %rsp
     iretq
+
+.Ltimer_interrupt:
+    mov 144(%r12), %rdi             /* interrupted CS */
+    and $-16, %rsp
+    call mort_on_timer_tick64
+    mov %rax, %r13                  /* zero or process context */
+    mov $0x20, %al
+    out %al, $0x20                  /* master PIC EOI */
+    test %r13, %r13
+    jz .Lexception_restore
+
+    /* Copy the complete user interrupt frame into the selected context. */
+    mov 0(%r12), %rdx
+    mov %rdx, 0(%r13)               /* R15 */
+    mov 8(%r12), %rdx
+    mov %rdx, 8(%r13)               /* R14 */
+    mov 16(%r12), %rdx
+    mov %rdx, 16(%r13)              /* R13 */
+    mov 24(%r12), %rdx
+    mov %rdx, 24(%r13)              /* R12 */
+    mov 32(%r12), %rdx
+    mov %rdx, 32(%r13)              /* R11 */
+    mov 40(%r12), %rdx
+    mov %rdx, 40(%r13)              /* R10 */
+    mov 48(%r12), %rdx
+    mov %rdx, 48(%r13)              /* R9 */
+    mov 56(%r12), %rdx
+    mov %rdx, 56(%r13)              /* R8 */
+    mov 64(%r12), %rdx
+    mov %rdx, 64(%r13)              /* RSI */
+    mov 72(%r12), %rdx
+    mov %rdx, 72(%r13)              /* RDI */
+    mov 80(%r12), %rdx
+    mov %rdx, 80(%r13)              /* RBP */
+    mov 88(%r12), %rdx
+    mov %rdx, 88(%r13)              /* RDX */
+    mov 96(%r12), %rdx
+    mov %rdx, 96(%r13)              /* RCX */
+    mov 104(%r12), %rdx
+    mov %rdx, 104(%r13)             /* RBX */
+    mov 112(%r12), %rdx
+    mov %rdx, 112(%r13)             /* RAX */
+    mov 136(%r12), %rdx
+    mov %rdx, 120(%r13)             /* RIP */
+    mov 152(%r12), %rdx
+    mov %rdx, 128(%r13)             /* RFLAGS */
+    mov 160(%r12), %rdx
+    mov %rdx, 136(%r13)             /* RSP */
+    jmp .Lexception_abort_user
 
 .Lexception_abort_user:
     /*
@@ -438,6 +516,12 @@ ISR_ERROR    29
 ISR_ERROR    30
 ISR_NO_ERROR 31
 
+.global mort64_irq0
+mort64_irq0:
+    pushq $0
+    pushq $32
+    jmp mort64_exception_common
+
 .section .rodata
 .align 8
 mort64_exception_stub_table:
@@ -485,6 +569,8 @@ mort64_kernel_rsp:
 mort64_user_rsp:
     .quad 0
 mort64_kernel_cr3:
+    .quad 0
+mort64_resume_context:
     .quad 0
 mort64_yield_rsp:
     .quad 0
