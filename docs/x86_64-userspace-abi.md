@@ -3,9 +3,9 @@
 Status: active implementation contract for the canonical Vex platform port.
 Long mode, ring-3 execution, a validating static ELF64 loader, distinct
 per-process W^X/NX mappings, PID assignment, cooperative context switching,
-user-fault containment, a demand-paged `brk` heap, `write`, `yield`, `getpid`,
-and `exit` are boot-tested. Other facilities remain planned unless explicitly
-marked otherwise.
+terminal-process frame reclamation, user-fault containment, a demand-paged
+`brk` heap, `write`, `yield`, `getpid`, and `exit` are boot-tested. Other
+facilities remain planned unless explicitly marked otherwise.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
 Mort 0.39's hosted `net_*` intrinsic detection collides with MortOS's own

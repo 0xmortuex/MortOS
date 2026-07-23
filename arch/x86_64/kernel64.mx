@@ -460,6 +460,50 @@ fn process_schedule64() -> u32 {
     return dispatched;
 }
 
+// Reclaim every user leaf and paging structure owned by a terminal process.
+// The current bootstrap has one user PT under PML4[0]/PDPT[0]/PD[8].
+fn process_reap64(slot: u32) -> bool {
+    if slot >= 8
+        || (g_process_state64[slot] != 3
+            && g_process_state64[slot] != 4) {
+        return false;
+    }
+    let root: u64 = g_process_root64[slot];
+    let user_pt: u64 = g_process_pt64[slot];
+    if root == 0 || user_pt == 0 {
+        return false;
+    }
+    let index: u32 = 0;
+    while index < 512 {
+        let entry: *u64 =
+            (user_pt + ((index as u64) * 8)) as *u64;
+        if (*entry & 1) != 0 {
+            frame_free64(*entry & 0x000FFFFFFFFFF000);
+            *entry = 0;
+        }
+        index = index + 1;
+    }
+    let pdpt: u64 = *((root + 0) as *u64) & 0x000FFFFFFFFFF000;
+    if pdpt == 0 {
+        return false;
+    }
+    let pd: u64 = *((pdpt + 0) as *u64) & 0x000FFFFFFFFFF000;
+    if pd == 0 {
+        return false;
+    }
+    frame_free64(user_pt);
+    frame_free64(pd);
+    frame_free64(pdpt);
+    frame_free64(root);
+    g_process_state64[slot] = 0;
+    g_process_pid64[slot] = 0;
+    g_process_root64[slot] = 0;
+    g_process_pt64[slot] = 0;
+    g_process_entry64[slot] = 0;
+    g_process_context_valid64[slot] = 0;
+    return true;
+}
+
 // Called by the architectural SYS_yield path. The assembly saves the actual
 // register values into the returned per-process context before returning to
 // the scheduler.
@@ -679,6 +723,7 @@ fn kmain64(multiboot_info: u64) {
             serial_write64("MORT64 ERROR: IDT breakpoint was not handled\r\n");
         }
 
+        let frames_before_processes: u32 = g_frame_free64;
         let probe_slot: u32 = process_create64(
             mort64_probe_image(), mort64_probe_image_size());
         let isolation_slot: u32 = process_create64(
@@ -731,6 +776,16 @@ fn kmain64(multiboot_info: u64) {
             } else {
                 serial_write64(
                     "MORT64 ERROR: scheduler lifecycle failed\r\n");
+            }
+            if process_reap64(probe_slot)
+                && process_reap64(isolation_slot)
+                && process_reap64(survivor_slot)
+                && g_frame_free64 == frames_before_processes {
+                serial_write64(
+                    "MORT64: process address spaces reclaimed\r\n");
+            } else {
+                serial_write64(
+                    "MORT64 ERROR: process reaper leaked frames\r\n");
             }
         } else {
             serial_write64(

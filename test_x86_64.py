@@ -67,6 +67,7 @@ def main():
         "MORT64: supervisor page fault isolation passed",
         "MORT64: scheduler continued after process fault",
         "MORT64: process lifecycle and PID ABI passed",
+        "MORT64: process address spaces reclaimed",
         "MORT64: bootstrap foundation ready",
     ]
     missing = [line for line in expected if line not in output]
