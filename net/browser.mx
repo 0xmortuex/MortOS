@@ -179,6 +179,15 @@ fn browser_pin_approve() {
     browser_draw();
 }
 
+fn browser_pin_clear() {
+    *((&g_browser_state as u64 + 7) as *u8) = 0;
+    browser_zero(browser_pin_host(), 64); browser_zero(browser_pin_hash(), 32);
+    *((&g_browser_state as u64 + (BROWSER_PIN_PORT_BASE as u64)) as *u16) = 0;
+    if browser_state_save() { browser_set_status("Saved HTTPS certificate pin cleared"); }
+    else { browser_set_status("Could not update HTTPS trust state"); }
+    browser_draw();
+}
+
 fn browser_state_reset() {
     browser_zero(&g_browser_state as u64, 1024);
     *(&g_browser_state as *u32) = BROWSER_STATE_MAGIC;
@@ -448,9 +457,12 @@ fn browser_resolve_link(link: u64, target: u64) -> bool {
     if browser_prefix(link, "http://" as u64) || browser_prefix(link, "https://" as u64)
         || browser_prefix(link, "vex://" as u64) { browser_copy(target, link, 80); return true; }
     let pos: u32 = 0;
-    pos = browser_copy(target, "http://" as u64, 80);
+    let secure: bool = browser_prefix(&g_browser_url as u64, "https://" as u64);
+    if secure { pos = browser_copy(target, "https://" as u64, 80); }
+    else { pos = browser_copy(target, "http://" as u64, 80); }
     pos = pos + browser_copy(target + (pos as u64), &g_browser_net_host as u64, 80 - pos);
-    if g_browser_net_port != 80 {
+    let default_port: u16 = 80; if secure { default_port = 443; }
+    if g_browser_net_port != default_port {
         if pos + 1 < 80 { *((target + (pos as u64)) as *u8) = 58; pos = pos + 1; }
         pos = pos + u32_to_dec(target + (pos as u64), g_browser_net_port as u32);
     }
@@ -510,7 +522,7 @@ fn browser_draw_home() {
     draw_text_abs("5 Bookmarks", 344, 382, 0xc8d0d4, 0x0b0f14);
     draw_text_abs("6 History", 504, 382, 0xc8d0d4, 0x0b0f14);
     draw_text_abs("7 Downloads", 632, 382, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("HTTP pages render as safe text. HTTPS is blocked until TLS exists.", 208, 430, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("HTTP and pinned HTTPS pages render through the safe text engine.", 208, 430, 0x7a8b93, 0x0b0f14);
     draw_text_abs("No telemetry, remote suggestions, cookies, scripts, or trackers.", 208, 454, 0x7a8b93, 0x0b0f14);
     if *((browser_last_url()) as *u8) != 0 {
         draw_text_abs("9 Restore last normal page:", 208, 494, 0x4fd1c5, 0x0b0f14);
@@ -524,7 +536,7 @@ fn browser_draw_about() {
     draw_text_abs("A native MortOS browser shell, text renderer, and HTTP client.", 208, 310, 0xffffff, 0x0b0f14);
     draw_text_abs("Navigation, local history, bookmarks, find, and downloads are", 208, 338, 0xc8d0d4, 0x0b0f14);
     draw_text_abs("implemented without libc, a heap-backed GUI toolkit, or telemetry.", 208, 362, 0xc8d0d4, 0x0b0f14);
-    draw_text_abs("Engine limits: HTTP/1.x text only; no TLS, CSS layout, JS, or media.", 208, 410, 0xffb454, 0x0b0f14);
+    draw_text_abs("Engine limits: HTTP/1.x text; no CSS layout, JS, forms, or media.", 208, 410, 0xffb454, 0x0b0f14);
     draw_text_abs("TLS foundation / SHA-256 vectors", 208, 446, 0x8fa1aa, 0x0b0f14);
     draw_text_abs(settings_yes_no(g_tls_crypto_sha256_ok), 512, 446, 0x4fd1c5, 0x0b0f14);
     draw_text_abs("HMAC-SHA256 / HKDF vectors", 208, 474, 0x8fa1aa, 0x0b0f14);
@@ -582,10 +594,13 @@ fn browser_draw_settings_page() {
     draw_text_abs("Bookmarks", 208, 374, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local only / 4 entries", 400, 374, 0xffffff, 0x0b0f14);
     draw_text_abs("Address suggestions", 208, 406, 0x8fa1aa, 0x0b0f14); draw_text_abs("Local history + bookmarks", 400, 406, 0x4fd1c5, 0x0b0f14);
     draw_text_abs("Session recovery", 208, 438, 0x8fa1aa, 0x0b0f14); draw_text_abs("Manual / normal mode only", 400, 438, 0x4fd1c5, 0x0b0f14);
-    draw_text_abs("State", 208, 470, 0x8fa1aa, 0x0b0f14);
-    if g_browser_state_saved { draw_text_abs("Saved to MortFS", 400, 470, 0xffffff, 0x0b0f14); }
-    else { draw_text_abs("Session only", 400, 470, 0xffffff, 0x0b0f14); }
-    draw_text_abs("P toggles private mode; C clears local history.", 208, 510, 0x7a8b93, 0x0b0f14);
+    draw_text_abs("HTTPS trust pin", 208, 470, 0x8fa1aa, 0x0b0f14);
+    if browser_pin_valid() { draw_text_abs(browser_pin_host() as *u8, 400, 470, 0x4fd1c5, 0x0b0f14); }
+    else { draw_text_abs("None saved", 400, 470, 0xffffff, 0x0b0f14); }
+    draw_text_abs("State", 208, 502, 0x8fa1aa, 0x0b0f14);
+    if g_browser_state_saved { draw_text_abs("Saved to MortFS", 400, 502, 0xffffff, 0x0b0f14); }
+    else { draw_text_abs("Session only", 400, 502, 0xffffff, 0x0b0f14); }
+    draw_text_abs("P: private   C: clear history   V: clear HTTPS pin", 208, 538, 0x7a8b93, 0x0b0f14);
 }
 
 fn browser_draw_links() {
@@ -882,5 +897,6 @@ fn browser_on_key(sc: u8) {
     if sc == 25 { browser_toggle_private(); return; } // P
     if sc == 37 { browser_pin_approve(); return; } // K
     if sc == 46 && g_browser_page == 5 { browser_clear_history(); return; } // C in settings
+    if sc == 47 && g_browser_page == 5 { browser_pin_clear(); return; } // V in settings
     if sc == 1 { browser_home(); return; }
 }

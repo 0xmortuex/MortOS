@@ -50,6 +50,7 @@ embed Chromium, WebKit, Gecko, libc, or a host-side proxy.
 | `Tab` | Switch to the next tab |
 | `P` | Toggle private mode |
 | `C` | Clear history while on `vex://settings` |
+| `V` | Clear the saved HTTPS certificate pin on `vex://settings` |
 
 ## Network path
 
@@ -168,6 +169,8 @@ accepts authenticated application records, safely ignores bounded NewSessionTick
 handshake messages, accumulates the response within the HTTP receive limit, and
 passes it to the same content-type-aware text renderer used by HTTP. No
 application bytes are released before record authentication and pin validation.
+Relative links from an authenticated HTTPS page retain the `https://` scheme,
+host, and non-default port rather than silently downgrading to HTTP.
 This does **not** enable HTTPS by itself:
 authentication, X.509 parsing, trust
 anchors, hostname checks, and time validation must also be complete.

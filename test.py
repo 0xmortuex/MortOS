@@ -902,7 +902,9 @@ def browser_ui():
                                     tls_requests.append(request)
                                     body = (
                                         f"<html><head><title>Vex TLS</title></head>"
-                                        f"<body>{tls_marker}</body></html>").encode("ascii")
+                                        f"<body>{tls_marker}"
+                                        f"<a href=\"/secure-next\">Secure next</a>"
+                                        f"</body></html>").encode("ascii")
                                     secure.sendall(
                                         b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n"
                                         + f"Content-Length: {len(body)}\r\n".encode("ascii")
@@ -1188,6 +1190,7 @@ def browser_ui():
                    and tls_requests[0].startswith(b"GET / HTTP/1.0\r\n")
                    and b"Host: 10.0.2.2" in tls_requests[0]
                    and tls_marker in https_text
+                   and _guest_u32(handle, links_addr) >= 1
                    and "Authenticated HTTPS" in completed_status))
         finally:
             shutdown(handle)
@@ -1205,6 +1208,14 @@ def browser_ui():
         state = _guest_bytes(handle, state_addr, 8)
         check("Browser bookmarks and certificate pin survive a full reboot",
               state[6] >= 1 and state[7] == 1)
+        send_key(handle, "8")
+        send_key(handle, "v")
+        cleared_pin = _wait_guest_u32(
+            handle, state_addr + 7, lambda value: (value & 0xff) == 0,
+            timeout_s=10)
+        check("Browser Settings can clear the persisted HTTPS trust pin",
+              (cleared_pin & 0xff) == 0
+              and not any(_guest_bytes(handle, state_addr + 960, 32)))
     finally:
         shutdown(handle)
         try:
