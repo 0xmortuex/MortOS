@@ -807,6 +807,8 @@ def browser_ui():
     site_pref_count_addr = _elf32_symbol(ELF, "m_g_browser_site_pref_count")
     reader_addr = _elf32_symbol(ELF, "m_g_browser_reader")
     site_links_addr = _elf32_symbol(ELF, "m_g_browser_site_links_allowed")
+    workspace_store_addr = _elf32_symbol(ELF, "m_g_browser_workspace_store")
+    recent_count_addr = _elf32_symbol(ELF, "m_g_browser_recent_count")
     list_sel_addr = _elf32_symbol(ELF, "m_g_browser_list_sel")
     temp_disk = os.path.join(tempfile.gettempdir(),
                              f"mort_browser_{os.getpid()}.img")
@@ -1295,6 +1297,20 @@ def browser_ui():
             send_key(handle, "t")
             tabs = _wait_guest_u32(handle, tabs_addr, lambda value: value == 2)
             check("New-tab command creates a second tab", tabs == 2)
+            send_key(handle, "x")
+            _wait_guest_u32(handle, tabs_addr, lambda value: value == 1)
+            closed_tabs = _wait_guest_u32(
+                handle, recent_count_addr, lambda value: value == 2)
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "reopen tab":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            reopened_tabs = _wait_guest_u32(
+                handle, tabs_addr, lambda value: value == 2)
+            check("Vex reopens the most recently closed tab",
+                  (closed_tabs == 2 and reopened_tabs == 2
+                   and _guest_u32(handle, recent_count_addr) == 1))
             send_key(handle, "tab")
             send_key(handle, "p")
             private = _wait_guest_u32(
@@ -1733,6 +1749,11 @@ def browser_ui():
                        handle, download_index_addr + 96, 24).split(b"\0", 1)[0]
                    == b"secure.bin"
                    and _guest_u32(handle, download_index_addr + 96 + 28) == 3))
+            send_key(handle, "t")
+            _wait_guest_u32(handle, tabs_addr, lambda value: value == 3)
+            send_key(handle, "x")
+            _wait_guest_u32(handle, tabs_addr, lambda value: value == 2)
+            _wait_guest_u32(handle, recent_count_addr, lambda value: value == 2)
             send_key(handle, "w")
             send_key(handle, "w")
             _wait_guest_u32(handle, workspace_addr, lambda value: value == 2)
@@ -1763,6 +1784,8 @@ def browser_ui():
             handle, session_count_addr, lambda value: value == 1, timeout_s=10)
         restored_site_profiles = _wait_guest_u32(
             handle, site_pref_count_addr, lambda value: value == 1, timeout_s=10)
+        restored_recent = _wait_guest_u32(
+            handle, recent_count_addr, lambda value: value == 2, timeout_s=10)
         state = _guest_bytes(handle, state_addr, 9)
         check("Browser bookmarks and imported CA roots survive a full reboot",
               state[6] >= 1 and state[7] == 0
@@ -1771,6 +1794,21 @@ def browser_ui():
               and _guest_bytes(handle, roots_addr + 4152, 32) == expected_bundle_hash)
         check("Active Vex workspace survives a full reboot",
               state[8] == 2 and restored_workspace == 2)
+        check("All workspace tab stacks and recently closed tabs survive reboot",
+              (restored_recent == 2
+               and _guest_u32(handle, workspace_counts_addr) == 2
+               and _guest_u32(handle, workspace_store_addr) == 0x31575856
+               and _guest_bytes(handle, workspace_store_addr + 8, 1)[0] == 2))
+        send_key(handle, "ctrl-k")
+        _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+        for char in "reopen tab":
+            send_key(handle, key_name(char))
+        send_key(handle, "ret")
+        reopened_after_reboot = _wait_guest_u32(
+            handle, tabs_addr, lambda value: value == 2)
+        check("Persisted recently closed tab reopens after a full reboot",
+              (reopened_after_reboot == 2
+               and _guest_u32(handle, recent_count_addr) == 1))
         check("Vex download manager survives a full reboot",
               (restored_downloads == 3
                and _guest_bytes(

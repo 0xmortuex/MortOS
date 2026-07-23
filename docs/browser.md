@@ -33,6 +33,9 @@ upstream/native boundary.
 - Four named workspace snapshots persisted in `.vex-sessions`. Each restores
   up to four tab URLs, titles, and the active tab through `session save NAME`,
   `session open NAME`, and `session delete NAME` in the command bar.
+- Automatic `.vex-workspaces` recovery for every workspace's tab URLs, titles,
+  tab count, and active tab, plus a four-item recently closed stack. Normal
+  changes sync immediately; private navigation is excluded.
 - A distraction-reduced reading layout toggled with `M`, plus eight per-origin
   profiles in `.vex-sites` that remember reading mode and whether extracted
   links are exposed. Private mode may use reading mode transiently but never
@@ -88,6 +91,7 @@ upstream/native boundary.
 | `L` | Open the extracted-links panel |
 | `D` | Save the rendered document to MortFS |
 | `T` / `X` | New tab / close tab |
+| `Ctrl+Shift+T` | Reopen the most recently closed tab |
 | `Tab` | Switch to the next tab |
 | `W` | Cycle Personal / Work / School / Dev workspaces |
 | `P` | Toggle private mode |

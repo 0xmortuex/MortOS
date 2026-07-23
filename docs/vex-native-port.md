@@ -14,8 +14,8 @@ a native Mort subsystem:
 | Canonical Vex concept | MortuexOS implementation |
 | --- | --- |
 | Vex gold diamond and browser chrome | Rasterized by the Mort framebuffer UI |
-| Vertical tabs and new-tab workflow | Four isolated bounded tab stacks in a native sidebar |
-| Workspaces | Personal, Work, School, and Dev stacks with persisted selection |
+| Vertical tabs and new-tab workflow | Four isolated bounded tab stacks plus persistent recently closed tabs |
+| Workspaces | Personal, Work, School, and Dev stacks with automatic full-stack recovery |
 | Address / command surface | `Ctrl+K` actions, local suggestions, and `vex://` / HTTP / HTTPS navigation |
 | History, bookmarks, sessions | Searchable history plus named tab snapshots in per-user MortFS records |
 | Private browsing | No persistent history, session recovery, pins, or CA imports |

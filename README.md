@@ -17,8 +17,9 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 `net` brings up the RTL8139 NIC and leases an address over DHCP; `httpd` then serves an HTML page on port 80. This is the [mortnet](https://github.com/0xmortuex/mortnet) stack — NIC driver, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP, all written from scratch in Mort — vendored into `net/` and compiled into the kernel.
 
 `F3` opens the native **Vex browser**, which uses that same stack as an HTTP
-client. It has isolated workspaces, named tab sessions, searchable persistent
-history and bookmarks, a command bar, local address suggestions, private mode,
+client. It has automatically restored isolated workspaces, named tab sessions,
+reopen-closed-tab, searchable persistent history and bookmarks, a command bar,
+local address suggestions, private mode,
 reading mode, per-origin link controls, find, link navigation, redirects,
 chunked-transfer decoding, a persistent byte-exact download manager, and
 authenticated TLS 1.3 with host pins or validated imported CA roots. See
