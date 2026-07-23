@@ -15,6 +15,9 @@ upstream/native boundary.
   header, library navigation, and new-tab surface.
 - Personal, Work, School, and Dev workspaces with isolated four-tab stacks;
   the active workspace persists in the user's `.vex-state` file.
+- A canonical `Ctrl+K` command bar that opens local Vex pages, creates tabs,
+  toggles private mode, switches workspaces, or treats non-command input as an
+  address.
 - Up to four tabs with page titles, switching, creation, and closing.
 - Clickable tabs, new-tab control, navigation buttons, address bar, history,
   bookmarks, and extracted-link rows when a mouse is attached.
@@ -48,6 +51,7 @@ upstream/native boundary.
 | Key | Action |
 | --- | --- |
 | `F3` | Open Vex from anywhere in the desktop |
+| `Ctrl+K` | Open the Vex command bar |
 | `/` | Edit the address; Up/Down chooses a local suggestion |
 | Left / Right | Back / forward |
 | Up / Down | Scroll the page or move through a list |

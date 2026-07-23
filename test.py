@@ -781,6 +781,7 @@ def browser_ui():
     downloaded_addr = _elf32_symbol(ELF, "m_g_browser_downloaded")
     links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
     tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
+    browser_mode_addr = _elf32_symbol(ELF, "m_g_browser_mode")
     workspace_addr = _elf32_symbol(ELF, "m_g_browser_workspace")
     workspace_counts_addr = _elf32_symbol(ELF, "m_g_browser_workspace_counts")
     mouse_ready_addr = _elf32_symbol(ELF, "m_g_usb_mouse_ready")
@@ -1116,6 +1117,25 @@ def browser_ui():
                 send_key(handle, "w")
             _wait_guest_u32(handle, workspace_addr, lambda value: value == 0)
             _wait_guest_u32(handle, tabs_addr, lambda value: value == 1)
+
+            send_key(handle, "ctrl-k")
+            command_mode = _wait_guest_u32(
+                handle, browser_mode_addr, lambda value: value == 3)
+            check("Ctrl+K opens the canonical Vex command bar", command_mode == 3)
+            for char in "workspace dev":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            command_workspace = _wait_guest_u32(
+                handle, workspace_addr, lambda value: value == 3)
+            check("Vex command bar executes workspace actions",
+                  command_workspace == 3
+                  and _guest_u32(handle, browser_mode_addr) == 0)
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "workspace personal":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            _wait_guest_u32(handle, workspace_addr, lambda value: value == 0)
 
             send_key(handle, "slash")
             address = f"http://10.0.2.2:{port}/"

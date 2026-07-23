@@ -48,6 +48,7 @@ let g_browser_secure_page: bool = false;
 let g_browser_loading: bool = false;
 let g_browser_ext: bool = false;
 let g_browser_shift: bool = false;
+let g_browser_ctrl: bool = false;
 let g_browser_replace_address: bool = false;
 let g_browser_loaded_dir: u32 = 256;
 let g_browser_state_saved: bool = false;
@@ -1126,6 +1127,29 @@ fn browser_draw_suggestions() {
     }
 }
 
+fn browser_draw_command() {
+    if g_browser_mode != 3 { return; }
+    fill_round_rect(294, 170, 552, 330, 14, 0x030303);
+    outline_round_rect(286, 162, 552, 330, 14, 0x6b5638, 0x17130f);
+    browser_draw_logo(314, 190, 12);
+    draw_text_abs("Vex Command Bar", 338, 180, 0xf4eee4, 0x17130f);
+    draw_text_abs("Ctrl+K", 754, 180, 0x887765, 0x17130f);
+    outline_round_rect(306, 214, 512, 40, 10, 0x6b5638, 0x0b0f14);
+    draw_text_abs(">", 322, 226, 0xd4a574, 0x0b0f14);
+    if g_browser_input_len == 0 {
+        draw_text_abs("Type a command or address", 346, 226, 0x887765, 0x0b0f14);
+    } else {
+        draw_text_abs(&g_browser_input as *u8, 346, 226, 0xffffff, 0x0b0f14);
+    }
+    draw_text_abs("QUICK COMMANDS", 306, 278, 0x887765, 0x17130f);
+    draw_text_abs("home              new tab", 322, 306, 0xe7daca, 0x17130f);
+    draw_text_abs("bookmarks         history", 322, 334, 0xe7daca, 0x17130f);
+    draw_text_abs("downloads         settings", 322, 362, 0xe7daca, 0x17130f);
+    draw_text_abs("private           workspace work", 322, 390, 0xe7daca, 0x17130f);
+    draw_text_abs("workspace school  workspace dev", 322, 418, 0xe7daca, 0x17130f);
+    draw_text_abs("Enter runs   Esc closes", 322, 462, 0x887765, 0x17130f);
+}
+
 fn browser_draw() {
     if !g_gfx { return; }
     if g_browser_loaded_dir != g_cwd { browser_state_load(); browser_roots_load(); }
@@ -1151,17 +1175,77 @@ fn browser_draw() {
     else if g_browser_page == 6 { browser_draw_network(); }
     else { browser_draw_error(); }
     browser_draw_suggestions();
+    browser_draw_command();
     fill_rect(196, 620, 720, 22, 0x17130f);
     if g_browser_mode == 2 {
         draw_text_abs("Find: ", 204, 624, 0xd4a574, 0x17130f); draw_text_abs(&g_browser_find as *u8, 252, 624, 0xffffff, 0x17130f);
     } else { draw_text_abs(&g_browser_status as *u8, 204, 624, 0xa89882, 0x17130f); }
-    draw_text_abs("/:address arrows:nav B:mark F:find D:save T:new Tab:tab W:workspace", 196, 648, 0x685b4d, 0x0b0f14);
+    draw_text_abs("Ctrl+K:command /:address B:mark F:find D:save T:new Tab:tab W:workspace", 196, 648, 0x685b4d, 0x0b0f14);
 }
 
 fn browser_begin_address() {
     browser_zero(&g_browser_input as u64, 80);
     g_browser_input_len = browser_copy(&g_browser_input as u64, &g_browser_url as u64, 80);
     g_browser_mode = 1; g_browser_replace_address = true; browser_suggestions_update(); browser_draw();
+}
+
+fn browser_command_open() {
+    browser_zero(&g_browser_input as u64, 80);
+    g_browser_input_len = 0;
+    g_browser_replace_address = false;
+    g_browser_mode = 3;
+    browser_draw();
+}
+
+fn browser_command_execute() {
+    if g_browser_input_len == 0 { g_browser_mode = 0; browser_draw(); return; }
+    let cmd: u64 = &g_browser_input as u64;
+    let explicit: bool = false;
+    if *(cmd as *u8) == 62 {
+        explicit = true; cmd = cmd + 1;
+        if *(cmd as *u8) == 32 { cmd = cmd + 1; }
+    }
+    g_browser_mode = 0;
+    if browser_streq(cmd, "home" as u64) { browser_home(); return; }
+    if browser_streq(cmd, "about" as u64) { browser_load("vex://about" as u64, true); return; }
+    if browser_streq(cmd, "bookmarks" as u64) { browser_load("vex://bookmarks" as u64, true); return; }
+    if browser_streq(cmd, "history" as u64) { browser_load("vex://history" as u64, true); return; }
+    if browser_streq(cmd, "downloads" as u64) { browser_load("vex://downloads" as u64, true); return; }
+    if browser_streq(cmd, "settings" as u64) { browser_load("vex://settings" as u64, true); return; }
+    if browser_streq(cmd, "network" as u64) { browser_load("vex://network" as u64, true); return; }
+    if browser_streq(cmd, "new tab" as u64) { browser_new_tab(); return; }
+    if browser_streq(cmd, "private" as u64) { browser_toggle_private(); return; }
+    if browser_streq(cmd, "workspace personal" as u64) { browser_workspace_activate(0); return; }
+    if browser_streq(cmd, "workspace work" as u64) { browser_workspace_activate(1); return; }
+    if browser_streq(cmd, "workspace school" as u64) { browser_workspace_activate(2); return; }
+    if browser_streq(cmd, "workspace dev" as u64) { browser_workspace_activate(3); return; }
+    if explicit {
+        browser_set_status("Unknown Vex command"); browser_draw(); return;
+    }
+    browser_submit_address();
+}
+
+fn browser_command_key(sc: u8) {
+    if sc == 42 || sc == 54 { g_browser_shift = true; return; }
+    if sc == 170 || sc == 182 { g_browser_shift = false; return; }
+    if sc == 1 { g_browser_mode = 0; browser_draw(); return; }
+    if sc == 14 {
+        if g_browser_input_len > 0 {
+            g_browser_input_len = g_browser_input_len - 1;
+            g_browser_input[g_browser_input_len] = 0;
+            browser_draw();
+        }
+        return;
+    }
+    if sc == 28 { browser_command_execute(); return; }
+    if sc >= 128 { return; }
+    let ch: u8 = scancode_to_ascii(sc, g_browser_shift);
+    if ch >= 32 && ch < 127 && g_browser_input_len < 62 {
+        g_browser_input[g_browser_input_len] = ch;
+        g_browser_input_len = g_browser_input_len + 1;
+        g_browser_input[g_browser_input_len] = 0;
+        browser_draw();
+    }
 }
 
 fn browser_submit_address() {
@@ -1316,6 +1400,7 @@ fn browser_click(x: u32, y: u32) {
         if y >= 498 && y < 526 { browser_load("vex://settings" as u64, true); return; }
         if y >= 526 && y < 554 { browser_load("vex://network" as u64, true); return; }
     }
+    if x >= 196 && x < 760 && y >= 116 && y < 150 { browser_command_open(); return; }
     if x >= 780 && x < 932 && y >= 116 && y < 150 { browser_new_tab(); return; }
     if y >= 192 && y < 212 {
         for tab: u32 in 0..g_browser_tab_count {
@@ -1368,6 +1453,10 @@ fn browser_find_key(sc: u8) {
 }
 
 fn browser_on_key(sc: u8) {
+    if sc == 29 { g_browser_ctrl = true; return; }
+    if sc == 157 { g_browser_ctrl = false; return; }
+    if g_browser_ctrl && sc == 37 { browser_command_open(); return; } // Ctrl+K
+    if g_browser_mode == 3 { browser_command_key(sc); return; }
     if g_browser_links_open { browser_links_key(sc); return; }
     if g_browser_mode == 1 { browser_edit_key(sc); return; }
     if g_browser_mode == 2 { browser_find_key(sc); return; }

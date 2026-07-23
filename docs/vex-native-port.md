@@ -16,7 +16,7 @@ a native Mort subsystem:
 | Vex gold diamond and browser chrome | Rasterized by the Mort framebuffer UI |
 | Vertical tabs and new-tab workflow | Four isolated bounded tab stacks in a native sidebar |
 | Workspaces | Personal, Work, School, and Dev stacks with persisted selection |
-| Address / command surface | Local suggestions plus `vex://`, HTTP, and HTTPS navigation |
+| Address / command surface | `Ctrl+K` actions, local suggestions, and `vex://` / HTTP / HTTPS navigation |
 | History, bookmarks, sessions | Per-user MortFS records |
 | Private browsing | No persistent history, session recovery, pins, or CA imports |
 | Downloads manager | Explicit exact-byte MortFS saves with bounded staging |
