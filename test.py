@@ -781,6 +781,9 @@ def browser_ui():
     page_addr = _elf32_symbol(ELF, "m_g_browser_page")
     links_addr = _elf32_symbol(ELF, "m_g_browser_link_count")
     tabs_addr = _elf32_symbol(ELF, "m_g_browser_tab_count")
+    active_tab_addr = _elf32_symbol(ELF, "m_g_browser_active_tab")
+    tab_pinned_addr = _elf32_symbol(ELF, "m_g_browser_tab_pinned")
+    tab_groups_addr = _elf32_symbol(ELF, "m_g_browser_tab_groups")
     browser_mode_addr = _elf32_symbol(ELF, "m_g_browser_mode")
     workspace_addr = _elf32_symbol(ELF, "m_g_browser_workspace")
     workspace_counts_addr = _elf32_symbol(ELF, "m_g_browser_workspace_counts")
@@ -1058,7 +1061,12 @@ def browser_ui():
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind(("127.0.0.1", tls_port))
                 listener.listen(4)
-                listener.settimeout(180)
+                # The pre-TLS browser workflow intentionally exercises
+                # workspaces, sessions, tab organization, the Library, and
+                # hostile HTTP framing first. Keep the local probe alive for
+                # slower debug/QEMU hosts rather than turning test coverage
+                # growth into a false TLS handshake failure.
+                listener.settimeout(480)
                 tls_ready.set()
                 for _attempt in range(4):
                     try:
@@ -1195,6 +1203,52 @@ def browser_ui():
                    and _guest_bytes(
                        handle, sessions_addr + 16, 24).split(b"\0", 1)[0]
                    == b"focus"))
+
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "workspace dev":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            _wait_guest_u32(handle, workspace_addr, lambda value: value == 3)
+            for command in ("pin tab", "group research", "duplicate tab",
+                            "move tab left"):
+                send_key(handle, "ctrl-k")
+                _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+                for char in command:
+                    send_key(handle, key_name(char))
+                send_key(handle, "ret")
+            organized_tabs = _wait_guest_u32(
+                handle, tabs_addr, lambda value: value == 2)
+            check("Vex tab pins, groups, duplication, and ordering work together",
+                  (organized_tabs == 2
+                   and _guest_bytes(handle, tab_pinned_addr + 12, 2) == b"\0\1"
+                   and _guest_bytes(handle, tab_groups_addr + 12, 2) == b"\2\2"
+                   and _guest_u32(handle, active_tab_addr) == 0))
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "workspace personal":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            _wait_guest_u32(handle, workspace_addr, lambda value: value == 0)
+            send_key(handle, "ctrl-t")
+            shortcut_tabs = _wait_guest_u32(
+                handle, tabs_addr, lambda value: value == 2)
+            send_key(handle, "ctrl-1")
+            shortcut_active = _wait_guest_u32(
+                handle, active_tab_addr, lambda value: value == 0)
+            send_key(handle, "ctrl-l")
+            shortcut_address = _wait_guest_u32(
+                handle, browser_mode_addr, lambda value: value == 1)
+            check("Canonical Ctrl+T, Ctrl+1, and Ctrl+L shortcuts are native",
+                  shortcut_tabs == 2 and shortcut_active == 0
+                  and shortcut_address == 1)
+            send_key(handle, "esc")
+            send_key(handle, "ctrl-k")
+            _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
+            for char in "session open focus":
+                send_key(handle, key_name(char))
+            send_key(handle, "ret")
+            _wait_guest_u32(handle, tabs_addr, lambda value: value == 1)
 
             send_key(handle, "slash")
             address = f"http://10.0.2.2:{port}/"
@@ -1849,6 +1903,12 @@ def browser_ui():
                and _guest_u32(handle, workspace_counts_addr) == 2
                and _guest_u32(handle, workspace_store_addr) == 0x31575856
                and _guest_bytes(handle, workspace_store_addr + 8, 1)[0] == 2))
+        check("Tab pin and group organization survives a full reboot",
+              (_guest_u32(handle, workspace_counts_addr + 12) == 2
+               and _guest_bytes(handle, tab_pinned_addr + 12, 2) == b"\0\1"
+               and _guest_bytes(handle, tab_groups_addr + 12, 2) == b"\2\2"
+               and _guest_bytes(handle, workspace_store_addr + 2108, 2) == b"\0\1"
+               and _guest_bytes(handle, workspace_store_addr + 2124, 2) == b"\2\2"))
         send_key(handle, "ctrl-k")
         _wait_guest_u32(handle, browser_mode_addr, lambda value: value == 3)
         for char in "reopen tab":

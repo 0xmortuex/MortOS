@@ -18,7 +18,8 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 
 `F3` opens the native **Vex browser**, which uses that same stack as an HTTP
 client. It has automatically restored isolated workspaces, named tab sessions,
-reopen-closed-tab, searchable persistent history and bookmarks, a command bar,
+reopen-closed-tab, persistent tab pins and groups, duplication and reordering,
+searchable persistent history and bookmarks, a command bar,
 local address suggestions, private mode,
 reading mode, per-origin link controls, find, link navigation, redirects,
 chunked-transfer decoding, persistent Notes and Read Later, a byte-exact

@@ -36,6 +36,10 @@ upstream/native boundary.
 - Automatic `.vex-workspaces` recovery for every workspace's tab URLs, titles,
   tab count, and active tab, plus a four-item recently closed stack. Normal
   changes sync immediately; private navigation is excluded.
+- Persistent organization metadata for every live workspace tab: pin/unpin,
+  three bounded color groups (`Focus`, `Research`, and `Later`), duplication,
+  and left/right reordering. Pinned tabs must be unpinned before closing, and a
+  duplicate inherits its source group without inheriting its pin.
 - A native Vex Library persisted in `.vex-library`: up to eight short
   Markdown-style notes and eight HTTP/HTTPS Read Later entries. `note TEXT`
   saves a note, `read later` queues the active page, and queued pages reopen
@@ -82,6 +86,12 @@ upstream/native boundary.
 | --- | --- |
 | `F3` | Open Vex from anywhere in the desktop |
 | `Ctrl+K` | Open the Vex command bar |
+| `Ctrl+T` / `Ctrl+W` | Open a tab / close the active unpinned tab |
+| `Ctrl+Tab` / `Ctrl+1`…`Ctrl+4` | Cycle tabs / select a tab directly |
+| `Ctrl+L` / `Ctrl+R` | Focus the address / reload |
+| `Ctrl+F` / `Ctrl+H` | Find / open History |
+| `Ctrl+D` | Bookmark the active page |
+| `Ctrl+Shift+N` | Open the Notes and Read Later Library |
 | `S` | Open Saved Sessions |
 | `Q` | Open the Notes and Read Later Library |
 | `/` | Edit the address; Up/Down chooses a local suggestion |
@@ -110,7 +120,9 @@ upstream/native boundary.
 | `E` | Clear Notes and Read Later on `vex://settings` |
 
 The command bar also accepts `library`, `note TEXT`, `read later`, and
-`clear library`.
+`clear library`. Tab organization is available through `pin tab`, `unpin tab`,
+`duplicate tab`, `move tab left`, `move tab right`, and `group focus`,
+`group research`, `group later`, or `group none`.
 
 ## Network path
 
