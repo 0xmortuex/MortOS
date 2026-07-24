@@ -146,6 +146,14 @@ mortos_pipe2:
     ret
 .size mortos_pipe2, . - mortos_pipe2
 
+.global mortos_futex
+.type mortos_futex, @function
+mortos_futex:
+    mov $202, %rax                 /* SYS_futex: WAIT/WAKE subset */
+    syscall
+    ret
+.size mortos_futex, . - mortos_futex
+
 .global mortos_thread_create
 .type mortos_thread_create, @function
 mortos_thread_create:

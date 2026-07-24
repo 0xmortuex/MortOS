@@ -26,6 +26,8 @@ extern "C" unsigned long mortos_close(unsigned long);
 extern "C" unsigned long mortos_pipe2(unsigned int *, unsigned long);
 extern "C" unsigned long mortos_fd_write(
     unsigned long, const void *, unsigned long);
+extern "C" unsigned long mortos_futex(
+    unsigned int *, unsigned long, unsigned int);
 
 static unsigned long constructor_value;
 
@@ -46,8 +48,14 @@ extern "C" unsigned long thread_worker(void *opaque) {
     if (mortos_getpid() != 5 || mortos_gettid() == 5) {
         return 30;
     }
-    auto *ready = static_cast<unsigned long *>(opaque);
-    __atomic_store_n(ready, 1UL, __ATOMIC_RELEASE);
+    if (mortos_yield() != 0) {
+        return 30;
+    }
+    auto *ready = static_cast<unsigned int *>(opaque);
+    __atomic_store_n(ready, 1U, __ATOMIC_RELEASE);
+    if (mortos_futex(ready, 1, 1) != 1) {
+        return 30;
+    }
     return 31;
 }
 
@@ -103,7 +111,7 @@ extern "C" int main() {
     if (thread_stack >= ~4095UL) {
         return 9;
     }
-    unsigned long thread_ready = 0;
+    unsigned int thread_ready = 0;
     unsigned long thread_id = mortos_thread_create(
         reinterpret_cast<unsigned long>(&thread_worker),
         thread_stack + 8192,
@@ -111,10 +119,12 @@ extern "C" int main() {
     if (thread_id <= 5) {
         return 9;
     }
-    while (__atomic_load_n(&thread_ready, __ATOMIC_ACQUIRE) == 0) {
-        if (mortos_yield() != 0) {
-            return 9;
-        }
+    unsigned long futex_result = mortos_futex(&thread_ready, 0, 0);
+    if (futex_result != 0 && futex_result != ~10UL) {
+        return 9;
+    }
+    if (__atomic_load_n(&thread_ready, __ATOMIC_ACQUIRE) != 1) {
+        return 9;
     }
     if (mortos_fs_load(8) != 0x544C5356414C5545UL
         || mortos_arch_prctl(0x1003, tls + 16) != 0

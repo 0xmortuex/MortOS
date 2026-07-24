@@ -21,7 +21,7 @@ let g_user_pointer_rejected64: bool = false;
 let g_user_fault_seen64: bool = false;
 let g_user_fault_vector64: u64 = 0;
 let g_user_fault_error64: u64 = 0;
-// Process states: 0 FREE, 1 READY, 2 RUNNING, 3 EXITED, 4 FAULTED.
+// Process states: 0 FREE, 1 READY, 2 RUNNING, 3 EXITED, 4 FAULTED, 5 WAITING.
 let g_process_state64: [u8; 8] = [0; 8];
 let g_process_pid64: [u64; 8] = [0; 8];
 let g_process_tid64: [u64; 8] = [0; 8];
@@ -46,6 +46,8 @@ let g_process_tls_seen64: [u8; 8] = [0; 8];
 let g_process_thread_seen64: [u8; 8] = [0; 8];
 let g_process_handle_owner64: [u32; 8] = [0; 8];
 let g_process_pipe_seen64: [u8; 8] = [0; 8];
+let g_process_futex_seen64: [u8; 8] = [0; 8];
+let g_process_wait_address64: [u64; 8] = [0; 8];
 // Eight descriptors per owning process. Types: 0 free, 2 pipe read, 3 write.
 let g_handle_type64: [u8; 64] = [0; 64];
 let g_handle_object64: [u32; 64] = [0; 64];
@@ -478,6 +480,8 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_thread_seen64[slot] = 0;
             g_process_handle_owner64[slot] = slot;
             g_process_pipe_seen64[slot] = 0;
+            g_process_futex_seen64[slot] = 0;
+            g_process_wait_address64[slot] = 0;
             let descriptor: u32 = 0;
             while descriptor < 8 {
                 g_handle_type64[(slot * 8) + descriptor] = 0;
@@ -595,6 +599,7 @@ fn thread_create64(
             g_process_exit64[slot] = 0;
             g_process_fault64[slot] = 0;
             g_process_preemptions64[slot] = 0;
+            g_process_wait_address64[slot] = 0;
             g_process_thread_seen64[parent] = 1;
             g_next_pid64 = g_next_pid64 + 1;
             return g_process_tid64[slot];
@@ -635,6 +640,7 @@ fn process_reap64(slot: u32) -> bool {
             g_process_pt64[sibling] = 0;
             g_process_mmap_pt64[sibling] = 0;
             g_process_context_valid64[sibling] = 0;
+            g_process_wait_address64[sibling] = 0;
             g_process_handle_owner64[sibling] = sibling;
         }
         sibling = sibling + 1;
@@ -690,6 +696,7 @@ fn process_reap64(slot: u32) -> bool {
     g_process_mmap_pt64[slot] = 0;
     g_process_entry64[slot] = 0;
     g_process_fs_base64[slot] = 0;
+    g_process_wait_address64[slot] = 0;
     g_process_handle_owner64[slot] = slot;
     g_process_context_valid64[slot] = 0;
     return true;
@@ -706,6 +713,50 @@ fn on_user_yield64() -> u64 {
     g_process_context_valid64[g_current_process64] = 1;
     return (&g_process_context64 as u64)
         + ((g_current_process64 as u64) * 144);
+}
+
+fn on_futex_wait64(address: u64, expected: u64) -> u64 {
+    if g_current_process64 >= 8 || (address & 3) != 0 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if !user_range_readable64(address, 4) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    if (*(address as *u32)) != (expected as u32) {
+        return ~(10 as u64);                    // -EAGAIN
+    }
+    let slot: u32 = g_current_process64;
+    g_process_state64[slot] = 5;
+    g_process_wait_address64[slot] = address;
+    g_process_context_valid64[slot] = 1;
+    let owner: u32 = g_process_handle_owner64[slot];
+    g_process_futex_seen64[owner] = 1;
+    return (&g_process_context64 as u64)
+        + ((slot as u64) * 144);
+}
+
+fn futex_wake64(address: u64, count: u64) -> u64 {
+    if g_current_process64 >= 8 || (address & 3) != 0
+        || count > 8 {
+        return ~(21 as u64);
+    }
+    if !user_range_readable64(address, 4) {
+        return ~(13 as u64);
+    }
+    let root: u64 = g_process_root64[g_current_process64];
+    let woken: u64 = 0;
+    let slot: u32 = 0;
+    while slot < 8 && woken < count {
+        if g_process_state64[slot] == 5
+            && g_process_root64[slot] == root
+            && g_process_wait_address64[slot] == address {
+            g_process_wait_address64[slot] = 0;
+            g_process_state64[slot] = 1;
+            woken = woken + 1;
+        }
+        slot = slot + 1;
+    }
+    return woken;
 }
 
 // IRQ0 policy. Returning a context pointer asks the assembly interrupt path to
@@ -1277,6 +1328,12 @@ fn syscall_dispatch64(
     if number == 293 {
         return process_pipe2_64(argument0, argument1);
     }
+    if number == 202 {
+        if argument1 == 1 {                     // FUTEX_WAKE
+            return futex_wake64(argument0, argument2);
+        }
+        return ~(21 as u64);
+    }
     if number == 1 {
         if argument0 != 1 {
             return process_pipe_write64(
@@ -1500,7 +1557,10 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_tls_seen64[cxx_slot] != 0
                 && g_process_thread_seen64[cxx_slot] != 0
                 && g_process_pipe_seen64[cxx_slot] != 0
+                && g_process_futex_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: futex wait and wake passed\r\n");
                 serial_write64(
                     "MORT64: descriptor pipe IPC passed\r\n");
                 serial_write64(

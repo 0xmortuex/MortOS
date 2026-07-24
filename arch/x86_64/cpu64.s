@@ -234,6 +234,11 @@ mort64_set_user_fs:
 
 .type mort64_syscall_entry, @function
 mort64_syscall_entry:
+    cmp $202, %rax                  /* FUTEX_WAIT needs a scheduler return */
+    jne .Lnot_futex_wait
+    cmp $0, %rsi
+    je .Lsyscall_futex_wait
+.Lnot_futex_wait:
     cmp $24, %rax                   /* cooperative process yield */
     je .Lsyscall_yield
     cmp $60, %rax                   /* process exit */
@@ -309,6 +314,7 @@ mort64_syscall_entry:
     add $8, %rsp
     test %rax, %rax
     jz .Lyield_return_kernel
+.Lsave_blocked_context:
     mov mort64_yield_r15(%rip), %rdx
     mov %rdx, 0(%rax)
     mov mort64_yield_r14(%rip), %rdx
@@ -347,6 +353,46 @@ mort64_syscall_entry:
     pop %rbp
     pop %rbx
     ret
+
+.Lsyscall_futex_wait:
+    /*
+     * Capture the syscall boundary exactly like yield, but let Mort policy
+     * atomically validate the futex word and move this task to WAITING.
+     */
+    mov %rdi, mort64_futex_address(%rip)
+    mov %rdx, mort64_futex_expected(%rip)
+    mov %rsp, mort64_yield_rsp(%rip)
+    mov %rcx, mort64_yield_rip(%rip)
+    mov %r11, mort64_yield_rflags(%rip)
+    mov %rbx, mort64_yield_rbx(%rip)
+    mov %rbp, mort64_yield_rbp(%rip)
+    mov %r12, mort64_yield_r12(%rip)
+    mov %r13, mort64_yield_r13(%rip)
+    mov %r14, mort64_yield_r14(%rip)
+    mov %r15, mort64_yield_r15(%rip)
+    mov mort64_kernel_rsp(%rip), %rsp
+    mov mort64_futex_address(%rip), %rdi
+    mov mort64_futex_expected(%rip), %rsi
+    cld
+    sub $8, %rsp
+    call mort_on_futex_wait64
+    add $8, %rsp
+    test %rax, %rax
+    js .Lfutex_wait_error
+    jmp .Lsave_blocked_context
+
+.Lfutex_wait_error:
+    /* The word changed or the pointer was invalid; stay in the same task. */
+    mov mort64_yield_rbx(%rip), %rbx
+    mov mort64_yield_rbp(%rip), %rbp
+    mov mort64_yield_r12(%rip), %r12
+    mov mort64_yield_r13(%rip), %r13
+    mov mort64_yield_r14(%rip), %r14
+    mov mort64_yield_r15(%rip), %r15
+    mov mort64_yield_rip(%rip), %rcx
+    mov mort64_yield_rflags(%rip), %r11
+    mov mort64_yield_rsp(%rip), %rsp
+    sysretq
 
 .Lsyscall_exit:
     /* rdi already contains the userspace exit status. */
@@ -607,4 +653,8 @@ mort64_yield_r13:
 mort64_yield_r14:
     .quad 0
 mort64_yield_r15:
+    .quad 0
+mort64_futex_address:
+    .quad 0
+mort64_futex_expected:
     .quad 0
