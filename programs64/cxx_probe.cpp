@@ -28,6 +28,8 @@ extern "C" unsigned long mortos_fd_write(
     unsigned long, const void *, unsigned long);
 extern "C" unsigned long mortos_futex(
     unsigned int *, unsigned long, unsigned int);
+extern "C" unsigned long mortos_poll(
+    void *, unsigned long, unsigned long);
 
 static unsigned long constructor_value;
 
@@ -42,6 +44,12 @@ static StartupProbe startup_probe;
 struct Widget {
     explicit Widget(unsigned long initial) : value(initial) {}
     unsigned long value;
+};
+
+struct PollDescriptor {
+    int descriptor;
+    unsigned short events;
+    unsigned short returned;
 };
 
 extern "C" unsigned long thread_worker(void *opaque) {
@@ -145,7 +153,16 @@ extern "C" int main() {
     if (mortos_pipe2(pipe_descriptors, 0) != 0
         || mortos_fd_write(
             pipe_descriptors[1], pipe_message,
-            sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1
+            sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1) {
+        return 11;
+    }
+    PollDescriptor readiness[2] = {
+        {static_cast<int>(pipe_descriptors[0]), 1, 0},
+        {static_cast<int>(pipe_descriptors[1]), 4, 0},
+    };
+    if (mortos_poll(readiness, 2, 0) != 2
+        || (readiness[0].returned & 1) == 0
+        || (readiness[1].returned & 4) == 0
         || mortos_read(
             pipe_descriptors[0], pipe_result,
             sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1) {

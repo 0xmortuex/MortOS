@@ -154,6 +154,14 @@ mortos_futex:
     ret
 .size mortos_futex, . - mortos_futex
 
+.global mortos_poll
+.type mortos_poll, @function
+mortos_poll:
+    mov $7, %rax                   /* SYS_poll */
+    syscall
+    ret
+.size mortos_poll, . - mortos_poll
+
 .global mortos_thread_create
 .type mortos_thread_create, @function
 mortos_thread_create:

@@ -47,6 +47,7 @@ let g_process_thread_seen64: [u8; 8] = [0; 8];
 let g_process_handle_owner64: [u32; 8] = [0; 8];
 let g_process_pipe_seen64: [u8; 8] = [0; 8];
 let g_process_futex_seen64: [u8; 8] = [0; 8];
+let g_process_poll_seen64: [u8; 8] = [0; 8];
 let g_process_wait_address64: [u64; 8] = [0; 8];
 // Eight descriptors per owning process. Types: 0 free, 2 pipe read, 3 write.
 let g_handle_type64: [u8; 64] = [0; 64];
@@ -481,6 +482,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_handle_owner64[slot] = slot;
             g_process_pipe_seen64[slot] = 0;
             g_process_futex_seen64[slot] = 0;
+            g_process_poll_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             let descriptor: u32 = 0;
             while descriptor < 8 {
@@ -1299,6 +1301,66 @@ fn process_pipe_read64(
     return count;
 }
 
+fn process_poll64(pollfds: u64, count: u64, timeout: u64) -> u64 {
+    if g_current_process64 >= 8 || count > 8 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if timeout != 0 {
+        return ~(37 as u64);                    // -ENOSYS
+    }
+    if count != 0
+        && !user_range_writable64(pollfds, count * 8) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let ready: u64 = 0;
+    let item: u64 = 0;
+    while item < count {
+        let record: u64 = pollfds + (item * 8);
+        let descriptor: i32 = *(record as *i32);
+        let events: u16 = *((record + 4) as *u16);
+        let returned: u16 = 0;
+        if descriptor == 1 {
+            if (events & 4) != 0 {
+                returned = returned | 4;        // POLLOUT
+            }
+        } else if descriptor < 0 || descriptor >= 8 {
+            returned = returned | 32;           // POLLNVAL
+        } else {
+            let handle: u32 = (owner * 8) + (descriptor as u32);
+            let kind: u8 = g_handle_type64[handle];
+            if kind == 0 {
+                returned = returned | 32;
+            } else {
+                let pipe: u32 = g_handle_object64[handle];
+                if kind == 2 {
+                    if (events & 1) != 0
+                        && g_pipe_count64[pipe] > 0 {
+                        returned = returned | 1;// POLLIN
+                    }
+                    if g_pipe_writers64[pipe] == 0 {
+                        returned = returned | 16;// POLLHUP
+                    }
+                } else if kind == 3 {
+                    if g_pipe_readers64[pipe] == 0 {
+                        returned = returned | 8;// POLLERR
+                    } else if (events & 4) != 0
+                        && g_pipe_count64[pipe] < 256 {
+                        returned = returned | 4;// POLLOUT
+                    }
+                }
+            }
+        }
+        *((record + 6) as *u16) = returned;
+        if returned != 0 {
+            ready = ready + 1;
+        }
+        item = item + 1;
+    }
+    g_process_poll_seen64[owner] = 1;
+    return ready;
+}
+
 fn syscall_dispatch64(
     number: u64,
     argument0: u64,
@@ -1324,6 +1386,9 @@ fn syscall_dispatch64(
     }
     if number == 3 {
         return process_close64(argument0);
+    }
+    if number == 7 {
+        return process_poll64(argument0, argument1, argument2);
     }
     if number == 293 {
         return process_pipe2_64(argument0, argument1);
@@ -1558,7 +1623,10 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_thread_seen64[cxx_slot] != 0
                 && g_process_pipe_seen64[cxx_slot] != 0
                 && g_process_futex_seen64[cxx_slot] != 0
+                && g_process_poll_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: poll readiness ABI passed\r\n");
                 serial_write64(
                     "MORT64: futex wait and wake passed\r\n");
                 serial_write64(

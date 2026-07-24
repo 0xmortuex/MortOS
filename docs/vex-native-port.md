@@ -51,7 +51,7 @@ This is only the architectural bootstrap. It does not yet run Vex.
 | --- | --- | --- |
 | 64-bit architecture | Long-mode boot, page tables, 64-bit Mort entry | Boot-tested foundation |
 | Kernel isolation | GDT/TSS/IDT, NX, ring 3, supervisor/user page protection, user-fault containment | Boot-tested across distinct process roots |
-| Process runtime | Validating ELF64 ET_EXEC loader, W^X PT_LOAD mappings, demand-paged heap, anonymous `mmap`/`mprotect`/`munmap` with executed RW→RX JIT transition, shared-address-space tasks with PID/TID identity, futex wait/wake, descriptor tables and bounded pipe IPC, cooperative and PIT-preemptive full contexts, terminal address-space reclamation | Boot-tested foundation; transferable handles and richer IPC next |
+| Process runtime | Validating ELF64 ET_EXEC loader, W^X PT_LOAD mappings, demand-paged heap, anonymous `mmap`/`mprotect`/`munmap` with executed RW→RX JIT transition, shared-address-space tasks with PID/TID identity, futex wait/wake, descriptor tables, bounded pipe IPC and nonblocking `poll`, cooperative and PIT-preemptive full contexts, terminal address-space reclamation | Boot-tested foundation; blocking poll, transferable handles and richer IPC next |
 | MortOS ABI | Stable syscalls for files, memory, time, networking, graphics, input, audio, and entropy | Specified in `x86_64-userspace-abi.md` |
 | C/C++ platform | Freestanding startup/constructors, C allocation, C++ `new`/`delete`, atomics, FS-base TLS, kernel thread primitive, then LLVM target, full libc/libc++, pthread-compatible layer, build tools | Bootstrap runtime boot-tested; full platform in progress |
 | Node/V8 | V8 JIT permissions, libuv event loop, Node filesystem/network/process APIs | Planned |

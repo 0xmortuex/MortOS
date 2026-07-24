@@ -64,6 +64,7 @@ The initial numeric assignments are:
 | 0 | `read(fd, buffer, length)` | Implemented for bounded pipe reads with validated output ranges |
 | 1 | `write(fd, buffer, length)` | Implemented for stdout and bounded pipe writes with validated input ranges |
 | 3 | `close(fd)` | Implemented for pipe descriptors with endpoint reference cleanup |
+| 7 | `poll(pollfds, count, timeout)` | Implements validated timeout-0 readiness for stdout and pipe `POLLIN`/`POLLOUT`/error/hangup states |
 | 9 | `mmap(address, length, protection, flags, fd, offset)` | Implemented for private anonymous mappings in a separate high user arena |
 | 10 | `mprotect(address, length, protection)` | Implemented with W^X enforcement and TLB invalidation |
 | 11 | `munmap(address, length)` | Implemented with physical-frame reclamation |
@@ -80,7 +81,7 @@ The initial numeric assignments are:
 
 The remaining implementation order is:
 
-1. `dup`, `fcntl`, descriptor flags, and blocking/poll integration.
+1. `dup`, `fcntl`, descriptor flags, and blocking/timed poll integration.
 2. File-backed mappings, shared memory, and page-fault reporting.
 3. `openat`, `stat`, `getdents`, `pread`, `pwrite`, `fsync`, and file mapping.
 4. `spawn`, `execve`, `wait`, process groups, thread join/cancellation, timed futex waits, and robust lists.
