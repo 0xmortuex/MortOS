@@ -54,6 +54,7 @@ let g_process_vexfs_seen64: [u8; 8] = [0; 8];
 let g_process_vexstat_seen64: [u8; 8] = [0; 8];
 let g_process_vexdir_seen64: [u8; 8] = [0; 8];
 let g_process_vexmmap_seen64: [u8; 8] = [0; 8];
+let g_process_wide_mmap_seen64: [u8; 8] = [0; 8];
 let g_process_wait_address64: [u64; 8] = [0; 8];
 // Wait kind: 0 none, 1 futex, 2 poll.
 let g_process_wait_kind64: [u8; 8] = [0; 8];
@@ -347,9 +348,8 @@ fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
     let pd: u64 = page_table_alloc64();
     let user_pt: u64 = page_table_alloc64();
     let mmap_pd: u64 = page_table_alloc64();
-    let mmap_pt: u64 = page_table_alloc64();
     if pml4 == 0 || pdpt == 0 || pd == 0 || user_pt == 0
-        || mmap_pd == 0 || mmap_pt == 0 {
+        || mmap_pd == 0 {
         return 0;
     }
 
@@ -358,7 +358,6 @@ fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
     // A separate high user arena starts at 1 GiB. It does not replace any
     // part of the kernel's low 1 GiB physical direct map.
     page_table_set64(pdpt, 1, mmap_pd | 0x7);
-    page_table_set64(mmap_pd, 0, mmap_pt | 0x7);
     let directory_index: u32 = 0;
     while directory_index < 512 {
         if directory_index != 8 {
@@ -467,7 +466,9 @@ fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
         stack_frame | no_execute | 0x7); // user RW, NX
     g_user_entry64 = entry;
     g_user_pt64 = user_pt;
-    g_user_mmap_pt64 = mmap_pt;
+    // This variable retains its bootstrap name, but now points to the mmap
+    // page directory. Leaf page tables are allocated lazily.
+    g_user_mmap_pt64 = mmap_pd;
     return pml4;
 }
 
@@ -511,6 +512,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_vexstat_seen64[slot] = 0;
             g_process_vexdir_seen64[slot] = 0;
             g_process_vexmmap_seen64[slot] = 0;
+            g_process_wide_mmap_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_pollfds64[slot] = 0;
@@ -529,6 +531,53 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
         slot = slot + 1;
     }
     return 8;
+}
+
+fn mmap_entry_from_pd64(
+    directory: u64,
+    page_index: u32,
+    create: bool
+) -> *u64 {
+    if directory == 0 || page_index >= 262144 {
+        return (0 as u64) as *u64;
+    }
+    let directory_index: u32 = page_index / 512;
+    let table_index: u32 = page_index % 512;
+    let directory_entry: *u64 = (directory
+        + ((directory_index as u64) * 8)) as *u64;
+    let table: u64 = *directory_entry & 0x000FFFFFFFFFF000;
+    if table == 0 {
+        if !create {
+            return (0 as u64) as *u64;
+        }
+        table = page_table_alloc64();
+        if table == 0 {
+            return (0 as u64) as *u64;
+        }
+        *directory_entry = table | 0x7;
+    }
+    return (table + ((table_index as u64) * 8)) as *u64;
+}
+
+fn mmap_release_empty_table64(directory: u64, directory_index: u32) {
+    if directory == 0 || directory_index >= 512 {
+        return;
+    }
+    let directory_entry: *u64 = (directory
+        + ((directory_index as u64) * 8)) as *u64;
+    let table: u64 = *directory_entry & 0x000FFFFFFFFFF000;
+    if table == 0 {
+        return;
+    }
+    let index: u32 = 0;
+    while index < 512 {
+        if *((table + ((index as u64) * 8)) as *u64) != 0 {
+            return;
+        }
+        index = index + 1;
+    }
+    frame_free64(table);
+    *directory_entry = 0;
 }
 
 // Round-robin task scheduler with cooperative, preemptive, and wait states.
@@ -662,7 +711,6 @@ fn thread_create64(
 }
 
 // Reclaim every user leaf and paging structure owned by a terminal process.
-// The current bootstrap has one user PT under PML4[0]/PDPT[0]/PD[8].
 fn process_reap64(slot: u32) -> bool {
     if slot >= 8
         || (g_process_state64[slot] != 3
@@ -714,15 +762,26 @@ fn process_reap64(slot: u32) -> bool {
         }
         index = index + 1;
     }
-    index = 0;
-    while index < 512 {
-        let entry: *u64 =
-            (mmap_pt + ((index as u64) * 8)) as *u64;
-        if (*entry & 1) != 0 {
-            frame_free64(*entry & 0x000FFFFFFFFFF000);
-            *entry = 0;
+    let directory_index: u32 = 0;
+    while directory_index < 512 {
+        let directory_entry: *u64 = (mmap_pt
+            + ((directory_index as u64) * 8)) as *u64;
+        let table: u64 = *directory_entry & 0x000FFFFFFFFFF000;
+        if table != 0 {
+            index = 0;
+            while index < 512 {
+                let entry: *u64 =
+                    (table + ((index as u64) * 8)) as *u64;
+                if (*entry & 1) != 0 {
+                    frame_free64(*entry & 0x000FFFFFFFFFF000);
+                    *entry = 0;
+                }
+                index = index + 1;
+            }
+            frame_free64(table);
+            *directory_entry = 0;
         }
-        index = index + 1;
+        directory_index = directory_index + 1;
     }
     let pdpt: u64 = *((root + 0) as *u64) & 0x000FFFFFFFFFF000;
     if pdpt == 0 {
@@ -735,7 +794,6 @@ fn process_reap64(slot: u32) -> bool {
         return false;
     }
     frame_free64(user_pt);
-    frame_free64(mmap_pt);
     frame_free64(mmap_pd);
     frame_free64(pd);
     frame_free64(pdpt);
@@ -874,11 +932,12 @@ fn user_page_entry64(address: u64) -> *u64 {
             ((address - 0x01000000) / 4096) as u32;
         return (g_user_pt64 + ((index as u64) * 8)) as *u64;
     }
-    if address >= 0x40000000 && address < 0x40200000
+    if address >= 0x40000000 && address < 0x80000000
         && g_user_mmap_pt64 != 0 {
         let index: u32 =
             ((address - 0x40000000) / 4096) as u32;
-        return (g_user_mmap_pt64 + ((index as u64) * 8)) as *u64;
+        return mmap_entry_from_pd64(
+            g_user_mmap_pt64, index, false);
     }
     return (0 as u64) as *u64;
 }
@@ -1002,14 +1061,16 @@ fn process_brk64(requested: u64) -> u64 {
 }
 
 fn mmap_range_free64(first: u32, pages: u32) -> bool {
-    if first >= 512 || pages == 0 || pages > 512 - first
+    if first >= 262144 || pages == 0 || pages > 262144 - first
         || g_user_mmap_pt64 == 0 {
         return false;
     }
     let index: u32 = first;
     let limit: u32 = first + pages;
     while index < limit {
-        if *((g_user_mmap_pt64 + ((index as u64) * 8)) as *u64) != 0 {
+        let entry: *u64 = mmap_entry_from_pd64(
+            g_user_mmap_pt64, index, false);
+        if entry != ((0 as u64) as *u64) && *entry != 0 {
             return false;
         }
         index = index + 1;
@@ -1064,33 +1125,33 @@ fn process_mmap64(
         return ~(11 as u64);                    // -ENOMEM
     }
     let pages: u32 = (rounded / 4096) as u32;
-    let first: u32 = 512;
+    let first: u32 = 262144;
     if address != 0 {
         if (address & 0xFFF) == 0
             && address >= 0x40000000
-            && address < 0x40200000 {
+            && address < 0x80000000 {
             let hinted: u32 =
                 ((address - 0x40000000) / 4096) as u32;
             if mmap_range_free64(hinted, pages) {
                 first = hinted;
             }
         }
-        if first == 512 && (flags & 0x10) != 0 {
+        if first == 262144 && (flags & 0x10) != 0 {
             return ~(21 as u64);                // -EINVAL
         }
     }
-    if first == 512 {
+    if first == 262144 {
         let candidate: u32 = 0;
-        while candidate <= 512 - pages {
+        while candidate <= 262144 - pages {
             if mmap_range_free64(candidate, pages) {
                 first = candidate;
-                candidate = 513;
+                candidate = 262145;
             } else {
                 candidate = candidate + 1;
             }
         }
     }
-    if first >= 512 {
+    if first >= 262144 {
         return ~(11 as u64);                    // -ENOMEM
     }
 
@@ -1101,11 +1162,23 @@ fn process_mmap64(
         if frame == 0 {
             let rollback: u32 = 0;
             while rollback < mapped {
-                let entry: *u64 = (g_user_mmap_pt64
-                    + (((first + rollback) as u64) * 8)) as *u64;
-                frame_free64(*entry & 0x000FFFFFFFFFF000);
-                *entry = 0;
+                let entry: *u64 = mmap_entry_from_pd64(
+                    g_user_mmap_pt64, first + rollback, false);
+                if entry != ((0 as u64) as *u64) && *entry != 0 {
+                    frame_free64(*entry & 0x000FFFFFFFFFF000);
+                    *entry = 0;
+                }
                 rollback = rollback + 1;
+            }
+            if mapped > 0 {
+                let first_directory: u32 = first / 512;
+                let last_directory: u32 = (first + mapped - 1) / 512;
+                let directory: u32 = first_directory;
+                while directory <= last_directory {
+                    mmap_release_empty_table64(
+                        g_user_mmap_pt64, directory);
+                    directory = directory + 1;
+                }
             }
             mort64_flush_tlb();
             return ~(11 as u64);                // -ENOMEM
@@ -1135,15 +1208,44 @@ fn process_mmap64(
         if (protection & 4) == 0 {
             page_flags = page_flags | no_execute;
         }
-        *((g_user_mmap_pt64
-            + (((first + mapped) as u64) * 8)) as *u64) =
-            frame | page_flags;
+        let entry: *u64 = mmap_entry_from_pd64(
+            g_user_mmap_pt64, first + mapped, true);
+        if entry == ((0 as u64) as *u64) {
+            frame_free64(frame);
+            let rollback: u32 = 0;
+            while rollback < mapped {
+                let rollback_entry: *u64 = mmap_entry_from_pd64(
+                    g_user_mmap_pt64, first + rollback, false);
+                if rollback_entry != ((0 as u64) as *u64)
+                    && *rollback_entry != 0 {
+                    frame_free64(
+                        *rollback_entry & 0x000FFFFFFFFFF000);
+                    *rollback_entry = 0;
+                }
+                rollback = rollback + 1;
+            }
+            let first_directory: u32 = first / 512;
+            let last_directory: u32 = (first + mapped) / 512;
+            let directory: u32 = first_directory;
+            while directory <= last_directory {
+                mmap_release_empty_table64(
+                    g_user_mmap_pt64, directory);
+                directory = directory + 1;
+            }
+            mort64_flush_tlb();
+            return ~(11 as u64);
+        }
+        *entry = frame | page_flags;
         mapped = mapped + 1;
     }
     g_process_mmap_seen64[g_current_process64] = 1;
     if file_backed {
         let owner: u32 = g_process_handle_owner64[g_current_process64];
         g_process_vexmmap_seen64[owner] = 1;
+    }
+    if first >= 512 {
+        let owner: u32 = g_process_handle_owner64[g_current_process64];
+        g_process_wide_mmap_seen64[owner] = 1;
     }
     mort64_flush_tlb();
     return 0x40000000 + ((first as u64) * 4096);
@@ -1156,23 +1258,23 @@ fn process_mprotect64(
 ) -> u64 {
     if g_current_process64 >= 8 || g_user_mmap_pt64 == 0
         || length == 0 || (address & 0xFFF) != 0
-        || address < 0x40000000 || address >= 0x40200000
+        || address < 0x40000000 || address >= 0x80000000
         || length > 0x00200000
         || (protection & 2) != 0 && (protection & 4) != 0 {
         return ~(21 as u64);                    // -EINVAL
     }
     let rounded: u64 = ((length + 4095) / 4096) * 4096;
     let limit: u64 = address + rounded;
-    if limit < address || limit > 0x40200000 {
+    if limit < address || limit > 0x80000000 {
         return ~(11 as u64);                    // -ENOMEM
     }
     let first: u32 = ((address - 0x40000000) / 4096) as u32;
     let pages: u32 = (rounded / 4096) as u32;
     let index: u32 = 0;
     while index < pages {
-        let entry: u64 = *((g_user_mmap_pt64
-            + (((first + index) as u64) * 8)) as *u64);
-        if (entry & 1) == 0 {
+        let slot: *u64 = mmap_entry_from_pd64(
+            g_user_mmap_pt64, first + index, false);
+        if slot == ((0 as u64) as *u64) || (*slot & 1) == 0 {
             return ~(11 as u64);                // -ENOMEM
         }
         index = index + 1;
@@ -1180,8 +1282,8 @@ fn process_mprotect64(
     let no_execute: u64 = (1 as u64) << 63;
     index = 0;
     while index < pages {
-        let entry: *u64 = (g_user_mmap_pt64
-            + (((first + index) as u64) * 8)) as *u64;
+        let entry: *u64 = mmap_entry_from_pd64(
+            g_user_mmap_pt64, first + index, false);
         let replacement: u64 = (*entry & 0x000FFFFFFFFFF000) | 1;
         if protection != 0 {
             replacement = replacement | 4;
@@ -1202,26 +1304,33 @@ fn process_mprotect64(
 fn process_munmap64(address: u64, length: u64) -> u64 {
     if g_current_process64 >= 8 || g_user_mmap_pt64 == 0
         || length == 0 || (address & 0xFFF) != 0
-        || address < 0x40000000 || address >= 0x40200000
+        || address < 0x40000000 || address >= 0x80000000
         || length > 0x00200000 {
         return ~(21 as u64);                    // -EINVAL
     }
     let rounded: u64 = ((length + 4095) / 4096) * 4096;
     let limit: u64 = address + rounded;
-    if limit < address || limit > 0x40200000 {
+    if limit < address || limit > 0x80000000 {
         return ~(21 as u64);
     }
     let first: u32 = ((address - 0x40000000) / 4096) as u32;
     let pages: u32 = (rounded / 4096) as u32;
     let index: u32 = 0;
     while index < pages {
-        let entry: *u64 = (g_user_mmap_pt64
-            + (((first + index) as u64) * 8)) as *u64;
-        if (*entry & 1) != 0 {
+        let entry: *u64 = mmap_entry_from_pd64(
+            g_user_mmap_pt64, first + index, false);
+        if entry != ((0 as u64) as *u64) && (*entry & 1) != 0 {
             frame_free64(*entry & 0x000FFFFFFFFFF000);
             *entry = 0;
         }
         index = index + 1;
+    }
+    let first_directory: u32 = first / 512;
+    let last_directory: u32 = (first + pages - 1) / 512;
+    let directory: u32 = first_directory;
+    while directory <= last_directory {
+        mmap_release_empty_table64(g_user_mmap_pt64, directory);
+        directory = directory + 1;
     }
     mort64_flush_tlb();
     return 0;
@@ -2362,7 +2471,10 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_vexstat_seen64[cxx_slot] != 0
                 && g_process_vexdir_seen64[cxx_slot] != 0
                 && g_process_vexmmap_seen64[cxx_slot] != 0
+                && g_process_wide_mmap_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: lazy 1 GiB mmap arena passed\r\n");
                 serial_write64(
                     "MORT64: private VexFS file mapping passed\r\n");
                 serial_write64(

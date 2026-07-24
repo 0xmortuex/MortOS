@@ -160,6 +160,19 @@ extern "C" int main() {
     }
     delete widget;
 
+    unsigned long high_mapping = reinterpret_cast<unsigned long>(
+        mortos_mmap(
+            0x70000000UL, 8192, 3, 0x32, ~0UL, 0));
+    if (high_mapping != 0x70000000UL) {
+        return 15;
+    }
+    *reinterpret_cast<unsigned long *>(high_mapping) =
+        0x4D4D415057494445UL;
+    *reinterpret_cast<unsigned char *>(high_mapping + 8191) = 0xA7;
+    if (mortos_munmap(high_mapping, 8192) != 0) {
+        return 15;
+    }
+
     unsigned long tls = mortos_mmap(0, 4096, 3, 0x22, ~0UL, 0);
     if (tls >= ~4095UL
         || mortos_arch_prctl(0x1002, tls) != 0) {

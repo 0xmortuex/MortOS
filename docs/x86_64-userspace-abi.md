@@ -67,7 +67,7 @@ The initial numeric assignments are:
 | 5 | `fstat(fd, status)` | Implemented for read-only VexFS regular files and synthesized directories |
 | 7 | `poll(pollfds, count, timeout)` | Implements validated immediate, event-blocking, infinite, and PIT-deadline waits for stdout and pipe readiness/error/hangup states |
 | 8 | `lseek(fd, offset, origin)` | Implemented for bounded VexFS file positions |
-| 9 | `mmap(address, length, protection, flags, fd, offset)` | Implemented for private anonymous mappings and private copies of immutable VexFS files in a separate high user arena |
+| 9 | `mmap(address, length, protection, flags, fd, offset)` | Implemented for private anonymous mappings and private copies of immutable VexFS files in a lazy 1 GiB high user arena |
 | 10 | `mprotect(address, length, protection)` | Implemented with W^X enforcement and TLB invalidation |
 | 11 | `munmap(address, length)` | Implemented with physical-frame reclamation |
 | 12 | `brk(address)` | Implemented with zeroed RW+NX pages, shrink/unmap, and per-process state |
