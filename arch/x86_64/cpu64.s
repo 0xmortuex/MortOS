@@ -234,6 +234,11 @@ mort64_set_user_fs:
 
 .type mort64_syscall_entry, @function
 mort64_syscall_entry:
+    cmp $7, %rax                    /* blocking poll returns to scheduler */
+    jne .Lnot_poll_wait
+    cmp $0, %rdx
+    jne .Lsyscall_poll_wait
+.Lnot_poll_wait:
     cmp $202, %rax                  /* FUTEX_WAIT needs a scheduler return */
     jne .Lnot_futex_wait
     cmp $0, %rsi
@@ -383,6 +388,50 @@ mort64_syscall_entry:
 
 .Lfutex_wait_error:
     /* The word changed or the pointer was invalid; stay in the same task. */
+    mov mort64_yield_rbx(%rip), %rbx
+    mov mort64_yield_rbp(%rip), %rbp
+    mov mort64_yield_r12(%rip), %r12
+    mov mort64_yield_r13(%rip), %r13
+    mov mort64_yield_r14(%rip), %r14
+    mov mort64_yield_r15(%rip), %r15
+    mov mort64_yield_rip(%rip), %rcx
+    mov mort64_yield_rflags(%rip), %r11
+    mov mort64_yield_rsp(%rip), %rsp
+    sysretq
+
+.Lsyscall_poll_wait:
+    mov %rdi, mort64_pollfds(%rip)
+    mov %rsi, mort64_poll_count(%rip)
+    mov %rdx, mort64_poll_timeout(%rip)
+    mov %rsp, mort64_yield_rsp(%rip)
+    mov %rcx, mort64_yield_rip(%rip)
+    mov %r11, mort64_yield_rflags(%rip)
+    mov %rbx, mort64_yield_rbx(%rip)
+    mov %rbp, mort64_yield_rbp(%rip)
+    mov %r12, mort64_yield_r12(%rip)
+    mov %r13, mort64_yield_r13(%rip)
+    mov %r14, mort64_yield_r14(%rip)
+    mov %r15, mort64_yield_r15(%rip)
+    mov mort64_kernel_rsp(%rip), %rsp
+    mov mort64_pollfds(%rip), %rdi
+    mov mort64_poll_count(%rip), %rsi
+    mov mort64_poll_timeout(%rip), %rdx
+    cld
+    sub $8, %rsp
+    call mort_on_poll_wait64
+    add $8, %rsp
+    test %rax, %rax
+    jns .Lsave_blocked_context
+
+    /* Bit 63 marks a direct return; bit 62 distinguishes an errno. */
+    bt $62, %rax
+    jc .Lpoll_wait_direct_error
+    btr $63, %rax
+    jmp .Lpoll_wait_direct_return
+.Lpoll_wait_direct_error:
+    and $0xFFF, %eax
+    neg %rax
+.Lpoll_wait_direct_return:
     mov mort64_yield_rbx(%rip), %rbx
     mov mort64_yield_rbp(%rip), %rbp
     mov mort64_yield_r12(%rip), %r12
@@ -657,4 +706,10 @@ mort64_yield_r15:
 mort64_futex_address:
     .quad 0
 mort64_futex_expected:
+    .quad 0
+mort64_pollfds:
+    .quad 0
+mort64_poll_count:
+    .quad 0
+mort64_poll_timeout:
     .quad 0

@@ -52,6 +52,12 @@ struct PollDescriptor {
     unsigned short returned;
 };
 
+static const char pipe_message[] = "descriptor-ipc";
+
+struct PipeWorkerArguments {
+    unsigned int write_descriptor;
+};
+
 extern "C" unsigned long thread_worker(void *opaque) {
     if (mortos_getpid() != 5 || mortos_gettid() == 5) {
         return 30;
@@ -65,6 +71,20 @@ extern "C" unsigned long thread_worker(void *opaque) {
         return 30;
     }
     return 31;
+}
+
+extern "C" unsigned long pipe_worker(void *opaque) {
+    if (mortos_yield() != 0) {
+        return 40;
+    }
+    auto *arguments = static_cast<PipeWorkerArguments *>(opaque);
+    if (mortos_fd_write(
+            arguments->write_descriptor,
+            pipe_message,
+            sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1) {
+        return 40;
+    }
+    return 32;
 }
 
 extern "C" int main() {
@@ -148,21 +168,28 @@ extern "C" int main() {
     }
 
     unsigned int pipe_descriptors[2] = {};
-    static const char pipe_message[] = "descriptor-ipc";
     char pipe_result[sizeof(pipe_message)] = {};
-    if (mortos_pipe2(pipe_descriptors, 0) != 0
-        || mortos_fd_write(
-            pipe_descriptors[1], pipe_message,
-            sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1) {
+    if (mortos_pipe2(pipe_descriptors, 0) != 0) {
         return 11;
     }
-    PollDescriptor readiness[2] = {
+    unsigned long pipe_stack = mortos_mmap(
+        0, 8192, 3, 0x22, ~0UL, 0);
+    if (pipe_stack >= ~4095UL) {
+        return 11;
+    }
+    PipeWorkerArguments pipe_arguments = {pipe_descriptors[1]};
+    unsigned long pipe_thread = mortos_thread_create(
+        reinterpret_cast<unsigned long>(&pipe_worker),
+        pipe_stack + 8192,
+        reinterpret_cast<unsigned long>(&pipe_arguments));
+    if (pipe_thread <= thread_id) {
+        return 11;
+    }
+    PollDescriptor readiness[1] = {
         {static_cast<int>(pipe_descriptors[0]), 1, 0},
-        {static_cast<int>(pipe_descriptors[1]), 4, 0},
     };
-    if (mortos_poll(readiness, 2, 0) != 2
+    if (mortos_poll(readiness, 1, 1000) != 1
         || (readiness[0].returned & 1) == 0
-        || (readiness[1].returned & 4) == 0
         || mortos_read(
             pipe_descriptors[0], pipe_result,
             sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1) {
@@ -173,8 +200,14 @@ extern "C" int main() {
             return 11;
         }
     }
+    readiness[0].returned = 0;
+    if (mortos_poll(readiness, 1, 20) != 0
+        || readiness[0].returned != 0) {
+        return 11;
+    }
     if (mortos_close(pipe_descriptors[0]) != 0
-        || mortos_close(pipe_descriptors[1]) != 0) {
+        || mortos_close(pipe_descriptors[1]) != 0
+        || mortos_munmap(pipe_stack, 8192) != 0) {
         return 11;
     }
 

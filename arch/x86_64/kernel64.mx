@@ -48,7 +48,14 @@ let g_process_handle_owner64: [u32; 8] = [0; 8];
 let g_process_pipe_seen64: [u8; 8] = [0; 8];
 let g_process_futex_seen64: [u8; 8] = [0; 8];
 let g_process_poll_seen64: [u8; 8] = [0; 8];
+let g_process_poll_block_seen64: [u8; 8] = [0; 8];
+let g_process_poll_timeout_seen64: [u8; 8] = [0; 8];
 let g_process_wait_address64: [u64; 8] = [0; 8];
+// Wait kind: 0 none, 1 futex, 2 poll.
+let g_process_wait_kind64: [u8; 8] = [0; 8];
+let g_process_pollfds64: [u64; 8] = [0; 8];
+let g_process_poll_count64: [u64; 8] = [0; 8];
+let g_process_poll_deadline64: [u64; 8] = [0; 8];
 // Eight descriptors per owning process. Types: 0 free, 2 pipe read, 3 write.
 let g_handle_type64: [u8; 64] = [0; 64];
 let g_handle_object64: [u32; 64] = [0; 64];
@@ -483,7 +490,13 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_pipe_seen64[slot] = 0;
             g_process_futex_seen64[slot] = 0;
             g_process_poll_seen64[slot] = 0;
+            g_process_poll_block_seen64[slot] = 0;
+            g_process_poll_timeout_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
+            g_process_wait_kind64[slot] = 0;
+            g_process_pollfds64[slot] = 0;
+            g_process_poll_count64[slot] = 0;
+            g_process_poll_deadline64[slot] = 0;
             let descriptor: u32 = 0;
             while descriptor < 8 {
                 g_handle_type64[(slot * 8) + descriptor] = 0;
@@ -498,14 +511,13 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
     return 8;
 }
 
-// Minimal non-preemptive scheduler. It establishes real lifecycle semantics
-// now: READY -> RUNNING -> EXITED/FAULTED, and a failed process cannot prevent
-// the next READY process from being dispatched.
+// Round-robin task scheduler with cooperative, preemptive, and wait states.
+// When every live task is blocked it idles with interrupts enabled so timer
+// deadlines and device IRQs can make tasks READY without busy-spinning.
 fn process_schedule64() -> u32 {
     let dispatched: u32 = 0;
-    let rounds: u32 = 0;
     let found_ready: bool = true;
-    while found_ready && rounds < 256 {
+    while found_ready {
         found_ready = false;
         let slot: u32 = 0;
         while slot < 8 {
@@ -536,7 +548,24 @@ fn process_schedule64() -> u32 {
             }
             slot = slot + 1;
         }
-        rounds = rounds + 1;
+        if !found_ready {
+            let waiting: bool = false;
+            slot = 0;
+            while slot < 8 {
+                if g_process_state64[slot] == 5 {
+                    waiting = true;
+                }
+                slot = slot + 1;
+            }
+            if waiting {
+                g_current_process64 = 8;
+                mort64_set_user_fs(0);
+                asm("sti");
+                asm("hlt");
+                asm("cli");
+                found_ready = true;
+            }
+        }
     }
     g_current_process64 = 8;
     return dispatched;
@@ -602,6 +631,7 @@ fn thread_create64(
             g_process_fault64[slot] = 0;
             g_process_preemptions64[slot] = 0;
             g_process_wait_address64[slot] = 0;
+            g_process_wait_kind64[slot] = 0;
             g_process_thread_seen64[parent] = 1;
             g_next_pid64 = g_next_pid64 + 1;
             return g_process_tid64[slot];
@@ -643,6 +673,7 @@ fn process_reap64(slot: u32) -> bool {
             g_process_mmap_pt64[sibling] = 0;
             g_process_context_valid64[sibling] = 0;
             g_process_wait_address64[sibling] = 0;
+            g_process_wait_kind64[sibling] = 0;
             g_process_handle_owner64[sibling] = sibling;
         }
         sibling = sibling + 1;
@@ -699,6 +730,7 @@ fn process_reap64(slot: u32) -> bool {
     g_process_entry64[slot] = 0;
     g_process_fs_base64[slot] = 0;
     g_process_wait_address64[slot] = 0;
+    g_process_wait_kind64[slot] = 0;
     g_process_handle_owner64[slot] = slot;
     g_process_context_valid64[slot] = 0;
     return true;
@@ -730,6 +762,7 @@ fn on_futex_wait64(address: u64, expected: u64) -> u64 {
     let slot: u32 = g_current_process64;
     g_process_state64[slot] = 5;
     g_process_wait_address64[slot] = address;
+    g_process_wait_kind64[slot] = 1;
     g_process_context_valid64[slot] = 1;
     let owner: u32 = g_process_handle_owner64[slot];
     g_process_futex_seen64[owner] = 1;
@@ -753,6 +786,7 @@ fn futex_wake64(address: u64, count: u64) -> u64 {
             && g_process_root64[slot] == root
             && g_process_wait_address64[slot] == address {
             g_process_wait_address64[slot] = 0;
+            g_process_wait_kind64[slot] = 0;
             g_process_state64[slot] = 1;
             woken = woken + 1;
         }
@@ -765,6 +799,7 @@ fn futex_wake64(address: u64, count: u64) -> u64 {
 // save the complete interrupted state and return to the scheduler.
 fn on_timer_tick64(code_segment: u64) -> u64 {
     g_timer_ticks64 = g_timer_ticks64 + 1;
+    wake_poll_timeouts64();
     if (code_segment & 3) != 3
         || g_current_process64 >= 8
         || g_process_state64[g_current_process64] != 2 {
@@ -796,6 +831,7 @@ fn on_exception64(
             g_process_state64[g_current_process64] = 4;
             g_process_fault64[g_current_process64] = vector;
             g_process_context_valid64[g_current_process64] = 0;
+            g_process_wait_kind64[g_current_process64] = 0;
         }
         serial_write64("MORT64: user CPU fault contained\r\n");
         return 1;
@@ -1163,9 +1199,13 @@ fn process_close64(descriptor: u64) -> u64 {
     if g_current_process64 >= 8 || descriptor >= 8 {
         return ~(8 as u64);
     }
-    return handle_close_owner64(
+    let result: u64 = handle_close_owner64(
         g_process_handle_owner64[g_current_process64],
         descriptor as u32);
+    if result == 0 {
+        wake_poll_waiters64();
+    }
+    return result;
 }
 
 fn process_pipe2_64(descriptors: u64, flags: u64) -> u64 {
@@ -1256,6 +1296,7 @@ fn process_pipe_write64(
         g_pipe_count64[pipe] = g_pipe_count64[pipe] + 1;
         offset = offset + 1;
     }
+    wake_poll_waiters64();
     return count;
 }
 
@@ -1298,6 +1339,7 @@ fn process_pipe_read64(
         g_pipe_count64[pipe] = g_pipe_count64[pipe] - 1;
         offset = offset + 1;
     }
+    wake_poll_waiters64();
     return count;
 }
 
@@ -1359,6 +1401,97 @@ fn process_poll64(pollfds: u64, count: u64, timeout: u64) -> u64 {
     }
     g_process_poll_seen64[owner] = 1;
     return ready;
+}
+
+fn task_wait_return64(slot: u32, result: u64) {
+    if slot >= 8 {
+        return;
+    }
+    let context: u64 = (&g_process_context64 as u64)
+        + ((slot as u64) * 144);
+    *((context + 112) as *u64) = result;         // resumed RAX
+    g_process_wait_kind64[slot] = 0;
+    g_process_pollfds64[slot] = 0;
+    g_process_poll_count64[slot] = 0;
+    g_process_poll_deadline64[slot] = 0;
+    g_process_state64[slot] = 1;
+}
+
+fn on_poll_wait64(pollfds: u64, count: u64, timeout: u64) -> u64 {
+    let direct_bit: u64 = (1 as u64) << 63;
+    let error_bit: u64 = (1 as u64) << 62;
+    let result: u64 = process_poll64(pollfds, count, 0);
+    if result > ~(4095 as u64) {
+        let error: u64 = (~result) + 1;
+        return direct_bit | error_bit | error;
+    }
+    if result != 0 {
+        return direct_bit | result;
+    }
+    if timeout != ~(0 as u64)
+        && timeout > 0x7FFFFFFFFFFFFFFF {
+        return direct_bit | error_bit | 22;     // direct -EINVAL
+    }
+    if g_current_process64 >= 8 {
+        return direct_bit | error_bit | 22;
+    }
+    let slot: u32 = g_current_process64;
+    let deadline: u64 = ~(0 as u64);
+    if timeout != ~(0 as u64) {
+        let delta: u64 = (timeout + 9) / 10;
+        deadline = g_timer_ticks64 + delta;
+        if deadline < g_timer_ticks64 {
+            deadline = (~(0 as u64)) - 1;
+        }
+    }
+    g_process_state64[slot] = 5;
+    g_process_wait_kind64[slot] = 2;
+    g_process_pollfds64[slot] = pollfds;
+    g_process_poll_count64[slot] = count;
+    g_process_poll_deadline64[slot] = deadline;
+    g_process_context_valid64[slot] = 1;
+    let owner: u32 = g_process_handle_owner64[slot];
+    g_process_poll_seen64[owner] = 1;
+    g_process_poll_block_seen64[owner] = 1;
+    return (&g_process_context64 as u64)
+        + ((slot as u64) * 144);
+}
+
+fn wake_poll_waiters64() {
+    if g_current_process64 >= 8 {
+        return;
+    }
+    let root: u64 = g_process_root64[g_current_process64];
+    let slot: u32 = 0;
+    while slot < 8 {
+        if g_process_state64[slot] == 5
+            && g_process_wait_kind64[slot] == 2
+            && g_process_root64[slot] == root {
+            let result: u64 = process_poll64(
+                g_process_pollfds64[slot],
+                g_process_poll_count64[slot],
+                0);
+            if result != 0 {
+                task_wait_return64(slot, result);
+            }
+        }
+        slot = slot + 1;
+    }
+}
+
+fn wake_poll_timeouts64() {
+    let slot: u32 = 0;
+    while slot < 8 {
+        if g_process_state64[slot] == 5
+            && g_process_wait_kind64[slot] == 2
+            && g_process_poll_deadline64[slot] != ~(0 as u64)
+            && g_timer_ticks64 >= g_process_poll_deadline64[slot] {
+            let owner: u32 = g_process_handle_owner64[slot];
+            g_process_poll_timeout_seen64[owner] = 1;
+            task_wait_return64(slot, 0);
+        }
+        slot = slot + 1;
+    }
 }
 
 fn syscall_dispatch64(
@@ -1489,6 +1622,7 @@ fn on_user_exit64(status: u64) {
         g_process_exit64[g_current_process64] = status;
         g_process_state64[g_current_process64] = 3;
         g_process_context_valid64[g_current_process64] = 0;
+        g_process_wait_kind64[g_current_process64] = 0;
         if g_process_is_thread64[g_current_process64] != 0
             && status == 31 {
             g_thread_exit_seen64 = true;
@@ -1624,9 +1758,13 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_pipe_seen64[cxx_slot] != 0
                 && g_process_futex_seen64[cxx_slot] != 0
                 && g_process_poll_seen64[cxx_slot] != 0
+                && g_process_poll_block_seen64[cxx_slot] != 0
+                && g_process_poll_timeout_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
                 serial_write64(
-                    "MORT64: poll readiness ABI passed\r\n");
+                    "MORT64: blocking poll timeout passed\r\n");
+                serial_write64(
+                    "MORT64: blocking poll event wake passed\r\n");
                 serial_write64(
                     "MORT64: futex wait and wake passed\r\n");
                 serial_write64(
