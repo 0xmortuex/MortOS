@@ -196,6 +196,22 @@ mortos_getdents64:
     ret
 .size mortos_getdents64, . - mortos_getdents64
 
+.global mortos_getcwd
+.type mortos_getcwd, @function
+mortos_getcwd:
+    mov $79, %rax                  /* SYS_getcwd */
+    syscall
+    ret
+.size mortos_getcwd, . - mortos_getcwd
+
+.global mortos_chdir
+.type mortos_chdir, @function
+mortos_chdir:
+    mov $80, %rax                  /* SYS_chdir */
+    syscall
+    ret
+.size mortos_chdir, . - mortos_chdir
+
 .global mortos_lseek
 .type mortos_lseek, @function
 mortos_lseek:

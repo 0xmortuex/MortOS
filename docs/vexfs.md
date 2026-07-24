@@ -42,6 +42,9 @@ Each 8-byte-aligned entry contains:
 At boot, Mort validates the archive structure before exposing it. Ring-3
 programs use `openat`, `read`, `pread64`, `lseek`, `fstat`, `newfstatat`,
 `getdents64`, `poll`, and `close` through ordinary per-process descriptors.
+`getcwd`/`chdir`, `AT_FDCWD`, directory-relative lookup, repeated separators,
+and `.`/`..` normalization provide the path semantics needed by module
+resolution.
 Private file-backed `mmap` allocates independent user frames, copies the
 requested immutable bytes, and keeps normal W^X enforcement.
 Directories are inferred from the sorted file paths, carry read-only directory

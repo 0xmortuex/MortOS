@@ -75,13 +75,15 @@ The initial numeric assignments are:
 | 24 | `yield()` | Implemented with per-process saved context and round-robin resumption |
 | 39 | `getpid()` | Implemented for scheduled processes |
 | 60 | `exit(status)` | Implemented for the current process |
+| 79 | `getcwd(buffer, size)` | Returns the calling process's normalized VexFS working directory |
+| 80 | `chdir(path)` | Changes the shared process working directory after read-only VexFS directory validation |
 | 158 | `arch_prctl(code, address)` | Implements bounded `ARCH_SET_FS`/`ARCH_GET_FS`; FS base is restored per task |
 | 186 | `gettid()` | Returns the current schedulable task ID |
 | 202 | `futex(address, operation, value, ...)` | Implements atomic `FUTEX_WAIT` scheduler blocking and same-address-space `FUTEX_WAKE` |
 | 217 | `getdents64(fd, buffer, length)` | Enumerates unique immediate children of canonical VexFS directories using Linux-compatible directory records |
 | 228 | `clock_gettime(clock_id, timespec)` | Implemented for `CLOCK_MONOTONIC` from the 100 Hz kernel tick |
-| 257 | `openat(directory, path, flags, mode)` | Implements read-only absolute file and directory lookup in canonical VexFS |
-| 262 | `newfstatat(directory, path, status, flags)` | Reports regular-file or inferred-directory metadata for absolute VexFS paths |
+| 257 | `openat(directory, path, flags, mode)` | Implements normalized absolute, `AT_FDCWD`, and directory-relative file/directory lookup in canonical VexFS |
+| 262 | `newfstatat(directory, path, status, flags)` | Reports regular-file or inferred-directory metadata for normalized absolute and relative VexFS paths |
 | 293 | `pipe2(descriptors, flags)` | Implements a bounded in-kernel pipe and two per-process descriptors |
 | 400 | `thread_create(entry, stack_top, argument, return_trampoline)` | MortOS-native validated thread primitive; shares the process address space and schedules a full independent context |
 
@@ -89,7 +91,7 @@ The remaining implementation order is:
 
 1. `dup`, `fcntl`, descriptor flags, and signal interruption.
 2. File-backed mappings, shared memory, and page-fault reporting.
-3. Relative `openat`/`newfstatat`, `pwrite`, `fsync`, persistent storage, and file mapping.
+3. `pwrite`, `fsync`, persistent writable storage, and shared file mapping.
 4. `spawn`, `execve`, `wait`, process groups, thread join/cancellation, timed futex waits, and robust lists.
 5. `poll`, transferable local IPC, sockets, DNS-facing service IPC, and entropy.
 6. Window surfaces, shared pixel buffers, input queues, clipboard, audio

@@ -37,6 +37,8 @@ extern "C" unsigned long mortos_newfstatat(
     unsigned long, const char *, void *, unsigned long);
 extern "C" unsigned long mortos_getdents64(
     unsigned long, void *, unsigned long);
+extern "C" unsigned long mortos_getcwd(void *, unsigned long);
+extern "C" unsigned long mortos_chdir(const char *);
 extern "C" unsigned long mortos_lseek(
     unsigned long, unsigned long, unsigned long);
 extern "C" unsigned long mortos_pread(
@@ -351,6 +353,37 @@ extern "C" int main() {
         || !contains_text(root_entries, root_bytes, "app", 3)
         || mortos_close(root_directory) != 0) {
         return 14;
+    }
+    static const char vex_source_path[] = "/app/vex/src";
+    static const char relative_main_path[] = "./main.js";
+    static const char relative_renderer_path[] = "renderer";
+    static const char relative_index_path[] = "index.html";
+    char cwd_result[64] = {};
+    if (mortos_chdir(vex_source_path) != 0
+        || mortos_getcwd(cwd_result, sizeof(cwd_result))
+            != reinterpret_cast<unsigned long>(cwd_result)
+        || !contains_text(
+            cwd_result, sizeof(cwd_result), "/app/vex/src", 12)) {
+        return 16;
+    }
+    unsigned long relative_main = mortos_openat(
+        ~99UL, relative_main_path, 0, 0);
+    unsigned long relative_renderer = mortos_openat(
+        ~99UL, relative_renderer_path, 0x90000, 0);
+    alignas(8) unsigned char relative_status[144] = {};
+    if (relative_main >= ~4095UL || relative_renderer >= ~4095UL
+        || mortos_fstat(relative_main, relative_status) != 0
+        || ((*reinterpret_cast<unsigned int *>(relative_status + 24)
+             & 0xF000U) != 0x8000U)
+        || mortos_newfstatat(
+            relative_renderer, relative_index_path,
+            relative_status, 0) != 0
+        || ((*reinterpret_cast<unsigned int *>(relative_status + 24)
+             & 0xF000U) != 0x8000U)
+        || mortos_close(relative_main) != 0
+        || mortos_close(relative_renderer) != 0
+        || mortos_chdir(root_path) != 0) {
+        return 16;
     }
 
     static const char message[] = "MORT64 CXX RUNTIME OK\r\n";
