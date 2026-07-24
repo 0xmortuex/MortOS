@@ -64,11 +64,14 @@ The initial numeric assignments are:
 | 0 | `read(fd, buffer, length)` | Implemented for bounded pipe reads with validated output ranges |
 | 1 | `write(fd, buffer, length)` | Implemented for stdout and bounded pipe writes with validated input ranges |
 | 3 | `close(fd)` | Implemented for pipe descriptors with endpoint reference cleanup |
+| 5 | `fstat(fd, status)` | Implemented for read-only VexFS regular files |
 | 7 | `poll(pollfds, count, timeout)` | Implements validated immediate, event-blocking, infinite, and PIT-deadline waits for stdout and pipe readiness/error/hangup states |
+| 8 | `lseek(fd, offset, origin)` | Implemented for bounded VexFS file positions |
 | 9 | `mmap(address, length, protection, flags, fd, offset)` | Implemented for private anonymous mappings in a separate high user arena |
 | 10 | `mprotect(address, length, protection)` | Implemented with W^X enforcement and TLB invalidation |
 | 11 | `munmap(address, length)` | Implemented with physical-frame reclamation |
 | 12 | `brk(address)` | Implemented with zeroed RW+NX pages, shrink/unmap, and per-process state |
+| 17 | `pread64(fd, buffer, length, offset)` | Implemented for position-independent VexFS reads |
 | 24 | `yield()` | Implemented with per-process saved context and round-robin resumption |
 | 39 | `getpid()` | Implemented for scheduled processes |
 | 60 | `exit(status)` | Implemented for the current process |
@@ -76,6 +79,7 @@ The initial numeric assignments are:
 | 186 | `gettid()` | Returns the current schedulable task ID |
 | 202 | `futex(address, operation, value, ...)` | Implements atomic `FUTEX_WAIT` scheduler blocking and same-address-space `FUTEX_WAKE` |
 | 228 | `clock_gettime(clock_id, timespec)` | Implemented for `CLOCK_MONOTONIC` from the 100 Hz kernel tick |
+| 257 | `openat(directory, path, flags, mode)` | Implements read-only absolute lookup in canonical VexFS |
 | 293 | `pipe2(descriptors, flags)` | Implements a bounded in-kernel pipe and two per-process descriptors |
 | 400 | `thread_create(entry, stack_top, argument, return_trampoline)` | MortOS-native validated thread primitive; shares the process address space and schedules a full independent context |
 

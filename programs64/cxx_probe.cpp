@@ -30,6 +30,13 @@ extern "C" unsigned long mortos_futex(
     unsigned int *, unsigned long, unsigned int);
 extern "C" unsigned long mortos_poll(
     void *, unsigned long, unsigned long);
+extern "C" unsigned long mortos_openat(
+    unsigned long, const char *, unsigned long, unsigned long);
+extern "C" unsigned long mortos_fstat(unsigned long, void *);
+extern "C" unsigned long mortos_lseek(
+    unsigned long, unsigned long, unsigned long);
+extern "C" unsigned long mortos_pread(
+    unsigned long, void *, unsigned long, unsigned long);
 
 static unsigned long constructor_value;
 
@@ -85,6 +92,32 @@ extern "C" unsigned long pipe_worker(void *opaque) {
         return 40;
     }
     return 32;
+}
+
+static bool contains_text(
+    const char *haystack,
+    unsigned long haystack_size,
+    const char *needle,
+    unsigned long needle_size
+) {
+    if (needle_size == 0 || needle_size > haystack_size) {
+        return false;
+    }
+    for (unsigned long start = 0;
+         start <= haystack_size - needle_size;
+         ++start) {
+        bool matches = true;
+        for (unsigned long index = 0; index < needle_size; ++index) {
+            if (haystack[start + index] != needle[index]) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) {
+            return true;
+        }
+    }
+    return false;
 }
 
 extern "C" int main() {
@@ -209,6 +242,37 @@ extern "C" int main() {
         || mortos_close(pipe_descriptors[1]) != 0
         || mortos_munmap(pipe_stack, 8192) != 0) {
         return 11;
+    }
+
+    static const char vex_package_path[] = "/app/vex/package.json";
+    unsigned long vex_file = mortos_openat(
+        ~99UL, vex_package_path, 0, 0);
+    alignas(8) unsigned char vex_status[144] = {};
+    char vex_header[512] = {};
+    if (vex_file >= ~4095UL
+        || mortos_fstat(vex_file, vex_status) != 0) {
+        return 12;
+    }
+    unsigned long vex_size =
+        *reinterpret_cast<unsigned long *>(vex_status + 48);
+    if (vex_size < sizeof(vex_header)
+        || mortos_pread(vex_file, vex_header, sizeof(vex_header), 0)
+            != sizeof(vex_header)
+        || !contains_text(vex_header, sizeof(vex_header),
+                          "\"name\": \"vex\"", 13)
+        || !contains_text(vex_header, sizeof(vex_header),
+                          "\"version\": \"2.28.1\"", 19)
+        || !contains_text(vex_header, sizeof(vex_header),
+                          "\"main\": \"src/main.js\"", 21)
+        || mortos_lseek(vex_file, 0, 2) != vex_size
+        || mortos_lseek(vex_file, 0, 0) != 0) {
+        return 12;
+    }
+    char first_byte = 0;
+    if (mortos_read(vex_file, &first_byte, 1) != 1
+        || first_byte != '{'
+        || mortos_close(vex_file) != 0) {
+        return 12;
     }
 
     static const char message[] = "MORT64 CXX RUNTIME OK\r\n";

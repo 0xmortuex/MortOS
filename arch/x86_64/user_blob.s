@@ -36,6 +36,13 @@ mort64_cxx_image_blob:
 .global mort64_cxx_image_end
 mort64_cxx_image_end:
 
+.align 16
+.global mort64_vexfs_blob
+mort64_vexfs_blob:
+.incbin "build/x86_64/vexfs.bin"
+.global mort64_vexfs_end
+mort64_vexfs_end:
+
 .section .text.user_image, "ax", @progbits
 .global mort64_probe_image
 .type mort64_probe_image, @function
@@ -95,4 +102,16 @@ mort64_cxx_image:
 .type mort64_cxx_image_size, @function
 mort64_cxx_image_size:
     mov $(mort64_cxx_image_end - mort64_cxx_image_blob), %rax
+    ret
+
+.global mort64_vexfs_image
+.type mort64_vexfs_image, @function
+mort64_vexfs_image:
+    lea mort64_vexfs_blob(%rip), %rax
+    ret
+
+.global mort64_vexfs_image_size
+.type mort64_vexfs_image_size, @function
+mort64_vexfs_image_size:
+    mov $(mort64_vexfs_end - mort64_vexfs_blob), %rax
     ret

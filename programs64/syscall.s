@@ -162,6 +162,40 @@ mortos_poll:
     ret
 .size mortos_poll, . - mortos_poll
 
+.global mortos_openat
+.type mortos_openat, @function
+mortos_openat:
+    mov %rcx, %r10
+    mov $257, %rax                 /* SYS_openat */
+    syscall
+    ret
+.size mortos_openat, . - mortos_openat
+
+.global mortos_fstat
+.type mortos_fstat, @function
+mortos_fstat:
+    mov $5, %rax                   /* SYS_fstat */
+    syscall
+    ret
+.size mortos_fstat, . - mortos_fstat
+
+.global mortos_lseek
+.type mortos_lseek, @function
+mortos_lseek:
+    mov $8, %rax                   /* SYS_lseek */
+    syscall
+    ret
+.size mortos_lseek, . - mortos_lseek
+
+.global mortos_pread
+.type mortos_pread, @function
+mortos_pread:
+    mov %rcx, %r10
+    mov $17, %rax                  /* SYS_pread64 */
+    syscall
+    ret
+.size mortos_pread, . - mortos_pread
+
 .global mortos_thread_create
 .type mortos_thread_create, @function
 mortos_thread_create:

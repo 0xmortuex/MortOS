@@ -23,6 +23,7 @@ If the cache is absent, the proven compiler tag is cloned automatically.
 """
 import os
 import hashlib
+import json
 import shutil
 import struct
 import subprocess
@@ -88,12 +89,85 @@ USER64_ELFS = {
 }
 USER64_ELF = USER64_ELFS["probe"]
 CXX64_ELF = os.path.join(BUILD64, "user_cxx.elf")
+VEXFS64 = os.path.join(BUILD64, "vexfs.bin")
+VEX_EXPECTED_COMMIT = "1b10ec57fa9ebf77ed86c2d5d28f72aad7c1007a"
 DISK = os.path.join(BUILD, "disk.img")
 
 # User programs: compiled from programs/*.mx into flat binaries the kernel
 # loads at 0x00A00000 and enters at byte 0 (see programs/prog.ld / pstart.s).
 PROGRAMS = os.path.join(HERE, "programs")
 PROGRAMS64 = os.path.join(HERE, "programs64")
+
+
+def _vex_source():
+    """Locate and verify the canonical Vex source pinned by this port."""
+    candidate = os.environ.get("MORTOS_VEX_SOURCE")
+    if not candidate:
+        candidate = os.path.join(os.path.dirname(HERE), "Vex")
+    candidate = os.path.abspath(candidate)
+    package = os.path.join(candidate, "package.json")
+    if not os.path.isfile(package):
+        sys.exit(
+            "x86-64 Vex build needs the canonical Vex checkout; set "
+            "MORTOS_VEX_SOURCE or place Vex beside MortOS")
+    head = subprocess.run(
+        ["git", "-C", candidate, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    if head != VEX_EXPECTED_COMMIT:
+        sys.exit(
+            f"canonical Vex revision mismatch: got {head}, "
+            f"expected {VEX_EXPECTED_COMMIT}")
+    dirty = subprocess.run(
+        ["git", "-C", candidate, "status", "--porcelain",
+         "--untracked-files=no"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    if dirty:
+        sys.exit("canonical Vex checkout has tracked modifications; "
+                 "package from a clean source tree")
+    return candidate
+
+
+def _build_vexfs():
+    """Pack the canonical Electron application files into deterministic VexFS."""
+    source = _vex_source()
+    relative_files = ["package.json"]
+    for root_name in ("src", os.path.join("assets", "theme-previews")):
+        root = os.path.join(source, root_name)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirs, files in os.walk(root):
+            for filename in files:
+                relative_files.append(os.path.relpath(
+                    os.path.join(dirpath, filename), source))
+    for asset in (os.path.join("assets", "icon.svg"),
+                  os.path.join("assets", "icon.ico")):
+        if os.path.isfile(os.path.join(source, asset)):
+            relative_files.append(asset)
+
+    relative_files = sorted(set(
+        path.replace("\\", "/") for path in relative_files))
+    archive = bytearray(b"MORTVEX1")
+    archive.extend(struct.pack("<II", 1, len(relative_files)))
+    for relative in relative_files:
+        host_path = os.path.join(source, *relative.split("/"))
+        with open(host_path, "rb") as fh:
+            payload = fh.read()
+        guest_path = ("/app/vex/" + relative).encode("utf-8")
+        if len(guest_path) > 0xFFFF or len(payload) > 0xFFFFFFFF:
+            sys.exit(f"VexFS entry is too large: {relative}")
+        archive.extend(struct.pack("<HHI", len(guest_path), 0, len(payload)))
+        archive.extend(hashlib.sha256(payload).digest())
+        archive.extend(guest_path)
+        archive.extend(payload)
+        while len(archive) % 8:
+            archive.append(0)
+    with open(VEXFS64, "wb") as fh:
+        fh.write(archive)
+    print(
+        f"built {os.path.relpath(VEXFS64, ROOT)} "
+        f"({len(relative_files)} canonical Vex files at "
+        f"{VEX_EXPECTED_COMMIT[:7]})")
+    return bytes(archive)
 
 # Bootable-ISO tooling (downloaded + cached once under kernel/tools/).
 TOOLS = os.path.join(HERE, "tools")
@@ -202,6 +276,7 @@ def build64():
     drivers and userspace move across in tested slices.
     """
     os.makedirs(BUILD64, exist_ok=True)
+    vexfs = _build_vexfs()
     cc = _zig()
     arch = os.path.join(HERE, "arch", "x86_64")
 
@@ -277,6 +352,7 @@ def build64():
     for user_elf in [*USER64_ELFS.values(), CXX64_ELF]:
         with open(user_elf, "rb") as fh:
             user_hasher.update(fh.read())
+    user_hasher.update(vexfs)
     user_digest = user_hasher.hexdigest()
     with open(os.path.join(arch, "user_blob.s"), encoding="utf-8") as fh:
         user_blob_source = fh.read()
@@ -431,8 +507,55 @@ def check64():
         require(user_elf in payload_bin,
                 f"userspace {user_name} is not embedded in kernel payload")
 
+    with open(VEXFS64, "rb") as fh:
+        vexfs = fh.read()
+    require(vexfs[:8] == b"MORTVEX1" and len(vexfs) >= 16,
+            "canonical VexFS header is invalid")
+    vexfs_version, vexfs_count = struct.unpack("<II", vexfs[8:16])
+    require(vexfs_version == 1 and 0 < vexfs_count <= 4096,
+            "canonical VexFS version/count is invalid")
+    cursor = 16
+    vex_files = {}
+    previous_path = ""
+    for _index in range(vexfs_count):
+        require(cursor + 40 <= len(vexfs), "VexFS entry header is truncated")
+        path_length, entry_flags, data_length = struct.unpack(
+            "<HHI", vexfs[cursor:cursor + 8])
+        digest = vexfs[cursor + 8:cursor + 40]
+        path_start = cursor + 40
+        data_start = path_start + path_length
+        data_end = data_start + data_length
+        require(path_length > 0 and entry_flags == 0
+                and data_start >= path_start and data_end >= data_start
+                and data_end <= len(vexfs), "VexFS entry bounds are invalid")
+        path = vexfs[path_start:data_start].decode("utf-8")
+        payload = vexfs[data_start:data_end]
+        require(path > previous_path, "VexFS paths are not unique and sorted")
+        require(hashlib.sha256(payload).digest() == digest,
+                f"VexFS digest mismatch for {path}")
+        vex_files[path] = payload
+        previous_path = path
+        cursor = (data_end + 7) & ~7
+    require(cursor == len(vexfs), "VexFS has trailing or misaligned data")
+    for required_vex_path in (
+        "/app/vex/package.json",
+        "/app/vex/src/main.js",
+        "/app/vex/src/renderer/start.html",
+    ):
+        require(required_vex_path in vex_files,
+                f"VexFS is missing {required_vex_path}")
+    package = json.loads(vex_files["/app/vex/package.json"])
+    require(package.get("name") == "vex"
+            and package.get("version") == "2.28.1"
+            and package.get("main") == "src/main.js",
+            "VexFS package identity does not match canonical Vex 2.28.1")
+    require(vexfs in payload_bin,
+            "canonical VexFS is not embedded in the kernel payload")
+
     print(f"OK: genuine ELF64 Mort payload at 0x200000")
     print("OK: five isolated W^X ELF64 userspace images at 0x01000000")
+    print(f"OK: {vexfs_count} canonical Vex files embedded from "
+          f"{VEX_EXPECTED_COMMIT[:7]}")
     print(f"OK: ELF32 Multiboot trampoline; valid header at file offset {offset}")
     print("OK: ELF64 payload embedded in the bootable image")
     print("Boot it with:  python build.py run64")

@@ -43,6 +43,14 @@ continues scheduling after containing a deliberate user page fault. A PIT IRQ
 also preempts and resumes non-cooperative user work from a complete register
 context while driving the monotonic clock.
 
+The same build locates a clean canonical Vex checkout at commit `1b10ec5`
+(override with `MORTOS_VEX_SOURCE`), packages its real Electron application
+files into deterministic VexFS, verifies every file digest, and embeds the
+result in the kernel payload. The boot test opens and reads the real Vex
+`package.json` from ring 3 and confirms version 2.28.1 with `src/main.js` as
+the entry point. This makes the canonical source available to the future
+Electron runtime; it does not claim that Electron is running yet.
+
 This is only the architectural bootstrap. It does not yet run Vex.
 
 ## Port layers
@@ -54,6 +62,7 @@ This is only the architectural bootstrap. It does not yet run Vex.
 | Process runtime | Validating ELF64 ET_EXEC loader, W^X PT_LOAD mappings, demand-paged heap, anonymous `mmap`/`mprotect`/`munmap` with executed RW→RX JIT transition, shared-address-space tasks with PID/TID identity, futex wait/wake, descriptor tables, bounded pipe IPC, event/timed blocking `poll`, interruptible idle, cooperative and PIT-preemptive full contexts, terminal address-space reclamation | Boot-tested foundation; transferable handles and richer IPC next |
 | MortOS ABI | Stable syscalls for files, memory, time, networking, graphics, input, audio, and entropy | Specified in `x86_64-userspace-abi.md` |
 | C/C++ platform | Freestanding startup/constructors, C allocation, C++ `new`/`delete`, atomics, FS-base TLS, kernel thread primitive, then LLVM target, full libc/libc++, pthread-compatible layer, build tools | Bootstrap runtime boot-tested; full platform in progress |
+| Application filesystem | Deterministic, hash-verified packaging and read-only access to the canonical Vex Electron tree | 159-file VexFS image and file-descriptor ABI boot-tested |
 | Node/V8 | V8 JIT permissions, libuv event loop, Node filesystem/network/process APIs | Planned |
 | Chromium | Sandbox, renderer/GPU processes, Skia, fonts, image/media codecs, TLS/PKI, accessibility | Planned |
 | Electron | `x86_64-mortos` host integration, windows/views, sessions, IPC, clipboard, dialogs, downloads | Planned |
