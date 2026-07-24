@@ -20,6 +20,12 @@ extern "C" unsigned long mortos_fs_load(unsigned long);
 extern "C" unsigned long mortos_gettid();
 extern "C" unsigned long mortos_thread_create(
     unsigned long, unsigned long, unsigned long);
+extern "C" unsigned long mortos_read(
+    unsigned long, void *, unsigned long);
+extern "C" unsigned long mortos_close(unsigned long);
+extern "C" unsigned long mortos_pipe2(unsigned int *, unsigned long);
+extern "C" unsigned long mortos_fd_write(
+    unsigned long, const void *, unsigned long);
 
 static unsigned long constructor_value;
 
@@ -121,6 +127,28 @@ extern "C" int main() {
     if (mortos_arch_prctl(0x1002, 0) != 0
         || mortos_munmap(tls, 4096) != 0) {
         return 10;
+    }
+
+    unsigned int pipe_descriptors[2] = {};
+    static const char pipe_message[] = "descriptor-ipc";
+    char pipe_result[sizeof(pipe_message)] = {};
+    if (mortos_pipe2(pipe_descriptors, 0) != 0
+        || mortos_fd_write(
+            pipe_descriptors[1], pipe_message,
+            sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1
+        || mortos_read(
+            pipe_descriptors[0], pipe_result,
+            sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1) {
+        return 11;
+    }
+    for (unsigned long index = 0; index < sizeof(pipe_message) - 1; ++index) {
+        if (pipe_result[index] != pipe_message[index]) {
+            return 11;
+        }
+    }
+    if (mortos_close(pipe_descriptors[0]) != 0
+        || mortos_close(pipe_descriptors[1]) != 0) {
+        return 11;
     }
 
     static const char message[] = "MORT64 CXX RUNTIME OK\r\n";

@@ -14,6 +14,15 @@ mortos_write:
     ret
 .size mortos_write, . - mortos_write
 
+.global mortos_fd_write
+.type mortos_fd_write, @function
+mortos_fd_write:
+    /* rdi=fd, rsi=buffer, rdx=length already match the kernel ABI. */
+    mov $1, %rax
+    syscall
+    ret
+.size mortos_fd_write, . - mortos_fd_write
+
 .global mortos_getpid
 .type mortos_getpid, @function
 mortos_getpid:
@@ -112,6 +121,30 @@ mortos_gettid:
     syscall
     ret
 .size mortos_gettid, . - mortos_gettid
+
+.global mortos_read
+.type mortos_read, @function
+mortos_read:
+    mov $0, %rax                   /* SYS_read */
+    syscall
+    ret
+.size mortos_read, . - mortos_read
+
+.global mortos_close
+.type mortos_close, @function
+mortos_close:
+    mov $3, %rax                   /* SYS_close */
+    syscall
+    ret
+.size mortos_close, . - mortos_close
+
+.global mortos_pipe2
+.type mortos_pipe2, @function
+mortos_pipe2:
+    mov $293, %rax                 /* SYS_pipe2 */
+    syscall
+    ret
+.size mortos_pipe2, . - mortos_pipe2
 
 .global mortos_thread_create
 .type mortos_thread_create, @function

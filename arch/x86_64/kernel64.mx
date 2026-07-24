@@ -44,6 +44,18 @@ let g_process_mmap_seen64: [u8; 8] = [0; 8];
 let g_process_fs_base64: [u64; 8] = [0; 8];
 let g_process_tls_seen64: [u8; 8] = [0; 8];
 let g_process_thread_seen64: [u8; 8] = [0; 8];
+let g_process_handle_owner64: [u32; 8] = [0; 8];
+let g_process_pipe_seen64: [u8; 8] = [0; 8];
+// Eight descriptors per owning process. Types: 0 free, 2 pipe read, 3 write.
+let g_handle_type64: [u8; 64] = [0; 64];
+let g_handle_object64: [u32; 64] = [0; 64];
+let g_pipe_used64: [u8; 4] = [0; 4];
+let g_pipe_data64: [u8; 1024] = [0; 1024];
+let g_pipe_read64: [u32; 4] = [0; 4];
+let g_pipe_write64: [u32; 4] = [0; 4];
+let g_pipe_count64: [u32; 4] = [0; 4];
+let g_pipe_readers64: [u32; 4] = [0; 4];
+let g_pipe_writers64: [u32; 4] = [0; 4];
 let g_current_process64: u32 = 8;
 let g_next_pid64: u64 = 1;
 let g_timer_ticks64: u64 = 0;
@@ -464,6 +476,14 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_fs_base64[slot] = 0;
             g_process_tls_seen64[slot] = 0;
             g_process_thread_seen64[slot] = 0;
+            g_process_handle_owner64[slot] = slot;
+            g_process_pipe_seen64[slot] = 0;
+            let descriptor: u32 = 0;
+            while descriptor < 8 {
+                g_handle_type64[(slot * 8) + descriptor] = 0;
+                g_handle_object64[(slot * 8) + descriptor] = 0;
+                descriptor = descriptor + 1;
+            }
             g_next_pid64 = g_next_pid64 + 1;
             return slot;
         }
@@ -569,6 +589,8 @@ fn thread_create64(
             g_process_entry64[slot] = entry;
             g_process_brk64[slot] = g_process_brk64[parent];
             g_process_fs_base64[slot] = 0;
+            g_process_handle_owner64[slot] =
+                g_process_handle_owner64[parent];
             g_process_context_valid64[slot] = 1;
             g_process_exit64[slot] = 0;
             g_process_fault64[slot] = 0;
@@ -613,8 +635,15 @@ fn process_reap64(slot: u32) -> bool {
             g_process_pt64[sibling] = 0;
             g_process_mmap_pt64[sibling] = 0;
             g_process_context_valid64[sibling] = 0;
+            g_process_handle_owner64[sibling] = sibling;
         }
         sibling = sibling + 1;
+    }
+    let descriptor: u32 = 3;
+    while descriptor < 8 {
+        handle_close_owner64(
+            g_process_handle_owner64[slot], descriptor);
+        descriptor = descriptor + 1;
     }
     let index: u32 = 0;
     while index < 512 {
@@ -661,6 +690,7 @@ fn process_reap64(slot: u32) -> bool {
     g_process_mmap_pt64[slot] = 0;
     g_process_entry64[slot] = 0;
     g_process_fs_base64[slot] = 0;
+    g_process_handle_owner64[slot] = slot;
     g_process_context_valid64[slot] = 0;
     return true;
 }
@@ -1046,6 +1076,178 @@ fn process_munmap64(address: u64, length: u64) -> u64 {
     return 0;
 }
 
+fn handle_close_owner64(owner: u32, descriptor: u32) -> u64 {
+    if owner >= 8 || descriptor >= 8 {
+        return ~(8 as u64);                     // -EBADF
+    }
+    let index: u32 = (owner * 8) + descriptor;
+    let kind: u8 = g_handle_type64[index];
+    if kind == 0 {
+        return ~(8 as u64);
+    }
+    let pipe: u32 = g_handle_object64[index];
+    if pipe < 4 {
+        if kind == 2 && g_pipe_readers64[pipe] > 0 {
+            g_pipe_readers64[pipe] = g_pipe_readers64[pipe] - 1;
+        }
+        if kind == 3 && g_pipe_writers64[pipe] > 0 {
+            g_pipe_writers64[pipe] = g_pipe_writers64[pipe] - 1;
+        }
+        if g_pipe_readers64[pipe] == 0
+            && g_pipe_writers64[pipe] == 0 {
+            g_pipe_used64[pipe] = 0;
+            g_pipe_read64[pipe] = 0;
+            g_pipe_write64[pipe] = 0;
+            g_pipe_count64[pipe] = 0;
+        }
+    }
+    g_handle_type64[index] = 0;
+    g_handle_object64[index] = 0;
+    return 0;
+}
+
+fn process_close64(descriptor: u64) -> u64 {
+    if g_current_process64 >= 8 || descriptor >= 8 {
+        return ~(8 as u64);
+    }
+    return handle_close_owner64(
+        g_process_handle_owner64[g_current_process64],
+        descriptor as u32);
+}
+
+fn process_pipe2_64(descriptors: u64, flags: u64) -> u64 {
+    if g_current_process64 >= 8 || flags != 0 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if !user_range_writable64(descriptors, 8) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let read_fd: u32 = 8;
+    let write_fd: u32 = 8;
+    let candidate: u32 = 3;
+    while candidate < 8 {
+        if g_handle_type64[(owner * 8) + candidate] == 0 {
+            if read_fd == 8 {
+                read_fd = candidate;
+            } else if write_fd == 8 {
+                write_fd = candidate;
+            }
+        }
+        candidate = candidate + 1;
+    }
+    let pipe: u32 = 4;
+    candidate = 0;
+    while candidate < 4 {
+        if pipe == 4 && g_pipe_used64[candidate] == 0 {
+            pipe = candidate;
+        }
+        candidate = candidate + 1;
+    }
+    if read_fd == 8 || write_fd == 8 || pipe == 4 {
+        return ~(23 as u64);                    // -EMFILE
+    }
+    g_pipe_used64[pipe] = 1;
+    g_pipe_read64[pipe] = 0;
+    g_pipe_write64[pipe] = 0;
+    g_pipe_count64[pipe] = 0;
+    g_pipe_readers64[pipe] = 1;
+    g_pipe_writers64[pipe] = 1;
+    g_handle_type64[(owner * 8) + read_fd] = 2;
+    g_handle_object64[(owner * 8) + read_fd] = pipe;
+    g_handle_type64[(owner * 8) + write_fd] = 3;
+    g_handle_object64[(owner * 8) + write_fd] = pipe;
+    *(descriptors as *u32) = read_fd;
+    *((descriptors + 4) as *u32) = write_fd;
+    g_process_pipe_seen64[owner] = 1;
+    return 0;
+}
+
+fn process_pipe_write64(
+    descriptor: u64,
+    buffer: u64,
+    length: u64
+) -> u64 {
+    if g_current_process64 >= 8 || descriptor >= 8 {
+        return ~(8 as u64);
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let index: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[index] != 3 {
+        return ~(8 as u64);
+    }
+    let pipe: u32 = g_handle_object64[index];
+    if pipe >= 4 || g_pipe_readers64[pipe] == 0 {
+        return ~(31 as u64);                    // -EPIPE
+    }
+    if length == 0 {
+        return 0;
+    }
+    let available: u64 = (256 - g_pipe_count64[pipe]) as u64;
+    let count: u64 = length;
+    if count > available {
+        count = available;
+    }
+    if count == 0 {
+        return ~(10 as u64);                    // -EAGAIN
+    }
+    if !user_range_readable64(buffer, count) {
+        return ~(13 as u64);
+    }
+    let offset: u64 = 0;
+    while offset < count {
+        let position: u32 = g_pipe_write64[pipe] % 256;
+        g_pipe_data64[(pipe * 256) + position] =
+            *((buffer + offset) as *u8);
+        g_pipe_write64[pipe] = g_pipe_write64[pipe] + 1;
+        g_pipe_count64[pipe] = g_pipe_count64[pipe] + 1;
+        offset = offset + 1;
+    }
+    return count;
+}
+
+fn process_pipe_read64(
+    descriptor: u64,
+    buffer: u64,
+    length: u64
+) -> u64 {
+    if g_current_process64 >= 8 || descriptor >= 8 {
+        return ~(8 as u64);
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let index: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[index] != 2 {
+        return ~(8 as u64);
+    }
+    let pipe: u32 = g_handle_object64[index];
+    if length == 0 {
+        return 0;
+    }
+    let count: u64 = length;
+    if count > (g_pipe_count64[pipe] as u64) {
+        count = g_pipe_count64[pipe] as u64;
+    }
+    if count == 0 {
+        if g_pipe_writers64[pipe] == 0 {
+            return 0;
+        }
+        return ~(10 as u64);                    // -EAGAIN
+    }
+    if !user_range_writable64(buffer, count) {
+        return ~(13 as u64);
+    }
+    let offset: u64 = 0;
+    while offset < count {
+        let position: u32 = g_pipe_read64[pipe] % 256;
+        *((buffer + offset) as *u8) =
+            g_pipe_data64[(pipe * 256) + position];
+        g_pipe_read64[pipe] = g_pipe_read64[pipe] + 1;
+        g_pipe_count64[pipe] = g_pipe_count64[pipe] - 1;
+        offset = offset + 1;
+    }
+    return count;
+}
+
 fn syscall_dispatch64(
     number: u64,
     argument0: u64,
@@ -1055,6 +1257,9 @@ fn syscall_dispatch64(
     argument4: u64,
     argument5: u64
 ) -> u64 {
+    if number == 0 {
+        return process_pipe_read64(argument0, argument1, argument2);
+    }
     if number == 9 {
         return process_mmap64(
             argument0, argument1, argument2,
@@ -1066,9 +1271,16 @@ fn syscall_dispatch64(
     if number == 11 {
         return process_munmap64(argument0, argument1);
     }
+    if number == 3 {
+        return process_close64(argument0);
+    }
+    if number == 293 {
+        return process_pipe2_64(argument0, argument1);
+    }
     if number == 1 {
         if argument0 != 1 {
-            return ~(8 as u64);                 // -EBADF
+            return process_pipe_write64(
+                argument0, argument1, argument2);
         }
         if argument2 > 4096
             || !user_range_readable64(argument1, argument2) {
@@ -1287,7 +1499,10 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_mmap_seen64[cxx_slot] != 0
                 && g_process_tls_seen64[cxx_slot] != 0
                 && g_process_thread_seen64[cxx_slot] != 0
+                && g_process_pipe_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: descriptor pipe IPC passed\r\n");
                 serial_write64(
                     "MORT64: shared-address-space thread passed\r\n");
                 serial_write64(
