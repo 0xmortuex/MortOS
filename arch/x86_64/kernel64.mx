@@ -51,6 +51,8 @@ let g_process_poll_seen64: [u8; 8] = [0; 8];
 let g_process_poll_block_seen64: [u8; 8] = [0; 8];
 let g_process_poll_timeout_seen64: [u8; 8] = [0; 8];
 let g_process_vexfs_seen64: [u8; 8] = [0; 8];
+let g_process_vexstat_seen64: [u8; 8] = [0; 8];
+let g_process_vexdir_seen64: [u8; 8] = [0; 8];
 let g_process_wait_address64: [u64; 8] = [0; 8];
 // Wait kind: 0 none, 1 futex, 2 poll.
 let g_process_wait_kind64: [u8; 8] = [0; 8];
@@ -58,10 +60,13 @@ let g_process_pollfds64: [u64; 8] = [0; 8];
 let g_process_poll_count64: [u64; 8] = [0; 8];
 let g_process_poll_deadline64: [u64; 8] = [0; 8];
 // Eight descriptors per owning process. Types: 0 free, 2 pipe read, 3 write,
-// 4 read-only VexFS file.
+// 4 read-only VexFS file, 5 read-only VexFS directory.
 let g_handle_type64: [u8; 64] = [0; 64];
 let g_handle_object64: [u32; 64] = [0; 64];
 let g_handle_position64: [u32; 64] = [0; 64];
+// Directory descriptors retain a normalized absolute path. A fixed stride
+// keeps descriptor lifetime independent from userspace buffers.
+let g_handle_path64: [u8; 16448] = [0; 16448];
 let g_pipe_used64: [u8; 4] = [0; 4];
 let g_pipe_data64: [u8; 1024] = [0; 1024];
 let g_pipe_read64: [u32; 4] = [0; 4];
@@ -502,6 +507,8 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_poll_block_seen64[slot] = 0;
             g_process_poll_timeout_seen64[slot] = 0;
             g_process_vexfs_seen64[slot] = 0;
+            g_process_vexstat_seen64[slot] = 0;
+            g_process_vexdir_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_pollfds64[slot] = 0;
@@ -1283,6 +1290,49 @@ fn vexfs_find64(user_path: u64, user_length: u64) -> u32 {
     return 0;
 }
 
+fn vexfs_is_directory64(user_path: u64, user_length: u64) -> bool {
+    if !g_vexfs_ready64 || user_length == 0 || user_length > 256
+        || !user_range_readable64(user_path, user_length)
+        || *(user_path as *u8) != 0x2F {
+        return false;
+    }
+    while user_length > 1
+        && *((user_path + user_length - 1) as *u8) == 0x2F {
+        user_length = user_length - 1;
+    }
+    if user_length == 1 {
+        return true;
+    }
+    let cursor: u64 = 16;
+    let index: u32 = 0;
+    while index < g_vexfs_count64 {
+        let header: u64 = g_vexfs_image64 + cursor;
+        let path_length: u64 = (*(header as *u16)) as u64;
+        if path_length > user_length
+            && *((header + 40 + user_length) as *u8) == 0x2F {
+            let matches: bool = true;
+            let character: u64 = 0;
+            while character < user_length {
+                if *((header + 40 + character) as *u8)
+                    != *((user_path + character) as *u8) {
+                    matches = false;
+                    character = user_length;
+                } else {
+                    character = character + 1;
+                }
+            }
+            if matches {
+                return true;
+            }
+        }
+        let data_length: u64 = (*((header + 4) as *u32)) as u64;
+        let end: u64 = cursor + 40 + path_length + data_length;
+        cursor = (end + 7) & ~(7 as u64);
+        index = index + 1;
+    }
+    return false;
+}
+
 fn process_openat64(
     directory: u64,
     path: u64,
@@ -1291,7 +1341,7 @@ fn process_openat64(
 ) -> u64 {
     if g_current_process64 >= 8 || !g_vexfs_ready64
         || directory != ~(99 as u64)
-        || (flags != 0 && flags != 0x80000) {
+        || (flags & ~(0x90000 as u64)) != 0 {
         return ~(21 as u64);                    // -EINVAL
     }
     let length: u64 = user_cstring_length64(path);
@@ -1299,16 +1349,39 @@ fn process_openat64(
         return ~(13 as u64);                    // -EFAULT/ENAMETOOLONG
     }
     let entry: u32 = vexfs_find64(path, length);
-    if entry == 0 {
+    let is_directory: bool = vexfs_is_directory64(path, length);
+    if entry == 0 && !is_directory {
         return ~(1 as u64);                     // -ENOENT
+    }
+    if entry != 0 && (flags & 0x10000) != 0 {
+        return ~(19 as u64);                    // -ENOTDIR
     }
     let owner: u32 = g_process_handle_owner64[g_current_process64];
     let descriptor: u32 = 3;
     while descriptor < 8 {
         let handle: u32 = (owner * 8) + descriptor;
         if g_handle_type64[handle] == 0 {
-            g_handle_type64[handle] = 4;
-            g_handle_object64[handle] = entry;
+            if entry != 0 {
+                g_handle_type64[handle] = 4;
+                g_handle_object64[handle] = entry;
+            } else {
+                let normalized: u64 = length;
+                while normalized > 1
+                    && *((path + normalized - 1) as *u8) == 0x2F {
+                    normalized = normalized - 1;
+                }
+                g_handle_type64[handle] = 5;
+                g_handle_object64[handle] = normalized as u32;
+                let destination: u64 = (&g_handle_path64 as u64)
+                    + ((handle as u64) * 257);
+                let character: u64 = 0;
+                while character < normalized {
+                    *((destination + character) as *u8) =
+                        *((path + character) as *u8);
+                    character = character + 1;
+                }
+                *((destination + normalized) as *u8) = 0;
+            }
             g_handle_position64[handle] = 0;
             g_process_vexfs_seen64[owner] = 1;
             return descriptor as u64;
@@ -1401,15 +1474,7 @@ fn process_lseek64(
     return target as u64;
 }
 
-fn process_fstat64(descriptor: u64, status: u64) -> u64 {
-    if g_current_process64 >= 8 || descriptor >= 8 {
-        return ~(8 as u64);
-    }
-    let owner: u32 = g_process_handle_owner64[g_current_process64];
-    let handle: u32 = (owner * 8) + (descriptor as u32);
-    if g_handle_type64[handle] != 4 {
-        return ~(8 as u64);
-    }
+fn vexfs_write_stat64(status: u64, mode: u32, size: u64) -> u64 {
     if !user_range_writable64(status, 144) {
         return ~(13 as u64);
     }
@@ -1418,14 +1483,190 @@ fn process_fstat64(descriptor: u64, status: u64) -> u64 {
         *((status + offset) as *u8) = 0;
         offset = offset + 1;
     }
-    let header: u64 =
-        g_vexfs_image64 + (g_handle_object64[handle] as u64);
-    let size: u64 = (*((header + 4) as *u32)) as u64;
-    *((status + 24) as *u32) = 0x8124;          // regular, 0444
+    *((status + 24) as *u32) = mode;
     *((status + 48) as *u64) = size;
     *((status + 56) as *u64) = 4096;
     *((status + 64) as *u64) = (size + 511) / 512;
     return 0;
+}
+
+fn process_fstat64(descriptor: u64, status: u64) -> u64 {
+    if g_current_process64 >= 8 || descriptor >= 8 {
+        return ~(8 as u64);
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let handle: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[handle] == 5 {
+        return vexfs_write_stat64(status, 0x416D, 0);
+    }
+    if g_handle_type64[handle] != 4 {
+        return ~(8 as u64);
+    }
+    let header: u64 =
+        g_vexfs_image64 + (g_handle_object64[handle] as u64);
+    let size: u64 = (*((header + 4) as *u32)) as u64;
+    return vexfs_write_stat64(status, 0x8124, size); // regular, 0444
+}
+
+fn process_newfstatat64(
+    directory: u64,
+    path: u64,
+    status: u64,
+    flags: u64
+) -> u64 {
+    if g_current_process64 >= 8 || !g_vexfs_ready64
+        || directory != ~(99 as u64)
+        || (flags != 0 && flags != 0x100) {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    let length: u64 = user_cstring_length64(path);
+    if length == 257 {
+        return ~(13 as u64);                    // -EFAULT/ENAMETOOLONG
+    }
+    let entry: u32 = vexfs_find64(path, length);
+    let result: u64 = 0;
+    if entry != 0 {
+        let header: u64 = g_vexfs_image64 + (entry as u64);
+        let size: u64 = (*((header + 4) as *u32)) as u64;
+        result = vexfs_write_stat64(status, 0x8124, size);
+    } else if vexfs_is_directory64(path, length) {
+        result = vexfs_write_stat64(status, 0x416D, 0); // directory, 0555
+    } else {
+        return ~(1 as u64);                     // -ENOENT
+    }
+    if result == 0 {
+        let owner: u32 = g_process_handle_owner64[g_current_process64];
+        g_process_vexstat_seen64[owner] = 1;
+    }
+    return result;
+}
+
+fn process_getdents64(
+    descriptor: u64,
+    buffer: u64,
+    length: u64
+) -> u64 {
+    if g_current_process64 >= 8 || descriptor >= 8 {
+        return ~(8 as u64);                     // -EBADF
+    }
+    if length > 65536 || !user_range_writable64(buffer, length) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let handle: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[handle] != 5 {
+        return ~(19 as u64);                    // -ENOTDIR
+    }
+    let directory_length: u64 = g_handle_object64[handle] as u64;
+    let directory_path: u64 = (&g_handle_path64 as u64)
+        + ((handle as u64) * 257);
+    let wanted: u32 = g_handle_position64[handle];
+    let ordinal: u32 = 0;
+    let written: u64 = 0;
+    let previous_child: u64 = 0;
+    let previous_length: u64 = 0;
+    let cursor: u64 = 16;
+    let index: u32 = 0;
+    let too_small: bool = false;
+    while index < g_vexfs_count64 {
+        let header: u64 = g_vexfs_image64 + cursor;
+        let path_length: u64 = (*(header as *u16)) as u64;
+        let archive_path: u64 = header + 40;
+        let child_start: u64 = 0;
+        let matches: bool = false;
+        if directory_length == 1
+            && *(directory_path as *u8) == 0x2F
+            && path_length > 1
+            && *(archive_path as *u8) == 0x2F {
+            child_start = 1;
+            matches = true;
+        } else if path_length > directory_length
+            && *((archive_path + directory_length) as *u8) == 0x2F {
+            matches = true;
+            let character: u64 = 0;
+            while character < directory_length {
+                if *((archive_path + character) as *u8)
+                    != *((directory_path + character) as *u8) {
+                    matches = false;
+                    character = directory_length;
+                } else {
+                    character = character + 1;
+                }
+            }
+            child_start = directory_length + 1;
+        }
+        if matches {
+            let child_length: u64 = 0;
+            while child_start + child_length < path_length
+                && *((archive_path + child_start + child_length) as *u8)
+                    != 0x2F {
+                child_length = child_length + 1;
+            }
+            let unique: bool = child_length != previous_length;
+            if !unique && child_length > 0 {
+                unique = false;
+                let character: u64 = 0;
+                while character < child_length {
+                    if *((archive_path + child_start + character) as *u8)
+                        != *((previous_child + character) as *u8) {
+                        unique = true;
+                        character = child_length;
+                    } else {
+                        character = character + 1;
+                    }
+                }
+            }
+            if unique && child_length > 0 {
+                previous_child = archive_path + child_start;
+                previous_length = child_length;
+                if ordinal >= wanted {
+                    let record_length: u64 =
+                        (19 + child_length + 1 + 7) & ~(7 as u64);
+                    if record_length > length - written {
+                        too_small = true;
+                        index = g_vexfs_count64;
+                    } else {
+                        let record: u64 = buffer + written;
+                        let cleared: u64 = 0;
+                        while cleared < record_length {
+                            *((record + cleared) as *u8) = 0;
+                            cleared = cleared + 1;
+                        }
+                        *(record as *u64) = (ordinal as u64) + 1;
+                        *((record + 8) as *u64) = (ordinal as u64) + 1;
+                        *((record + 16) as *u16) =
+                            record_length as u16;
+                        if child_start + child_length < path_length {
+                            *((record + 18) as *u8) = 4; // DT_DIR
+                        } else {
+                            *((record + 18) as *u8) = 8; // DT_REG
+                        }
+                        let character: u64 = 0;
+                        while character < child_length {
+                            *((record + 19 + character) as *u8) =
+                                *((archive_path + child_start
+                                    + character) as *u8);
+                            character = character + 1;
+                        }
+                        written = written + record_length;
+                        g_handle_position64[handle] = ordinal + 1;
+                    }
+                }
+                ordinal = ordinal + 1;
+            }
+        }
+        if index < g_vexfs_count64 {
+            let data_length: u64 = (*((header + 4) as *u32)) as u64;
+            let end: u64 = cursor + 40 + path_length + data_length;
+            cursor = (end + 7) & ~(7 as u64);
+            index = index + 1;
+        }
+    }
+    if too_small && written == 0 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    g_process_vexdir_seen64[owner] = 1;
+    return written;
 }
 
 fn handle_close_owner64(owner: u32, descriptor: u32) -> u64 {
@@ -1438,7 +1679,7 @@ fn handle_close_owner64(owner: u32, descriptor: u32) -> u64 {
         return ~(8 as u64);
     }
     let pipe: u32 = g_handle_object64[index];
-    if pipe < 4 {
+    if (kind == 2 || kind == 3) && pipe < 4 {
         if kind == 2 && g_pipe_readers64[pipe] > 0 {
             g_pipe_readers64[pipe] = g_pipe_readers64[pipe] - 1;
         }
@@ -1825,11 +2066,18 @@ fn syscall_dispatch64(
         return process_openat64(
             argument0, argument1, argument2, argument3);
     }
+    if number == 262 {
+        return process_newfstatat64(
+            argument0, argument1, argument2, argument3);
+    }
     if number == 202 {
         if argument1 == 1 {                     // FUTEX_WAKE
             return futex_wake64(argument0, argument2);
         }
         return ~(21 as u64);
+    }
+    if number == 217 {
+        return process_getdents64(argument0, argument1, argument2);
     }
     if number == 1 {
         if argument0 != 1 {
@@ -2067,7 +2315,13 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_poll_block_seen64[cxx_slot] != 0
                 && g_process_poll_timeout_seen64[cxx_slot] != 0
                 && g_process_vexfs_seen64[cxx_slot] != 0
+                && g_process_vexstat_seen64[cxx_slot] != 0
+                && g_process_vexdir_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: canonical Vex directory enumeration passed\r\n");
+                serial_write64(
+                    "MORT64: canonical Vex hierarchy stat passed\r\n");
                 serial_write64(
                     "MORT64: canonical Vex asset filesystem passed\r\n");
                 serial_write64(

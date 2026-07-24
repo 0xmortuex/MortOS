@@ -33,6 +33,10 @@ extern "C" unsigned long mortos_poll(
 extern "C" unsigned long mortos_openat(
     unsigned long, const char *, unsigned long, unsigned long);
 extern "C" unsigned long mortos_fstat(unsigned long, void *);
+extern "C" unsigned long mortos_newfstatat(
+    unsigned long, const char *, void *, unsigned long);
+extern "C" unsigned long mortos_getdents64(
+    unsigned long, void *, unsigned long);
 extern "C" unsigned long mortos_lseek(
     unsigned long, unsigned long, unsigned long);
 extern "C" unsigned long mortos_pread(
@@ -273,6 +277,57 @@ extern "C" int main() {
         || first_byte != '{'
         || mortos_close(vex_file) != 0) {
         return 12;
+    }
+    static const char vex_main_path[] = "/app/vex/src/main.js";
+    static const char vex_renderer_path[] = "/app/vex/src/renderer";
+    alignas(8) unsigned char vex_main_status[144] = {};
+    alignas(8) unsigned char vex_renderer_status[144] = {};
+    if (mortos_newfstatat(
+            ~99UL, vex_main_path, vex_main_status, 0) != 0
+        || ((*reinterpret_cast<unsigned int *>(vex_main_status + 24)
+             & 0xF000U) != 0x8000U)
+        || *reinterpret_cast<unsigned long *>(vex_main_status + 48) == 0
+        || mortos_newfstatat(
+            ~99UL, vex_renderer_path, vex_renderer_status, 0) != 0
+        || ((*reinterpret_cast<unsigned int *>(vex_renderer_status + 24)
+             & 0xF000U) != 0x4000U)) {
+        return 13;
+    }
+    unsigned long vex_directory = mortos_openat(
+        ~99UL, vex_renderer_path, 0x90000, 0);
+    alignas(8) unsigned char vex_directory_status[144] = {};
+    alignas(8) char vex_directory_entries[512] = {};
+    if (vex_directory >= ~4095UL
+        || mortos_fstat(vex_directory, vex_directory_status) != 0
+        || ((*reinterpret_cast<unsigned int *>(
+                 vex_directory_status + 24) & 0xF000U) != 0x4000U)) {
+        return 14;
+    }
+    unsigned long directory_bytes = mortos_getdents64(
+        vex_directory, vex_directory_entries,
+        sizeof(vex_directory_entries));
+    if (directory_bytes == 0 || directory_bytes > 512
+        || !contains_text(
+            vex_directory_entries, directory_bytes, "index.html", 10)
+        || mortos_getdents64(
+            vex_directory, vex_directory_entries,
+            sizeof(vex_directory_entries)) != 0
+        || mortos_close(vex_directory) != 0) {
+        return 14;
+    }
+    static const char root_path[] = "/";
+    unsigned long root_directory = mortos_openat(
+        ~99UL, root_path, 0x90000, 0);
+    if (root_directory >= ~4095UL) {
+        return 14;
+    }
+    alignas(8) char root_entries[128] = {};
+    unsigned long root_bytes = mortos_getdents64(
+        root_directory, root_entries, sizeof(root_entries));
+    if (root_bytes == 0 || root_bytes > sizeof(root_entries)
+        || !contains_text(root_entries, root_bytes, "app", 3)
+        || mortos_close(root_directory) != 0) {
+        return 14;
     }
 
     static const char message[] = "MORT64 CXX RUNTIME OK\r\n";

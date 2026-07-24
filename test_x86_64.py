@@ -74,6 +74,8 @@ def main():
         "MORT64: timer preemption context switch passed",
         "MORT64 CXX RUNTIME OK",
         "MORT64: canonical Vex asset filesystem passed",
+        "MORT64: canonical Vex hierarchy stat passed",
+        "MORT64: canonical Vex directory enumeration passed",
         "MORT64: futex wait and wake passed",
         "MORT64: blocking poll timeout passed",
         "MORT64: blocking poll event wake passed",

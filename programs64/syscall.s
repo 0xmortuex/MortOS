@@ -179,6 +179,23 @@ mortos_fstat:
     ret
 .size mortos_fstat, . - mortos_fstat
 
+.global mortos_newfstatat
+.type mortos_newfstatat, @function
+mortos_newfstatat:
+    mov %rcx, %r10
+    mov $262, %rax                 /* SYS_newfstatat */
+    syscall
+    ret
+.size mortos_newfstatat, . - mortos_newfstatat
+
+.global mortos_getdents64
+.type mortos_getdents64, @function
+mortos_getdents64:
+    mov $217, %rax                 /* SYS_getdents64 */
+    syscall
+    ret
+.size mortos_getdents64, . - mortos_getdents64
+
 .global mortos_lseek
 .type mortos_lseek, @function
 mortos_lseek:

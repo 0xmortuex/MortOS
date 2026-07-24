@@ -40,7 +40,10 @@ Each 8-byte-aligned entry contains:
 | 40 | variable | path bytes, then payload bytes |
 
 At boot, Mort validates the archive structure before exposing it. Ring-3
-programs use `openat`, `read`, `pread64`, `lseek`, `fstat`, `poll`, and `close`
-through ordinary per-process descriptors. The current image is immutable;
-writable profiles, caches, downloads, and session state will live on the
-persistent 64-bit filesystem layer rather than modifying canonical app files.
+programs use `openat`, `read`, `pread64`, `lseek`, `fstat`, `newfstatat`,
+`getdents64`, `poll`, and `close` through ordinary per-process descriptors.
+Directories are inferred from the sorted file paths, carry read-only directory
+metadata, and enumerate each immediate child once. No duplicate directory
+records are stored in the image. The current image is immutable; writable
+profiles, caches, downloads, and session state will live on the persistent
+64-bit filesystem layer rather than modifying canonical app files.
