@@ -53,6 +53,7 @@ let g_process_poll_timeout_seen64: [u8; 8] = [0; 8];
 let g_process_vexfs_seen64: [u8; 8] = [0; 8];
 let g_process_vexstat_seen64: [u8; 8] = [0; 8];
 let g_process_vexdir_seen64: [u8; 8] = [0; 8];
+let g_process_vexmmap_seen64: [u8; 8] = [0; 8];
 let g_process_wait_address64: [u64; 8] = [0; 8];
 // Wait kind: 0 none, 1 futex, 2 poll.
 let g_process_wait_kind64: [u8; 8] = [0; 8];
@@ -509,6 +510,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_vexfs_seen64[slot] = 0;
             g_process_vexstat_seen64[slot] = 0;
             g_process_vexdir_seen64[slot] = 0;
+            g_process_vexmmap_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_pollfds64[slot] = 0;
@@ -1023,15 +1025,39 @@ fn process_mmap64(
     descriptor: u64,
     offset: u64
 ) -> u64 {
-    // Bootstrap supports private anonymous mappings. MAP_FIXED is honored
-    // only for aligned addresses inside the dedicated 1 GiB arena.
+    // Bootstrap supports private anonymous mappings and private mappings of
+    // immutable VexFS files. MAP_FIXED is honored only for aligned addresses
+    // inside the dedicated arena.
     if g_current_process64 >= 8 || g_user_mmap_pt64 == 0
         || length == 0 || length > 0x00200000
         || (protection & 2) != 0 && (protection & 4) != 0
-        || (flags & 0x22) != 0x22
-        || descriptor != ~(0 as u64)
-        || offset != 0 {
+        || (flags & 2) == 0
+        || (flags & ~(0x32 as u64)) != 0 {
         return ~(21 as u64);                    // -EINVAL
+    }
+    let file_header: u64 = 0;
+    let file_size: u64 = 0;
+    let file_data: u64 = 0;
+    let file_backed: bool = (flags & 0x20) == 0;
+    if file_backed {
+        if descriptor >= 8 || (offset & 0xFFF) != 0 {
+            return ~(8 as u64);                 // -EBADF
+        }
+        let owner: u32 = g_process_handle_owner64[g_current_process64];
+        let handle: u32 = (owner * 8) + (descriptor as u32);
+        if g_handle_type64[handle] != 4 {
+            return ~(8 as u64);
+        }
+        file_header = g_vexfs_image64
+            + (g_handle_object64[handle] as u64);
+        let path_length: u64 = (*(file_header as *u16)) as u64;
+        file_size = (*((file_header + 4) as *u32)) as u64;
+        if offset > file_size || length > file_size - offset {
+            return ~(21 as u64);
+        }
+        file_data = file_header + 40 + path_length;
+    } else if descriptor != ~(0 as u64) || offset != 0 {
+        return ~(21 as u64);
     }
     let rounded: u64 = ((length + 4095) / 4096) * 4096;
     if rounded == 0 || rounded > 0x00200000 {
@@ -1085,6 +1111,20 @@ fn process_mmap64(
             return ~(11 as u64);                // -ENOMEM
         }
         page_zero64(frame);
+        if file_backed {
+            let file_position: u64 = offset + ((mapped as u64) * 4096);
+            let remaining: u64 = file_size - file_position;
+            let copied: u64 = remaining;
+            if copied > 4096 {
+                copied = 4096;
+            }
+            let byte: u64 = 0;
+            while byte < copied {
+                *((frame + byte) as *u8) =
+                    *((file_data + file_position + byte) as *u8);
+                byte = byte + 1;
+            }
+        }
         let page_flags: u64 = 1;
         if protection != 0 {
             page_flags = page_flags | 4;
@@ -1101,6 +1141,10 @@ fn process_mmap64(
         mapped = mapped + 1;
     }
     g_process_mmap_seen64[g_current_process64] = 1;
+    if file_backed {
+        let owner: u32 = g_process_handle_owner64[g_current_process64];
+        g_process_vexmmap_seen64[owner] = 1;
+    }
     mort64_flush_tlb();
     return 0x40000000 + ((first as u64) * 4096);
 }
@@ -2317,7 +2361,10 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_vexfs_seen64[cxx_slot] != 0
                 && g_process_vexstat_seen64[cxx_slot] != 0
                 && g_process_vexdir_seen64[cxx_slot] != 0
+                && g_process_vexmmap_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: private VexFS file mapping passed\r\n");
                 serial_write64(
                     "MORT64: canonical Vex directory enumeration passed\r\n");
                 serial_write64(

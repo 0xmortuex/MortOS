@@ -272,6 +272,16 @@ extern "C" int main() {
         || mortos_lseek(vex_file, 0, 0) != 0) {
         return 12;
     }
+    unsigned long vex_mapping = reinterpret_cast<unsigned long>(
+        mortos_mmap(0, 512, 1, 2, vex_file, 0));
+    if (vex_mapping >= ~4095UL
+        || *reinterpret_cast<const char *>(vex_mapping) != '{'
+        || !contains_text(
+            reinterpret_cast<const char *>(vex_mapping), 512,
+            "\"version\": \"2.28.1\"", 19)
+        || mortos_munmap(vex_mapping, 512) != 0) {
+        return 12;
+    }
     char first_byte = 0;
     if (mortos_read(vex_file, &first_byte, 1) != 1
         || first_byte != '{'

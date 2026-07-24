@@ -42,6 +42,8 @@ Each 8-byte-aligned entry contains:
 At boot, Mort validates the archive structure before exposing it. Ring-3
 programs use `openat`, `read`, `pread64`, `lseek`, `fstat`, `newfstatat`,
 `getdents64`, `poll`, and `close` through ordinary per-process descriptors.
+Private file-backed `mmap` allocates independent user frames, copies the
+requested immutable bytes, and keeps normal W^X enforcement.
 Directories are inferred from the sorted file paths, carry read-only directory
 metadata, and enumerate each immediate child once. No duplicate directory
 records are stored in the image. The current image is immutable; writable
