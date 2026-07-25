@@ -402,6 +402,7 @@ mort64_syscall_entry:
      */
     mov %rdi, mort64_futex_address(%rip)
     mov %rdx, mort64_futex_expected(%rip)
+    mov %r10, mort64_futex_timeout(%rip)
     mov %rsp, mort64_yield_rsp(%rip)
     mov %rcx, mort64_yield_rip(%rip)
     mov %r11, mort64_yield_rflags(%rip)
@@ -414,6 +415,7 @@ mort64_syscall_entry:
     mov mort64_kernel_rsp(%rip), %rsp
     mov mort64_futex_address(%rip), %rdi
     mov mort64_futex_expected(%rip), %rsi
+    mov mort64_futex_timeout(%rip), %rdx
     cld
     sub $8, %rsp
     call mort_on_futex_wait64
@@ -793,6 +795,8 @@ mort64_yield_r15:
 mort64_futex_address:
     .quad 0
 mort64_futex_expected:
+    .quad 0
+mort64_futex_timeout:
     .quad 0
 mort64_join_tid:
     .quad 0

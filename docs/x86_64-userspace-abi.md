@@ -104,7 +104,7 @@ The initial numeric assignments are:
 | 80 | `chdir(path)` | Changes the shared process working directory after read-only VexFS directory validation |
 | 158 | `arch_prctl(code, address)` | Implements bounded `ARCH_SET_FS`/`ARCH_GET_FS`; FS base is restored per task |
 | 186 | `gettid()` | Returns the current schedulable task ID |
-| 202 | `futex(address, operation, value, ...)` | Implements atomic `FUTEX_WAIT` scheduler blocking and same-address-space `FUTEX_WAKE` |
+| 202 | `futex(address, operation, value, timeout_ms)` | Implements atomic `FUTEX_WAIT`, optional PIT-driven relative deadlines with `ETIMEDOUT`, and same-address-space `FUTEX_WAKE` |
 | 217 | `getdents64(fd, buffer, length)` | Enumerates unique immediate children of canonical VexFS directories using Linux-compatible directory records |
 | 228 | `clock_gettime(clock_id, timespec)` | Implemented for `CLOCK_MONOTONIC` from the 100 Hz kernel tick |
 | 232 | `epoll_wait(epfd, events, maxevents, timeout)` | Implements level-triggered immediate, infinite, and PIT-deadline waits with scheduler blocking |

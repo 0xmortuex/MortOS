@@ -467,6 +467,21 @@ extern "C" int main(int argc, char **argv, char **envp) {
     if (sleep_after_ns < sleep_before_ns + 10000000UL) {
         return 20;
     }
+    unsigned int timed_futex = 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &sleep_before) != 0
+        || mortos_futex_timed(&timed_futex, 0, 0, 20) != ~109UL
+        || clock_gettime(CLOCK_MONOTONIC, &sleep_after) != 0) {
+        return 20;
+    }
+    sleep_before_ns =
+        static_cast<unsigned long>(sleep_before.tv_sec) * 1000000000UL
+        + static_cast<unsigned long>(sleep_before.tv_nsec);
+    sleep_after_ns =
+        static_cast<unsigned long>(sleep_after.tv_sec) * 1000000000UL
+        + static_cast<unsigned long>(sleep_after.tv_nsec);
+    if (sleep_after_ns < sleep_before_ns + 10000000UL) {
+        return 20;
+    }
 
     unsigned int pipe_descriptors[2] = {};
     char pipe_result[sizeof(pipe_message)] = {};

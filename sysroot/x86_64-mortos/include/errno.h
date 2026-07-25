@@ -23,5 +23,6 @@ int *__errno_location(void);
 #define EPERM 1
 #define ESRCH 3
 #define EOVERFLOW 75
+#define ETIMEDOUT 110
 
 #endif

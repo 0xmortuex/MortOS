@@ -50,6 +50,7 @@ let g_process_join_seen64: [u8; 8] = [0; 8];
 let g_process_handle_owner64: [u32; 8] = [0; 8];
 let g_process_pipe_seen64: [u8; 8] = [0; 8];
 let g_process_futex_seen64: [u8; 8] = [0; 8];
+let g_process_futex_timeout_seen64: [u8; 8] = [0; 8];
 let g_process_poll_seen64: [u8; 8] = [0; 8];
 let g_process_poll_block_seen64: [u8; 8] = [0; 8];
 let g_process_poll_timeout_seen64: [u8; 8] = [0; 8];
@@ -645,6 +646,7 @@ fn process_create64(
             g_process_handle_owner64[slot] = slot;
             g_process_pipe_seen64[slot] = 0;
             g_process_futex_seen64[slot] = 0;
+            g_process_futex_timeout_seen64[slot] = 0;
             g_process_poll_seen64[slot] = 0;
             g_process_poll_block_seen64[slot] = 0;
             g_process_poll_timeout_seen64[slot] = 0;
@@ -1106,7 +1108,11 @@ fn on_user_yield64() -> u64 {
         + ((g_current_process64 as u64) * 144);
 }
 
-fn on_futex_wait64(address: u64, expected: u64) -> u64 {
+fn on_futex_wait64(
+    address: u64,
+    expected: u64,
+    timeout: u64
+) -> u64 {
     if g_current_process64 >= 8 || (address & 3) != 0 {
         return ~(21 as u64);                    // -EINVAL
     }
@@ -1116,10 +1122,26 @@ fn on_futex_wait64(address: u64, expected: u64) -> u64 {
     if (*(address as *u32)) != (expected as u32) {
         return ~(10 as u64);                    // -EAGAIN
     }
+    if timeout != ~(0 as u64)
+        && timeout > 0x7FFFFFFFFFFFFFFF {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if timeout == 0 {
+        return ~(109 as u64);                   // -ETIMEDOUT
+    }
     let slot: u32 = g_current_process64;
+    let deadline: u64 = ~(0 as u64);
+    if timeout != ~(0 as u64) {
+        let delta: u64 = (timeout + 9) / 10;
+        deadline = g_timer_ticks64 + delta;
+        if deadline < g_timer_ticks64 {
+            deadline = (~(0 as u64)) - 1;
+        }
+    }
     g_process_state64[slot] = 5;
     g_process_wait_address64[slot] = address;
     g_process_wait_kind64[slot] = 1;
+    g_process_poll_deadline64[slot] = deadline;
     g_process_context_valid64[slot] = 1;
     let owner: u32 = g_process_handle_owner64[slot];
     g_process_futex_seen64[owner] = 1;
@@ -1144,6 +1166,7 @@ fn futex_wake64(address: u64, count: u64) -> u64 {
             && g_process_wait_address64[slot] == address {
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
+            g_process_poll_deadline64[slot] = 0;
             g_process_state64[slot] = 1;
             woken = woken + 1;
         }
@@ -2971,13 +2994,20 @@ fn wake_poll_timeouts64() {
     let slot: u32 = 0;
     while slot < 8 {
         if g_process_state64[slot] == 5
-            && (g_process_wait_kind64[slot] == 2
+            && (g_process_wait_kind64[slot] == 1
+                || g_process_wait_kind64[slot] == 2
                 || g_process_wait_kind64[slot] == 3)
             && g_process_poll_deadline64[slot] != ~(0 as u64)
             && g_timer_ticks64 >= g_process_poll_deadline64[slot] {
             let owner: u32 = g_process_handle_owner64[slot];
-            g_process_poll_timeout_seen64[owner] = 1;
-            task_wait_return64(slot, 0);
+            if g_process_wait_kind64[slot] == 1 {
+                g_process_futex_timeout_seen64[owner] = 1;
+                g_process_wait_address64[slot] = 0;
+                task_wait_return64(slot, ~(109 as u64));
+            } else {
+                g_process_poll_timeout_seen64[owner] = 1;
+                task_wait_return64(slot, 0);
+            }
         }
         slot = slot + 1;
     }
@@ -3367,6 +3397,7 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_eventfd_seen64[cxx_slot] != 0
                 && g_process_epoll_seen64[cxx_slot] != 0
                 && g_process_join_seen64[cxx_slot] != 0
+                && g_process_futex_timeout_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
                 serial_write64(
                     "MORT64: pthread TLS protected workers passed\r\n");
@@ -3382,6 +3413,8 @@ fn kmain64(multiboot_info: u64) {
                     "MORT64: POSIX semaphore blocking passed\r\n");
                 serial_write64(
                     "MORT64: POSIX monotonic sleep passed\r\n");
+                serial_write64(
+                    "MORT64: timed futex deadline passed\r\n");
                 serial_write64(
                     "MORT64: TLS errno and stack canary passed\r\n");
                 serial_write64(

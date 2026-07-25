@@ -149,10 +149,20 @@ mortos_pipe2:
 .global mortos_futex
 .type mortos_futex, @function
 mortos_futex:
+    mov $-1, %r10                  /* no deadline */
     mov $202, %rax                 /* SYS_futex: WAIT/WAKE subset */
     syscall
     ret
 .size mortos_futex, . - mortos_futex
+
+.global mortos_futex_timed
+.type mortos_futex_timed, @function
+mortos_futex_timed:
+    mov %rcx, %r10                 /* relative timeout in milliseconds */
+    mov $202, %rax
+    syscall
+    ret
+.size mortos_futex_timed, . - mortos_futex_timed
 
 .global mortos_poll
 .type mortos_poll, @function

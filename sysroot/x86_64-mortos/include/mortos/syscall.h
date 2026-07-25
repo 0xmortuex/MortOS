@@ -29,6 +29,9 @@ unsigned long mortos_fs_load(unsigned long offset);
 unsigned long mortos_pipe2(unsigned int *descriptors, unsigned long flags);
 unsigned long mortos_futex(
     unsigned int *address, unsigned long operation, unsigned int value);
+unsigned long mortos_futex_timed(
+    unsigned int *address, unsigned long operation,
+    unsigned int value, unsigned long timeout_milliseconds);
 unsigned long mortos_poll(
     void *descriptors, unsigned long count, unsigned long timeout);
 unsigned long mortos_openat(
