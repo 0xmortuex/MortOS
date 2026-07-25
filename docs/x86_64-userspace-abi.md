@@ -84,6 +84,7 @@ The initial numeric assignments are:
 | 228 | `clock_gettime(clock_id, timespec)` | Implemented for `CLOCK_MONOTONIC` from the 100 Hz kernel tick |
 | 257 | `openat(directory, path, flags, mode)` | Implements normalized absolute, `AT_FDCWD`, and directory-relative file/directory lookup in canonical VexFS |
 | 262 | `newfstatat(directory, path, status, flags)` | Reports regular-file or inferred-directory metadata for normalized absolute and relative VexFS paths |
+| 290 | `eventfd2(initial, flags)` | Creates a nonblocking 64-bit event counter integrated with descriptor read/write, `poll`, cross-thread wakeups, and close |
 | 293 | `pipe2(descriptors, flags)` | Implements a bounded in-kernel pipe and two per-process descriptors |
 | 318 | `getrandom(buffer, length, flags)` | Fills validated user buffers from x86 RDRAND with bounded retries and fails closed when hardware entropy is unavailable |
 | 400 | `thread_create(entry, stack_top, argument, return_trampoline)` | MortOS-native validated thread primitive; shares the process address space and schedules a full independent context |

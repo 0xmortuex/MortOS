@@ -68,10 +68,12 @@ let g_process_pollfds64: [u64; 8] = [0; 8];
 let g_process_poll_count64: [u64; 8] = [0; 8];
 let g_process_poll_deadline64: [u64; 8] = [0; 8];
 // Eight descriptors per owning process. Types: 0 free, 2 pipe read, 3 write,
-// 4 read-only VexFS file, 5 read-only VexFS directory.
+// 4 read-only VexFS file, 5 read-only VexFS directory, 6 event counter.
 let g_handle_type64: [u8; 64] = [0; 64];
 let g_handle_object64: [u32; 64] = [0; 64];
 let g_handle_position64: [u32; 64] = [0; 64];
+let g_handle_flags64: [u32; 64] = [0; 64];
+let g_handle_value64: [u64; 64] = [0; 64];
 // Directory descriptors retain a normalized absolute path. A fixed stride
 // keeps descriptor lifetime independent from userspace buffers.
 let g_handle_path64: [u8; 16448] = [0; 16448];
@@ -92,6 +94,7 @@ let g_vexfs_count64: u32 = 0;
 let g_vexfs_ready64: bool = false;
 let g_entropy_ready64: bool = false;
 let g_process_entropy_seen64: [u8; 8] = [0; 8];
+let g_process_eventfd_seen64: [u8; 8] = [0; 8];
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
@@ -530,6 +533,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_path_length64[slot] = 0;
             g_process_path_error64[slot] = 0;
             g_process_entropy_seen64[slot] = 0;
+            g_process_eventfd_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_pollfds64[slot] = 0;
@@ -540,6 +544,8 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
                 g_handle_type64[(slot * 8) + descriptor] = 0;
                 g_handle_object64[(slot * 8) + descriptor] = 0;
                 g_handle_position64[(slot * 8) + descriptor] = 0;
+                g_handle_flags64[(slot * 8) + descriptor] = 0;
+                g_handle_value64[(slot * 8) + descriptor] = 0;
                 descriptor = descriptor + 1;
             }
             g_next_pid64 = g_next_pid64 + 1;
@@ -2039,6 +2045,8 @@ fn handle_close_owner64(owner: u32, descriptor: u32) -> u64 {
     g_handle_type64[index] = 0;
     g_handle_object64[index] = 0;
     g_handle_position64[index] = 0;
+    g_handle_flags64[index] = 0;
+    g_handle_value64[index] = 0;
     return 0;
 }
 
@@ -2053,6 +2061,29 @@ fn process_close64(descriptor: u64) -> u64 {
         wake_poll_waiters64();
     }
     return result;
+}
+
+fn process_eventfd2_64(initial: u64, flags: u64) -> u64 {
+    if g_current_process64 >= 8 || initial > 0xFFFFFFFF
+        || (flags & ~(0x80801 as u64)) != 0 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let descriptor: u32 = 3;
+    while descriptor < 8 {
+        let handle: u32 = (owner * 8) + descriptor;
+        if g_handle_type64[handle] == 0 {
+            g_handle_type64[handle] = 6;
+            g_handle_object64[handle] = 0;
+            g_handle_position64[handle] = 0;
+            g_handle_flags64[handle] = flags as u32;
+            g_handle_value64[handle] = initial;
+            g_process_eventfd_seen64[owner] = 1;
+            return descriptor as u64;
+        }
+        descriptor = descriptor + 1;
+    }
+    return ~(23 as u64);                        // -EMFILE
 }
 
 fn process_pipe2_64(descriptors: u64, flags: u64) -> u64 {
@@ -2113,6 +2144,24 @@ fn process_pipe_write64(
     }
     let owner: u32 = g_process_handle_owner64[g_current_process64];
     let index: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[index] == 6 {
+        if length != 8 {
+            return ~(21 as u64);                // -EINVAL
+        }
+        if !user_range_readable64(buffer, 8) {
+            return ~(13 as u64);                // -EFAULT
+        }
+        let value: u64 = *(buffer as *u64);
+        if value == ~(0 as u64) {
+            return ~(21 as u64);
+        }
+        if value > (~(1 as u64)) - g_handle_value64[index] {
+            return ~(10 as u64);                // -EAGAIN
+        }
+        g_handle_value64[index] = g_handle_value64[index] + value;
+        wake_poll_waiters64();
+        return 8;
+    }
     if g_handle_type64[index] != 3 {
         return ~(8 as u64);
     }
@@ -2157,6 +2206,27 @@ fn process_pipe_read64(
     }
     let owner: u32 = g_process_handle_owner64[g_current_process64];
     let index: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[index] == 6 {
+        if length != 8 {
+            return ~(21 as u64);                // -EINVAL
+        }
+        if !user_range_writable64(buffer, 8) {
+            return ~(13 as u64);                // -EFAULT
+        }
+        if g_handle_value64[index] == 0 {
+            return ~(10 as u64);                // -EAGAIN
+        }
+        let value: u64 = g_handle_value64[index];
+        if (g_handle_flags64[index] & 1) != 0 {
+            value = 1;
+            g_handle_value64[index] = g_handle_value64[index] - 1;
+        } else {
+            g_handle_value64[index] = 0;
+        }
+        *(buffer as *u64) = value;
+        wake_poll_waiters64();
+        return 8;
+    }
     if g_handle_type64[index] == 4 {
         let result: u64 = vexfs_copy64(
             g_handle_object64[index],
@@ -2257,6 +2327,15 @@ fn process_poll64(pollfds: u64, count: u64, timeout: u64) -> u64 {
                     if (events & 1) != 0
                         && g_handle_position64[handle] < size {
                         returned = returned | 1;// regular-file POLLIN
+                    }
+                } else if kind == 6 {
+                    if (events & 1) != 0
+                        && g_handle_value64[handle] != 0 {
+                        returned = returned | 1;// eventfd POLLIN
+                    }
+                    if (events & 4) != 0
+                        && g_handle_value64[handle] < ~(1 as u64) {
+                        returned = returned | 4;// eventfd POLLOUT
                     }
                 }
             }
@@ -2440,6 +2519,9 @@ fn syscall_dispatch64(
     }
     if number == 293 {
         return process_pipe2_64(argument0, argument1);
+    }
+    if number == 290 {
+        return process_eventfd2_64(argument0, argument1);
     }
     if number == 17 {
         return process_pread64(
@@ -2721,7 +2803,10 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_wide_mmap_seen64[cxx_slot] != 0
                 && g_process_cwd_seen64[cxx_slot] != 0
                 && g_process_entropy_seen64[cxx_slot] != 0
+                && g_process_eventfd_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: eventfd poll wakeup passed\r\n");
                 serial_write64(
                     "MORT64: getrandom entropy ABI passed\r\n");
                 serial_write64(

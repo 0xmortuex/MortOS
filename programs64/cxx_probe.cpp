@@ -41,6 +41,8 @@ extern "C" unsigned long mortos_getcwd(void *, unsigned long);
 extern "C" unsigned long mortos_chdir(const char *);
 extern "C" unsigned long mortos_getrandom(
     void *, unsigned long, unsigned long);
+extern "C" unsigned long mortos_eventfd2(
+    unsigned long, unsigned long);
 extern "C" unsigned long mortos_lseek(
     unsigned long, unsigned long, unsigned long);
 extern "C" unsigned long mortos_pread(
@@ -73,6 +75,11 @@ struct PipeWorkerArguments {
     unsigned int write_descriptor;
 };
 
+struct EventWorkerArguments {
+    unsigned int descriptor;
+    unsigned long value;
+};
+
 extern "C" unsigned long thread_worker(void *opaque) {
     if (mortos_getpid() != 5 || mortos_gettid() == 5) {
         return 30;
@@ -100,6 +107,20 @@ extern "C" unsigned long pipe_worker(void *opaque) {
         return 40;
     }
     return 32;
+}
+
+extern "C" unsigned long event_worker(void *opaque) {
+    if (mortos_yield() != 0) {
+        return 41;
+    }
+    auto *arguments = static_cast<EventWorkerArguments *>(opaque);
+    if (mortos_fd_write(
+            arguments->descriptor,
+            &arguments->value,
+            sizeof(arguments->value)) != sizeof(arguments->value)) {
+        return 41;
+    }
+    return 33;
 }
 
 static bool contains_text(
@@ -284,6 +305,35 @@ extern "C" int main() {
         || mortos_close(pipe_descriptors[1]) != 0
         || mortos_munmap(pipe_stack, 8192) != 0) {
         return 11;
+    }
+
+    unsigned long event_descriptor = mortos_eventfd2(0, 0x80800);
+    unsigned long event_stack = mortos_mmap(
+        0, 8192, 3, 0x22, ~0UL, 0);
+    if (event_descriptor >= ~4095UL || event_stack >= ~4095UL) {
+        return 18;
+    }
+    EventWorkerArguments event_arguments = {
+        static_cast<unsigned int>(event_descriptor), 7UL};
+    unsigned long event_thread = mortos_thread_create(
+        reinterpret_cast<unsigned long>(&event_worker),
+        event_stack + 8192,
+        reinterpret_cast<unsigned long>(&event_arguments));
+    PollDescriptor event_readiness[1] = {
+        {static_cast<int>(event_descriptor), 1, 0},
+    };
+    unsigned long event_value = 0;
+    if (event_thread <= pipe_thread
+        || mortos_poll(event_readiness, 1, 1000) != 1
+        || (event_readiness[0].returned & 1) == 0
+        || mortos_read(
+            event_descriptor, &event_value, sizeof(event_value)) != 8
+        || event_value != 7
+        || mortos_read(
+            event_descriptor, &event_value, sizeof(event_value)) != ~10UL
+        || mortos_close(event_descriptor) != 0
+        || mortos_munmap(event_stack, 8192) != 0) {
+        return 18;
     }
 
     static const char vex_package_path[] = "/app/vex/package.json";

@@ -220,6 +220,14 @@ mortos_getrandom:
     ret
 .size mortos_getrandom, . - mortos_getrandom
 
+.global mortos_eventfd2
+.type mortos_eventfd2, @function
+mortos_eventfd2:
+    mov $290, %rax                 /* SYS_eventfd2 */
+    syscall
+    ret
+.size mortos_eventfd2, . - mortos_eventfd2
+
 .global mortos_lseek
 .type mortos_lseek, @function
 mortos_lseek:

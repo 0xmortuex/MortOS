@@ -82,6 +82,7 @@ def main():
         "MORT64: lazy 1 GiB mmap arena passed",
         "MORT64: relative VexFS path resolution passed",
         "MORT64: getrandom entropy ABI passed",
+        "MORT64: eventfd poll wakeup passed",
         "MORT64: futex wait and wake passed",
         "MORT64: blocking poll timeout passed",
         "MORT64: blocking poll event wake passed",
