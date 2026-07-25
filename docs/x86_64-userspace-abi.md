@@ -24,7 +24,13 @@ now provide IPv4 stream descriptors with `SO_TYPE`, `SO_ERROR`,
 nonblocking/cloexec control, poll/epoll semantics, and deterministic cleanup.
 A ring-3 `connect` call accepts a standard `sockaddr_in`, selects the on-link or
 gateway ARP target from the leased subnet, and stores the completed handshake's
-per-socket ports and sequence numbers. Stream payload transfer remains next.
+per-socket ports and sequence numbers. Ordinary ring-3 `write` now emits
+bounded TCP payload segments and advances the
+send sequence; `read` validates and queues matching response data, advances the
+receive sequence, sends ACKs, and reports EOF/reset state. The boot regression
+connects to a real Internet endpoint, sends an HTTP request, validates an
+`HTTP/` response, and closes with FIN. Retransmission and additional socket
+operations remain incomplete.
 
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,

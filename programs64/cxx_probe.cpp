@@ -796,7 +796,24 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || getsockopt(
             connected_socket, SOL_SOCKET, SO_ERROR,
             &socket_error, &socket_option_length) != 0
-        || socket_error != 0
+        || socket_error != 0) {
+        return 19;
+    }
+    static const char http_request[] =
+        "GET / HTTP/1.0\r\n"
+        "Host: one.one.one.one\r\n"
+        "Connection: close\r\n\r\n";
+    static char http_response[1024] = {};
+    ssize_t http_bytes = 0;
+    if (write(
+            connected_socket, http_request,
+            sizeof(http_request) - 1) != sizeof(http_request) - 1
+        || (http_bytes = read(
+                connected_socket, http_response,
+                sizeof(http_response))) <= 0
+        || !contains_text(
+            http_response, static_cast<unsigned long>(http_bytes),
+            "HTTP/", 5)
         || close(connected_socket) != 0) {
         return 19;
     }
