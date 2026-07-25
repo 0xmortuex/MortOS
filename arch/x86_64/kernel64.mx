@@ -22,6 +22,9 @@ let g_user_pointer_rejected64: bool = false;
 let g_user_fault_seen64: bool = false;
 let g_user_fault_vector64: u64 = 0;
 let g_user_fault_error64: u64 = 0;
+let g_diag_fault_rip64: u64 = 0;
+let g_diag_fault_error64: u64 = 0;
+let g_diag_fault_cr2_64: u64 = 0;
 // Process states: 0 FREE, 1 READY, 2 RUNNING, 3 EXITED, 4 FAULTED, 5 WAITING.
 let g_process_state64: [u8; 8] = [0; 8];
 let g_process_pid64: [u64; 8] = [0; 8];
@@ -168,6 +171,7 @@ extern fn mort64_cxx_image_size() -> u64;
 extern fn mort64_enter_user(entry: u64, stack_top: u64, page_root: u64);
 extern fn mort64_resume_user(context: u64, page_root: u64);
 extern fn mort64_flush_tlb();
+extern fn mort64_read_cr2() -> u64;
 extern fn mort64_set_user_fs(address: u64);
 extern fn mort64_rdrand_supported() -> u64;
 extern fn mort64_rdrand_store(output: u64) -> u64;
@@ -203,6 +207,23 @@ fn serial_write64(text: *u8) {
         address = address + 1;
         value = *(address as *u8);
     }
+}
+
+fn serial_hex64(label: *u8, value: u64) {
+    serial_write64(label);
+    let i: u32 = 0;
+    while i < 16 {
+        let shift: u32 = 60 - (i * 4);
+        let nibble: u8 = ((value >> shift) & 0xF) as u8;
+        if nibble < 10 {
+            serial_put64((0x30 + nibble) as u8);
+        } else {
+            serial_put64((0x41 + (nibble - 10)) as u8);
+        }
+        i = i + 1;
+    }
+    serial_put64(0x0D);
+    serial_put64(0x0A);
 }
 
 fn timer_init64() {
@@ -1876,6 +1897,25 @@ fn elf64_user_page_root(
         return 0;
     }
 
+    // Map an eight-page (32 KiB) downward-growing stack at the top of the user
+    // window. A single page overflowed once real libuv structures (uv_loop_t is
+    // ~840 bytes) landed on main's frame, so ring-3 code gets genuine headroom
+    // below the argv page. Pages 504..510 are growth room; page 511 carries the
+    // System V argv/envp/auxv block. All are reclaimed by process_reap64, which
+    // frees every present user_pt entry.
+    let stack_growth_page: u32 = 504;
+    while stack_growth_page < 511 {
+        let growth_frame: u64 = frame_alloc64();
+        if growth_frame == 0 {
+            return 0;
+        }
+        page_zero64(growth_frame);
+        page_table_set64(
+            user_pt,
+            stack_growth_page,
+            growth_frame | no_execute | 0x7); // user RW, NX
+        stack_growth_page = stack_growth_page + 1;
+    }
     let stack_frame: u64 = frame_alloc64();
     if stack_frame == 0 {
         return 0;
@@ -2509,6 +2549,14 @@ fn on_exception64(
         g_user_fault_seen64 = true;
         g_user_fault_vector64 = vector;
         g_user_fault_error64 = error;
+        if vector == 14 {
+            let diag_cr2: u64 = mort64_read_cr2();
+            if diag_cr2 != 0x00200000 {
+                g_diag_fault_rip64 = rip;
+                g_diag_fault_error64 = error;
+                g_diag_fault_cr2_64 = diag_cr2;
+            }
+        }
         if g_current_process64 < 8 {
             g_process_state64[g_current_process64] = 4;
             g_process_fault64[g_current_process64] = vector;
@@ -5814,6 +5862,15 @@ fn kmain64(multiboot_info: u64) {
             } else {
                 serial_write64(
                     "MORT64 ERROR: C++ runtime failed\r\n");
+                serial_hex64("MORT64 DIAG cxx state=",
+                    g_process_state64[cxx_slot] as u64);
+                serial_hex64("MORT64 DIAG cxx exit=",
+                    g_process_exit64[cxx_slot] as u64);
+                serial_hex64("MORT64 DIAG cxx fault=",
+                    g_process_fault64[cxx_slot] as u64);
+                serial_hex64("MORT64 DIAG fault rip=", g_diag_fault_rip64);
+                serial_hex64("MORT64 DIAG fault err=", g_diag_fault_error64);
+                serial_hex64("MORT64 DIAG fault cr2=", g_diag_fault_cr2_64);
             }
             if process_reap64(probe_slot)
                 && process_reap64(isolation_slot)

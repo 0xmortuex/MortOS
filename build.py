@@ -93,6 +93,30 @@ VEXFS64 = os.path.join(BUILD64, "vexfs.bin")
 SYSROOT_SOURCE64 = os.path.join(HERE, "sysroot", "x86_64-mortos")
 SYSROOT64 = os.path.join(BUILD64, "sysroot")
 VEX_EXPECTED_COMMIT = "1b10ec57fa9ebf77ed86c2d5d28f72aad7c1007a"
+LIBUV_ROOT = os.path.join(HERE, "third_party", "libuv")
+LIBUV_EXPECTED_COMMIT = "1cfa32ff59c076ffb6ed735bbc8c18361558661f"
+LIBUV_PLATFORM = os.path.join(HERE, "ports", "libuv", "mortos_platform.h")
+LIBUV_SOURCES = (
+    "src/uv-common.c",
+    "src/uv-data-getter-setters.c",
+    "src/version.c",
+    "src/timer.c",
+    "src/threadpool.c",
+    "src/unix/async.c",
+    "src/unix/core.c",
+    "src/unix/loop.c",
+    "src/unix/loop-watcher.c",
+    "src/unix/no-proctitle.c",
+    "src/unix/pipe.c",
+    "src/unix/poll.c",
+    "src/unix/posix-hrtime.c",
+    "src/unix/posix-poll.c",
+    "src/unix/process.c",
+    "src/unix/signal.c",
+    "src/unix/stream.c",
+    "src/unix/thread.c",
+    "src/unix/udp.c",
+)
 DISK = os.path.join(BUILD, "disk.img")
 
 # User programs: compiled from programs/*.mx into flat binaries the kernel
@@ -286,6 +310,13 @@ def build64():
         sysroot_include,
         dirs_exist_ok=True,
     )
+    libuv_head = subprocess.run(
+        ["git", "-C", LIBUV_ROOT, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    if libuv_head != LIBUV_EXPECTED_COMMIT:
+        sys.exit(
+            f"libuv revision mismatch: got {libuv_head}, "
+            f"expected {LIBUV_EXPECTED_COMMIT}")
     vexfs = _build_vexfs()
     cc = _zig()
     arch = os.path.join(HERE, "arch", "x86_64")
@@ -333,6 +364,7 @@ def build64():
     # Build a separately linked freestanding C++ process. This is the first
     # executable consumer of the x86_64-mortos C/C++ runtime layer.
     cxx = cc[:-1] + ["c++"]
+    ar = cc[:-1] + ["ar"]
     cxx_flags = [
         *c_flags, "-fno-exceptions", "-fno-rtti",
         "-fno-threadsafe-statics", "-isystem", sysroot_include,
@@ -341,6 +373,32 @@ def build64():
     cxx_runtime_o = os.path.join(BUILD64, "user_cxx_runtime.o")
     libc_o = os.path.join(BUILD64, "user_libc.o")
     cxx_probe_o = os.path.join(BUILD64, "user_cxx_probe.o")
+    libuv_objects = []
+    libuv_object_dir = os.path.join(BUILD64, "libuv")
+    os.makedirs(libuv_object_dir, exist_ok=True)
+    libuv_flags = [
+        "-target", TARGET64, "-ffreestanding", "-fno-builtin",
+        "-fno-stack-protector", "-fno-pie",
+        "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
+        "-mno-red-zone", "-mno-sse", "-mno-sse2", "-mno-mmx", "-O2",
+        "-ffunction-sections", "-fdata-sections",
+        "-D__MORTOS__=1", "-D_GNU_SOURCE=1",
+        "-include", LIBUV_PLATFORM,
+        "-isystem", sysroot_include,
+        "-I", os.path.join(LIBUV_ROOT, "include"),
+        "-I", os.path.join(LIBUV_ROOT, "src"),
+    ]
+    for source in LIBUV_SOURCES:
+        source_path = os.path.join(LIBUV_ROOT, *source.split("/"))
+        object_name = source.replace("/", "_").removesuffix(".c") + ".o"
+        object_path = os.path.join(libuv_object_dir, object_name)
+        subprocess.run(
+            [*cc, *libuv_flags, "-c", source_path, "-o", object_path],
+            check=True,
+        )
+        libuv_objects.append(object_path)
+    libuv = os.path.join(sysroot_lib, "libuv.a")
+    subprocess.run([*ar, "rcs", libuv, *libuv_objects], check=True)
     subprocess.run([*cc, *asm_flags, "-c",
                     os.path.join(PROGRAMS64, "cxx_start.s"),
                     "-o", cxx_start_o], check=True)
@@ -350,14 +408,17 @@ def build64():
     subprocess.run([*cxx, *cxx_flags, "-c",
                     os.path.join(PROGRAMS64, "libc.cpp"),
                     "-o", libc_o], check=True)
-    probe_flags = [*cxx_flags, "-fstack-protector-all"]
+    probe_flags = [
+        *cxx_flags, "-fstack-protector-all",
+        "-D__MORTOS__=1", "-include", LIBUV_PLATFORM,
+        "-isystem", os.path.join(LIBUV_ROOT, "include"),
+    ]
     subprocess.run([*cxx, *probe_flags, "-c",
                     os.path.join(PROGRAMS64, "cxx_probe.cpp"),
                     "-o", cxx_probe_o], check=True)
     crt1 = os.path.join(sysroot_lib, "crt1.o")
     libmortos = os.path.join(sysroot_lib, "libmortos.a")
     shutil.copy2(cxx_start_o, crt1)
-    ar = cc[:-1] + ["ar"]
     subprocess.run([
         *ar, "rcs", libmortos,
         user_syscall_o, cxx_runtime_o, libc_o, user_runtime_o,
@@ -365,8 +426,8 @@ def build64():
     subprocess.run([
         *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",
         "-Wl,-T," + os.path.join(PROGRAMS64, "prog.ld"),
-        "-Wl,--build-id=none", "-Wl,-e,_user_start",
-        "-o", CXX64_ELF, crt1, cxx_probe_o, libmortos,
+        "-Wl,--build-id=none", "-Wl,--gc-sections", "-Wl,-e,_user_start",
+        "-o", CXX64_ELF, crt1, cxx_probe_o, libuv, libmortos,
     ], check=True)
 
     # Invalidate Zig's .incbin cache whenever the userspace ELF changes.

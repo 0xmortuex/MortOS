@@ -12,7 +12,11 @@
 #include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -31,9 +35,252 @@ static long posix_result(unsigned long result) {
     return static_cast<long>(result);
 }
 
+struct __mortos_file {
+    int descriptor;
+};
+
+static FILE standard_input = {STDIN_FILENO};
+static FILE standard_output = {STDOUT_FILENO};
+static FILE standard_error = {STDERR_FILENO};
+
+extern "C" {
+FILE *stdin = &standard_input;
+FILE *stdout = &standard_output;
+FILE *stderr = &standard_error;
+}
+
+extern "C" int fileno(FILE *stream) {
+    if (!stream) {
+        errno = EINVAL;
+        return -1;
+    }
+    return stream->descriptor;
+}
+
+static int formatted_write(
+    FILE *stream, const char *text, size_t length
+) {
+    if (write(stream->descriptor, text, length)
+        != static_cast<ssize_t>(length)) {
+        return -1;
+    }
+    return static_cast<int>(length);
+}
+
+static int formatted_integer(
+    FILE *stream, long long value, bool is_signed
+) {
+    char digits[24];
+    unsigned int used = 0;
+    bool negative = is_signed && value < 0;
+    unsigned long long magnitude = negative
+        ? static_cast<unsigned long long>(-(value + 1)) + 1
+        : static_cast<unsigned long long>(value);
+    do {
+        digits[used++] = static_cast<char>('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude != 0);
+    if (negative) {
+        digits[used++] = '-';
+    }
+    for (unsigned int left = 0, right = used - 1; left < right;
+         ++left, --right) {
+        char temporary = digits[left];
+        digits[left] = digits[right];
+        digits[right] = temporary;
+    }
+    return formatted_write(stream, digits, used);
+}
+
+extern "C" int vfprintf(
+    FILE *stream, const char *format, __builtin_va_list arguments
+) {
+    if (!stream || !format) {
+        errno = EINVAL;
+        return -1;
+    }
+    int total = 0;
+    const char *literal = format;
+    while (*format != '\0') {
+        if (*format++ != '%') {
+            continue;
+        }
+        int written = formatted_write(
+            stream, literal, static_cast<size_t>(format - literal - 1));
+        if (written < 0) {
+            return -1;
+        }
+        total += written;
+        if (*format == '%') {
+            written = formatted_write(stream, "%", 1);
+        } else if (*format == 's') {
+            const char *text = __builtin_va_arg(arguments, const char *);
+            written = formatted_write(stream, text, strlen(text));
+        } else if (*format == 'd' || *format == 'i') {
+            written = formatted_integer(
+                stream, __builtin_va_arg(arguments, int), true);
+        } else if (*format == 'u') {
+            written = formatted_integer(
+                stream, __builtin_va_arg(arguments, unsigned int), false);
+        } else {
+            written = formatted_write(stream, "%", 1);
+            if (written >= 0) {
+                int suffix = formatted_write(stream, format, 1);
+                written = suffix < 0 ? -1 : written + suffix;
+            }
+        }
+        if (written < 0) {
+            return -1;
+        }
+        total += written;
+        if (*format != '\0') {
+            ++format;
+        }
+        literal = format;
+    }
+    int written = formatted_write(stream, literal, strlen(literal));
+    return written < 0 ? -1 : total + written;
+}
+
+extern "C" int fprintf(FILE *stream, const char *format, ...) {
+    __builtin_va_list arguments;
+    __builtin_va_start(arguments, format);
+    int result = vfprintf(stream, format, arguments);
+    __builtin_va_end(arguments);
+    return result;
+}
+
+extern "C" int accept(
+    int, struct sockaddr *, socklen_t *
+) {
+    errno = ENOSYS;
+    return -1;
+}
+
+extern "C" int accept4(
+    int, struct sockaddr *, socklen_t *, int
+) {
+    errno = ENOSYS;
+    return -1;
+}
+
 extern "C" int *__errno_location() {
     unsigned long self = mortos_fs_load(0);
     return reinterpret_cast<int *>(self + 8);
+}
+
+extern "C" int sched_yield() {
+    return static_cast<int>(posix_result(mortos_yield()));
+}
+
+extern "C" int pthread_atfork(
+    void (*)(void), void (*)(void), void (*)(void)
+) {
+    /*
+     * MortOS does not expose fork yet. Registration succeeds so libraries can
+     * initialize; there can be no child callback until fork is implemented.
+     */
+    return 0;
+}
+
+extern "C" int sigemptyset(sigset_t *set) {
+    if (!set) {
+        return EINVAL;
+    }
+    for (unsigned int index = 0; index < 16; ++index) {
+        set->__bits[index] = 0;
+    }
+    return 0;
+}
+
+extern "C" int sigfillset(sigset_t *set) {
+    if (!set) {
+        return EINVAL;
+    }
+    for (unsigned int index = 0; index < 16; ++index) {
+        set->__bits[index] = ~0UL;
+    }
+    return 0;
+}
+
+extern "C" int sigaddset(sigset_t *set, int signal_number) {
+    if (!set || signal_number <= 0 || signal_number > 1024) {
+        return EINVAL;
+    }
+    unsigned int bit = static_cast<unsigned int>(signal_number - 1);
+    set->__bits[bit / 64] |= 1UL << (bit % 64);
+    return 0;
+}
+
+extern "C" int sigdelset(sigset_t *set, int signal_number) {
+    if (!set || signal_number <= 0 || signal_number > 1024) {
+        return EINVAL;
+    }
+    unsigned int bit = static_cast<unsigned int>(signal_number - 1);
+    set->__bits[bit / 64] &= ~(1UL << (bit % 64));
+    return 0;
+}
+
+extern "C" int sigismember(
+    const sigset_t *set, int signal_number
+) {
+    if (!set || signal_number <= 0 || signal_number > 1024) {
+        return EINVAL;
+    }
+    unsigned int bit = static_cast<unsigned int>(signal_number - 1);
+    return (set->__bits[bit / 64] & (1UL << (bit % 64))) != 0;
+}
+
+extern "C" int pthread_sigmask(
+    int, const sigset_t *, sigset_t *old_set
+) {
+    if (old_set) {
+        sigemptyset(old_set);
+    }
+    return 0;
+}
+
+extern "C" int sigprocmask(
+    int how, const sigset_t *set, sigset_t *old_set
+) {
+    return pthread_sigmask(how, set, old_set);
+}
+
+extern "C" int sigaction(
+    int, const struct sigaction *, struct sigaction *
+) {
+    errno = ENOSYS;
+    return -1;
+}
+
+extern "C" void _Exit(int status) {
+    register unsigned long number asm("rax") = 60;
+    register unsigned long code asm("rdi") =
+        static_cast<unsigned long>(status);
+    asm volatile(
+        "syscall"
+        : "+a"(number)
+        : "D"(code)
+        : "rcx", "r11", "memory");
+    __builtin_unreachable();
+}
+
+extern "C" void _exit(int status) {
+    _Exit(status);
+}
+
+extern "C" void exit(int status) {
+    _Exit(status);
+}
+
+extern "C" void abort() {
+    _Exit(134);
+}
+
+extern "C" void __assert_fail(
+    const char *, const char *, unsigned int, const char *
+) {
+    abort();
 }
 
 extern "C" unsigned long mortos_runtime_start(unsigned long *stack) {

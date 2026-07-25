@@ -221,6 +221,13 @@ mort64_flush_tlb:
     ret
 .size mort64_flush_tlb, . - mort64_flush_tlb
 
+.global mort64_read_cr2
+.type mort64_read_cr2, @function
+mort64_read_cr2:
+    mov %cr2, %rax
+    ret
+.size mort64_read_cr2, . - mort64_read_cr2
+
 .global mort64_set_user_fs
 .type mort64_set_user_fs, @function
 mort64_set_user_fs:

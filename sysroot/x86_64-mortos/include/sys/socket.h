@@ -28,6 +28,32 @@ struct msghdr {
     int msg_flags;
 };
 
+struct cmsghdr {
+    size_t cmsg_len;
+    int cmsg_level;
+    int cmsg_type;
+};
+
+#define __MORTOS_CMSG_ALIGN(length) \
+    (((length) + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1))
+#define CMSG_ALIGN(length) __MORTOS_CMSG_ALIGN(length)
+#define CMSG_SPACE(length) \
+    (CMSG_ALIGN(sizeof(struct cmsghdr)) + CMSG_ALIGN(length))
+#define CMSG_LEN(length) \
+    (CMSG_ALIGN(sizeof(struct cmsghdr)) + (length))
+#define CMSG_DATA(header) \
+    ((unsigned char *)(header) + CMSG_ALIGN(sizeof(struct cmsghdr)))
+#define CMSG_FIRSTHDR(message) \
+    ((message)->msg_controllen >= sizeof(struct cmsghdr) ? \
+        (struct cmsghdr *)(message)->msg_control : (struct cmsghdr *)0)
+#define CMSG_NXTHDR(message, header) \
+    (((char *)(header) + CMSG_ALIGN((header)->cmsg_len) + \
+      CMSG_ALIGN(sizeof(struct cmsghdr)) > \
+      (char *)(message)->msg_control + (message)->msg_controllen) ? \
+        (struct cmsghdr *)0 : \
+        (struct cmsghdr *)((char *)(header) + \
+                          CMSG_ALIGN((header)->cmsg_len)))
+
 #define AF_UNSPEC 0
 #define AF_UNIX 1
 #define AF_INET 2
@@ -45,6 +71,7 @@ struct msghdr {
 #define SOCK_CLOEXEC 0x80000
 
 #define SOL_SOCKET 1
+#define SCM_RIGHTS 1
 #define SO_REUSEADDR 2
 #define SO_ERROR 4
 #define SO_TYPE 3
@@ -56,6 +83,7 @@ struct msghdr {
 #define SO_ACCEPTCONN 30
 
 #define MSG_DONTWAIT 0x40
+#define MSG_TRUNC 0x20
 #define MSG_NOSIGNAL 0x4000
 
 #define SHUT_RD 0

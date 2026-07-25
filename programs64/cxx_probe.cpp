@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#include <uv.h>
 
 using size_type = unsigned long;
 
@@ -38,6 +39,11 @@ static const char pipe_message[] = "descriptor-ipc";
 static pthread_once_t runtime_once = PTHREAD_ONCE_INIT;
 static unsigned int runtime_once_count;
 static unsigned long key_destructor_seen;
+static unsigned int libuv_timer_fired;
+
+static void libuv_timer_callback(uv_timer_t *) {
+    __atomic_add_fetch(&libuv_timer_fired, 1U, __ATOMIC_RELEASE);
+}
 
 static void initialize_runtime_once() {
     __atomic_add_fetch(&runtime_once_count, 1U, __ATOMIC_RELEASE);
@@ -905,6 +911,24 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || errno != EPIPE
         || close(connected_socket) != 0) {
         return 19;
+    }
+    uv_loop_t libuv_loop = {};
+    uv_timer_t libuv_timer = {};
+    if (uv_loop_init(&libuv_loop) != 0
+        || uv_timer_init(&libuv_loop, &libuv_timer) != 0
+        || uv_timer_start(
+            &libuv_timer, libuv_timer_callback, 2, 0) != 0
+        || uv_run(&libuv_loop, UV_RUN_DEFAULT) != 0
+        || __atomic_load_n(
+            &libuv_timer_fired, __ATOMIC_ACQUIRE) != 1U) {
+        return 20;
+    }
+    static const char libuv_message[] =
+        "MORT64: upstream libuv timer loop passed\r\n";
+    if (mortos_write(
+            libuv_message,
+            sizeof(libuv_message) - 1) != sizeof(libuv_message) - 1) {
+        return 20;
     }
     static const char message[] = "MORT64 CXX RUNTIME OK\r\n";
     if (mortos_write(message, sizeof(message) - 1) != sizeof(message) - 1) {

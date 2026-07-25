@@ -28,6 +28,8 @@ int feof(FILE *stream);
 void clearerr(FILE *stream);
 int printf(const char *format, ...);
 int fprintf(FILE *stream, const char *format, ...);
+int vfprintf(
+    FILE *stream, const char *format, __builtin_va_list args);
 int snprintf(char *buffer, size_t size, const char *format, ...);
 int vsnprintf(
     char *buffer, size_t size, const char *format, __builtin_va_list args);
