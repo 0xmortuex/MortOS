@@ -17,6 +17,7 @@ let g_user_exit_status64: u64 = 0;
 let g_user_entry64: u64 = 0;
 let g_user_pt64: u64 = 0;
 let g_user_mmap_pt64: u64 = 0;
+let g_user_stack64: u64 = 0;
 let g_user_pointer_rejected64: bool = false;
 let g_user_fault_seen64: bool = false;
 let g_user_fault_vector64: u64 = 0;
@@ -30,6 +31,7 @@ let g_process_root64: [u64; 8] = [0; 8];
 let g_process_pt64: [u64; 8] = [0; 8];
 let g_process_mmap_pt64: [u64; 8] = [0; 8];
 let g_process_entry64: [u64; 8] = [0; 8];
+let g_process_stack64: [u64; 8] = [0; 8];
 let g_process_exit64: [u64; 8] = [0; 8];
 let g_process_fault64: [u64; 8] = [0; 8];
 let g_process_brk64: [u64; 8] = [0; 8];
@@ -327,6 +329,101 @@ fn page_copy64(destination: u64, source: u64, count: u64) {
     }
 }
 
+fn stack_copy_string64(
+    destination: u64,
+    source: *u8,
+    capacity: u64
+) -> bool {
+    if destination == 0 || source == ((0 as u64) as *u8)
+        || capacity == 0 {
+        return false;
+    }
+    let input: u64 = source as u64;
+    let index: u64 = 0;
+    while index < capacity {
+        let value: u8 = *((input + index) as *u8);
+        *((destination + index) as *u8) = value;
+        if value == 0 {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+fn elf64_initial_stack64(
+    stack_frame: u64,
+    program_name: *u8,
+    entry: u64
+) -> u64 {
+    if stack_frame == 0 || !g_entropy_ready64 {
+        return 0;
+    }
+    let stack_base: u64 = 0x011FF000;
+    let executable: u64 = stack_base + 0xC00;
+    let environment0: u64 = stack_base + 0xC40;
+    let environment1: u64 = stack_base + 0xC50;
+    let environment2: u64 = stack_base + 0xC70;
+    let environment3: u64 = stack_base + 0xC90;
+    let platform: u64 = stack_base + 0xCB0;
+    let random: u64 = stack_base + 0xCC0;
+    if !stack_copy_string64(
+            stack_frame + 0xC00, program_name, 64)
+        || !stack_copy_string64(
+            stack_frame + 0xC40, "MORTOS=1", 16)
+        || !stack_copy_string64(
+            stack_frame + 0xC50, "HOME=/home/mort", 32)
+        || !stack_copy_string64(
+            stack_frame + 0xC70, "PATH=/system/bin", 32)
+        || !stack_copy_string64(
+            stack_frame + 0xC90, "VEX_APP=/app/vex", 32)
+        || !stack_copy_string64(
+            stack_frame + 0xCB0, "x86_64", 16)
+        || mort64_rdrand_store(stack_frame + 0xCC0) == 0
+        || mort64_rdrand_store(stack_frame + 0xCC8) == 0 {
+        return 0;
+    }
+
+    // Linux/System V initial stack: argc, argv, envp, then auxv pairs.
+    // Thirty-two words keep the entry stack 16-byte aligned.
+    let vector: u64 = stack_frame + 0xA80;
+    let word: u64 = 0;
+    *((vector + (word * 8)) as *u64) = 1; word = word + 1;
+    *((vector + (word * 8)) as *u64) = executable; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 0; word = word + 1;
+    *((vector + (word * 8)) as *u64) = environment0; word = word + 1;
+    *((vector + (word * 8)) as *u64) = environment1; word = word + 1;
+    *((vector + (word * 8)) as *u64) = environment2; word = word + 1;
+    *((vector + (word * 8)) as *u64) = environment3; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 0; word = word + 1;
+
+    *((vector + (word * 8)) as *u64) = 6; word = word + 1;  // AT_PAGESZ
+    *((vector + (word * 8)) as *u64) = 4096; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 17; word = word + 1; // AT_CLKTCK
+    *((vector + (word * 8)) as *u64) = 100; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 11; word = word + 1; // AT_UID
+    *((vector + (word * 8)) as *u64) = 0; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 12; word = word + 1; // AT_EUID
+    *((vector + (word * 8)) as *u64) = 0; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 13; word = word + 1; // AT_GID
+    *((vector + (word * 8)) as *u64) = 0; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 14; word = word + 1; // AT_EGID
+    *((vector + (word * 8)) as *u64) = 0; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 23; word = word + 1; // AT_SECURE
+    *((vector + (word * 8)) as *u64) = 0; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 25; word = word + 1; // AT_RANDOM
+    *((vector + (word * 8)) as *u64) = random; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 31; word = word + 1; // AT_EXECFN
+    *((vector + (word * 8)) as *u64) = executable; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 15; word = word + 1; // AT_PLATFORM
+    *((vector + (word * 8)) as *u64) = platform; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 9; word = word + 1;  // AT_ENTRY
+    *((vector + (word * 8)) as *u64) = entry; word = word + 1;
+    *((vector + (word * 8)) as *u64) = 0; word = word + 1;  // AT_NULL
+    *((vector + (word * 8)) as *u64) = 0;
+    return stack_base + 0xA80;
+}
+
 // Validate and load an ELF64 ET_EXEC image into an isolated address space:
 //   0..16 MiB      supervisor-only identity map for kernel/runtime
 //   16..18 MiB     ELF PT_LOAD segments plus a non-executable stack
@@ -334,7 +431,11 @@ fn page_copy64(destination: u64, source: u64, count: u64) {
 //
 // Upper paging levels carry U/S so the leaf PTE decides access. Kernel 2 MiB
 // leaves remain supervisor-only. ELF pages enforce W^X and BSS starts zeroed.
-fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
+fn elf64_user_page_root(
+    image: u64,
+    image_size: u64,
+    program_name: *u8
+) -> u64 {
     if image == 0 || image_size < 64 || image_size > 0x00100000 {
         return 0;
     }
@@ -486,22 +587,35 @@ fn elf64_user_page_root(image: u64, image_size: u64) -> u64 {
         user_pt,
         511,
         stack_frame | no_execute | 0x7); // user RW, NX
+    let initial_stack: u64 = elf64_initial_stack64(
+        stack_frame,
+        program_name,
+        entry);
+    if initial_stack == 0 {
+        return 0;
+    }
     g_user_entry64 = entry;
     g_user_pt64 = user_pt;
     // This variable retains its bootstrap name, but now points to the mmap
     // page directory. Leaf page tables are allocated lazily.
     g_user_mmap_pt64 = mmap_pd;
+    g_user_stack64 = initial_stack;
     return pml4;
 }
 
 // Create a process from a validated ELF image. Each successful process owns a
 // different PML4 and different physical frames even though every executable
 // uses the same virtual layout.
-fn process_create64(image: u64, image_size: u64) -> u32 {
+fn process_create64(
+    image: u64,
+    image_size: u64,
+    program_name: *u8
+) -> u32 {
     let slot: u32 = 0;
     while slot < 8 {
         if g_process_state64[slot] == 0 {
-            let root: u64 = elf64_user_page_root(image, image_size);
+            let root: u64 = elf64_user_page_root(
+                image, image_size, program_name);
             if root == 0 {
                 return 8;
             }
@@ -513,6 +627,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_pt64[slot] = g_user_pt64;
             g_process_mmap_pt64[slot] = g_user_mmap_pt64;
             g_process_entry64[slot] = g_user_entry64;
+            g_process_stack64[slot] = g_user_stack64;
             g_process_exit64[slot] = 0;
             g_process_fault64[slot] = 0;
             g_process_brk64[slot] = 0x01100000;
@@ -640,7 +755,7 @@ fn process_schedule64() -> u32 {
                 } else {
                     mort64_enter_user(
                         g_process_entry64[slot],
-                        0x01200000,
+                        g_process_stack64[slot],
                         g_process_root64[slot]);
                 }
                 if g_process_state64[slot] == 2 {
@@ -727,6 +842,7 @@ fn thread_create64(
             g_process_pt64[slot] = g_process_pt64[parent];
             g_process_mmap_pt64[slot] = g_process_mmap_pt64[parent];
             g_process_entry64[slot] = entry;
+            g_process_stack64[slot] = stack_top - 8;
             g_process_brk64[slot] = g_process_brk64[parent];
             g_process_fs_base64[slot] = 0;
             g_process_handle_owner64[slot] =
@@ -775,6 +891,7 @@ fn process_reap64(slot: u32) -> bool {
             g_process_root64[sibling] = 0;
             g_process_pt64[sibling] = 0;
             g_process_mmap_pt64[sibling] = 0;
+            g_process_stack64[sibling] = 0;
             g_process_context_valid64[sibling] = 0;
             g_process_wait_address64[sibling] = 0;
             g_process_wait_kind64[sibling] = 0;
@@ -841,7 +958,8 @@ fn process_reap64(slot: u32) -> bool {
     g_process_root64[slot] = 0;
     g_process_pt64[slot] = 0;
     g_process_mmap_pt64[slot] = 0;
-    g_process_entry64[slot] = 0;
+            g_process_entry64[slot] = 0;
+            g_process_stack64[slot] = 0;
     g_process_fs_base64[slot] = 0;
     g_process_wait_address64[slot] = 0;
     g_process_wait_kind64[slot] = 0;
@@ -3010,15 +3128,20 @@ fn kmain64(multiboot_info: u64) {
 
         let frames_before_processes: u32 = g_frame_free64;
         let probe_slot: u32 = process_create64(
-            mort64_probe_image(), mort64_probe_image_size());
+            mort64_probe_image(), mort64_probe_image_size(),
+            "/system/bin/mort-probe");
         let isolation_slot: u32 = process_create64(
-            mort64_isolation_image(), mort64_isolation_image_size());
+            mort64_isolation_image(), mort64_isolation_image_size(),
+            "/system/bin/mort-isolation");
         let survivor_slot: u32 = process_create64(
-            mort64_survivor_image(), mort64_survivor_image_size());
+            mort64_survivor_image(), mort64_survivor_image_size(),
+            "/system/bin/mort-survivor");
         let preempt_slot: u32 = process_create64(
-            mort64_preempt_image(), mort64_preempt_image_size());
+            mort64_preempt_image(), mort64_preempt_image_size(),
+            "/system/bin/mort-preempt");
         let cxx_slot: u32 = process_create64(
-            mort64_cxx_image(), mort64_cxx_image_size());
+            mort64_cxx_image(), mort64_cxx_image_size(),
+            "/system/bin/mort-cxx");
         if probe_slot < 8 && isolation_slot < 8 && survivor_slot < 8
             && preempt_slot < 8 && cxx_slot < 8
             && g_process_root64[probe_slot]
@@ -3116,6 +3239,8 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_eventfd_seen64[cxx_slot] != 0
                 && g_process_epoll_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: ELF argc envp auxv startup passed\r\n");
                 serial_write64(
                     "MORT64: blocking epoll event loop passed\r\n");
                 serial_write64(

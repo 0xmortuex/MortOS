@@ -159,9 +159,65 @@ static bool contains_text(
     return false;
 }
 
-extern "C" int main() {
+static bool text_equals(const char *left, const char *right) {
+    for (unsigned long index = 0; index < 128; ++index) {
+        if (left[index] != right[index]) {
+            return false;
+        }
+        if (left[index] == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+extern "C" int main(int argc, char **argv, char **envp) {
     if (mortos_getpid() != 5
-        || constructor_value != 0x435858434F4E5354UL) {
+        || constructor_value != 0x435858434F4E5354UL
+        || argc != 1 || !argv || !argv[0] || argv[1]
+        || !text_equals(argv[0], "/system/bin/mort-cxx")) {
+        return 1;
+    }
+    bool environment_found = false;
+    char **environment = envp;
+    unsigned long environment_count = 0;
+    while (environment && *environment && environment_count < 16) {
+        if (text_equals(*environment, "MORTOS=1")) {
+            environment_found = true;
+        }
+        ++environment;
+        ++environment_count;
+    }
+    if (!environment || *environment || !environment_found) {
+        return 1;
+    }
+    auto *auxiliary = reinterpret_cast<unsigned long *>(environment + 1);
+    bool pagesize_found = false;
+    bool random_found = false;
+    bool exec_found = false;
+    bool auxiliary_end = false;
+    for (unsigned long index = 0; index < 32; ++index) {
+        unsigned long type = auxiliary[index * 2];
+        unsigned long value = auxiliary[index * 2 + 1];
+        if (type == 0) {
+            auxiliary_end = true;
+            break;
+        }
+        if (type == 6 && value == 4096) {
+            pagesize_found = true;
+        } else if (type == 25 && value != 0) {
+            auto *random = reinterpret_cast<unsigned char *>(value);
+            unsigned char any = 0;
+            for (unsigned long byte = 0; byte < 16; ++byte) {
+                any = static_cast<unsigned char>(any | random[byte]);
+            }
+            random_found = any != 0;
+        } else if (type == 31 && value != 0) {
+            exec_found = text_equals(
+                reinterpret_cast<const char *>(value), argv[0]);
+        }
+    }
+    if (!pagesize_found || !random_found || !exec_found || !auxiliary_end) {
         return 1;
     }
 

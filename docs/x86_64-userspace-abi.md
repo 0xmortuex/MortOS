@@ -33,7 +33,10 @@ An explicit `MORT_HOME` can be used to test a corrected compiler.
 - Application function calls: System V AMD64 ABI.
 - Stack: 16-byte aligned at call boundaries, grows downward, with a guard page.
 - Thread-local storage: `FS.base`; the kernel owns `GS.base`.
-- Initial process stack: `argc`, `argv`, `envp`, then an ELF auxiliary vector.
+- Initial process stack: implemented as `argc`, `argv`, `envp`, then a
+  16-byte-aligned ELF auxiliary vector carrying page size, clock tick,
+  identity/security values, entry address, platform, executable name, and
+  hardware-randomized `AT_RANDOM` bytes.
 - Page size: 4096 bytes. Large pages are a kernel optimization, never an
   userspace requirement.
 
