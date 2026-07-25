@@ -163,6 +163,14 @@ mortos_getsockopt:
     ret
 .size mortos_getsockopt, . - mortos_getsockopt
 
+.global mortos_resolve_a
+.type mortos_resolve_a, @function
+mortos_resolve_a:
+    mov $402, %rax                 /* MortOS SYS_resolve_a */
+    syscall
+    ret
+.size mortos_resolve_a, . - mortos_resolve_a
+
 .global mortos_fcntl
 .type mortos_fcntl, @function
 mortos_fcntl:

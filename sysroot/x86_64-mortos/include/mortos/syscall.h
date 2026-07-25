@@ -18,6 +18,7 @@ unsigned long mortos_connect(
 unsigned long mortos_getsockopt(
     unsigned long descriptor, unsigned long level, unsigned long option,
     void *value, void *length);
+unsigned long mortos_resolve_a(const char *name, void *address);
 unsigned long mortos_fcntl(
     unsigned long descriptor, unsigned long command, unsigned long argument);
 unsigned long mortos_getpid(void);

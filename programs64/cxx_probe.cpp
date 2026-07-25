@@ -2,6 +2,7 @@
 // startup, C allocation, C++ new/delete, and syscall linkage at ring 3.
 
 #include <mortos/syscall.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -776,12 +777,30 @@ extern "C" int main(int argc, char **argv, char **envp) {
         return 19;
     }
 
+    static struct addrinfo resolver_hints = {};
+    resolver_hints.ai_family = AF_INET;
+    resolver_hints.ai_socktype = SOCK_STREAM;
+    resolver_hints.ai_protocol = IPPROTO_TCP;
+    struct addrinfo *resolved = nullptr;
+    if (getaddrinfo(
+            "example.com", "80", &resolver_hints, &resolved) != 0
+        || !resolved || resolved->ai_family != AF_INET
+        || resolved->ai_socktype != SOCK_STREAM
+        || resolved->ai_protocol != IPPROTO_TCP
+        || resolved->ai_addrlen != sizeof(struct sockaddr_in)
+        || ntohs(reinterpret_cast<struct sockaddr_in *>(
+                     resolved->ai_addr)->sin_port) != 80
+        || reinterpret_cast<struct sockaddr_in *>(
+               resolved->ai_addr)->sin_addr.s_addr == 0) {
+        if (resolved) {
+            freeaddrinfo(resolved);
+        }
+        return 19;
+    }
     int connected_socket = socket(
-        AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
-    struct sockaddr_in cloudflare = {};
-    cloudflare.sin_family = AF_INET;
-    cloudflare.sin_port = htons(80);
-    cloudflare.sin_addr.s_addr = htonl(0x01010101U);
+        resolved->ai_family,
+        resolved->ai_socktype | SOCK_CLOEXEC,
+        resolved->ai_protocol);
     struct pollfd connected_readiness = {
         connected_socket, POLLOUT, 0};
     socket_error = -1;
@@ -789,19 +808,21 @@ extern "C" int main(int argc, char **argv, char **envp) {
     if (connected_socket < 0
         || connect(
             connected_socket,
-            reinterpret_cast<const struct sockaddr *>(&cloudflare),
-            sizeof(cloudflare)) != 0
+            resolved->ai_addr, resolved->ai_addrlen) != 0
         || poll(&connected_readiness, 1, 0) != 1
         || (connected_readiness.revents & POLLOUT) == 0
         || getsockopt(
             connected_socket, SOL_SOCKET, SO_ERROR,
             &socket_error, &socket_option_length) != 0
         || socket_error != 0) {
+        freeaddrinfo(resolved);
         return 19;
     }
+    freeaddrinfo(resolved);
+    resolved = nullptr;
     static const char http_request[] =
         "GET / HTTP/1.0\r\n"
-        "Host: one.one.one.one\r\n"
+        "Host: example.com\r\n"
         "Connection: close\r\n\r\n";
     static char http_response[1024] = {};
     ssize_t http_bytes = 0;
@@ -833,7 +854,6 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || close(connected_socket) != 0) {
         return 19;
     }
-
     static const char message[] = "MORT64 CXX RUNTIME OK\r\n";
     if (mortos_write(message, sizeof(message) - 1) != sizeof(message) - 1) {
         return 7;

@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <mortos/syscall.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -142,6 +143,133 @@ extern "C" int getsockopt(
         static_cast<unsigned long>(descriptor),
         static_cast<unsigned long>(level),
         static_cast<unsigned long>(option), value, length)));
+}
+
+static bool parse_ipv4_address(const char *text, unsigned char *output) {
+    if (!text || !*text) {
+        return false;
+    }
+    for (unsigned int component = 0; component < 4; ++component) {
+        unsigned int value = 0;
+        unsigned int digits = 0;
+        while (*text >= '0' && *text <= '9') {
+            value = value * 10U + static_cast<unsigned int>(*text - '0');
+            if (value > 255U) {
+                return false;
+            }
+            ++text;
+            ++digits;
+        }
+        if (!digits) {
+            return false;
+        }
+        output[component] = static_cast<unsigned char>(value);
+        if (component != 3) {
+            if (*text != '.') {
+                return false;
+            }
+            ++text;
+        }
+    }
+    return *text == '\0';
+}
+
+extern "C" int getaddrinfo(
+    const char *node,
+    const char *service,
+    const struct addrinfo *hints,
+    struct addrinfo **result
+) {
+    if (!result) {
+        return EAI_FAIL;
+    }
+    *result = nullptr;
+    int flags = hints ? hints->ai_flags : 0;
+    int family = hints ? hints->ai_family : AF_UNSPEC;
+    int socket_type = hints ? hints->ai_socktype : 0;
+    int protocol = hints ? hints->ai_protocol : 0;
+    if ((flags & ~(AI_PASSIVE | AI_CANONNAME
+                   | AI_NUMERICHOST | AI_NUMERICSERV)) != 0) {
+        return EAI_BADFLAGS;
+    }
+    if (family != AF_UNSPEC && family != AF_INET) {
+        return EAI_FAMILY;
+    }
+    if (socket_type != 0 && socket_type != SOCK_STREAM) {
+        return EAI_SOCKTYPE;
+    }
+    if (protocol != 0 && protocol != IPPROTO_TCP) {
+        return EAI_SERVICE;
+    }
+    unsigned int port = 0;
+    if (service) {
+        if (!*service) {
+            return EAI_SERVICE;
+        }
+        for (const char *cursor = service; *cursor; ++cursor) {
+            if (*cursor < '0' || *cursor > '9') {
+                return EAI_SERVICE;
+            }
+            port = port * 10U + static_cast<unsigned int>(*cursor - '0');
+            if (port > 65535U) {
+                return EAI_SERVICE;
+            }
+        }
+    }
+    void *allocation = malloc(
+        sizeof(struct addrinfo) + sizeof(struct sockaddr_in));
+    if (!allocation) {
+        return EAI_MEMORY;
+    }
+    auto *answer = static_cast<struct addrinfo *>(allocation);
+    auto *address = reinterpret_cast<struct sockaddr_in *>(answer + 1);
+    *answer = {};
+    *address = {};
+    address->sin_family = AF_INET;
+    address->sin_port = htons(static_cast<unsigned short>(port));
+    bool numeric = parse_ipv4_address(
+        node,
+        reinterpret_cast<unsigned char *>(&address->sin_addr.s_addr));
+    if (!numeric) {
+        if (!node || (flags & AI_NUMERICHOST) != 0
+            || mortos_resolve_a(node, &address->sin_addr.s_addr) != 0) {
+            free(allocation);
+            return EAI_NONAME;
+        }
+    }
+    answer->ai_flags = flags;
+    answer->ai_family = AF_INET;
+    answer->ai_socktype = socket_type ? socket_type : SOCK_STREAM;
+    answer->ai_protocol = protocol ? protocol : IPPROTO_TCP;
+    answer->ai_addrlen = sizeof(struct sockaddr_in);
+    answer->ai_addr = reinterpret_cast<struct sockaddr *>(address);
+    answer->ai_canonname = nullptr;
+    answer->ai_next = nullptr;
+    *result = answer;
+    return 0;
+}
+
+extern "C" void freeaddrinfo(struct addrinfo *result) {
+    while (result) {
+        struct addrinfo *next = result->ai_next;
+        free(result);
+        result = next;
+    }
+}
+
+extern "C" const char *gai_strerror(int error) {
+    switch (error) {
+    case 0: return "Success";
+    case EAI_BADFLAGS: return "Invalid resolver flags";
+    case EAI_NONAME: return "Name or service not known";
+    case EAI_AGAIN: return "Temporary resolver failure";
+    case EAI_FAIL: return "Resolver failure";
+    case EAI_FAMILY: return "Address family not supported";
+    case EAI_SOCKTYPE: return "Socket type not supported";
+    case EAI_SERVICE: return "Service not supported";
+    case EAI_MEMORY: return "Resolver memory allocation failed";
+    default: return "Unknown resolver error";
+    }
 }
 
 extern "C" int fcntl(int descriptor, int command, ...) {

@@ -112,6 +112,7 @@ let g_rtl8139_mac64: [u8; 6] = [0; 6];
 let g_rtl8139_rx_base64: u64 = 0;
 let g_rtl8139_rx_offset64: u32 = 0;
 let g_rtl8139_rx_probe64: [u8; 1536] = [0; 1536];
+let g_rtl8139_dynamic_tx64: u32 = 0;
 let g_dhcp_address64: [u8; 4] = [0; 4];
 let g_dhcp_gateway64: [u8; 4] = [0; 4];
 let g_dhcp_dns64: [u8; 4] = [0; 4];
@@ -147,6 +148,7 @@ let g_socket_rx_count64: [u32; 4] = [0; 4];
 let g_socket_rx_storage64: [u8; 32768] = [0; 32768];
 let g_process_socket_transfer_seen64: [u8; 8] = [0; 8];
 let g_process_socket_wait_seen64: [u8; 8] = [0; 8];
+let g_process_dns_resolver_seen64: [u8; 8] = [0; 8];
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
@@ -399,6 +401,35 @@ fn rtl8139_transmit_probe64() -> bool {
         }
         if (status & 0x4000) != 0 {              // transmit underrun
             return false;
+        }
+        guard = guard + 1;
+    }
+    return false;
+}
+
+fn rtl8139_transmit_dynamic64(frame: u64, length: u32) -> bool {
+    if !g_rtl8139_ready64 || length < 60 || length > 1514 {
+        return false;
+    }
+    let descriptor: u32 = g_rtl8139_dynamic_tx64;
+    outl(
+        g_rtl8139_io64 + (0x20 as u16) + ((descriptor * 4) as u16),
+        frame as u32);
+    outl(
+        g_rtl8139_io64 + (0x10 as u16) + ((descriptor * 4) as u16),
+        length);
+    g_rtl8139_dynamic_tx64 = (descriptor + 1) % 4;
+    let guard: u32 = 0;
+    while guard < 1000000 {
+        let status: u32 = inl(
+            g_rtl8139_io64 + (0x10 as u16)
+                + ((descriptor * 4) as u16));
+        if (status & 0x8000) != 0 {
+            return true;                        // TOK
+        }
+        if (status & 0x60000000) != 0
+            || (status & 0x4000) != 0 {
+            return false;                       // abort/out-of-window/underrun
         }
         guard = guard + 1;
     }
@@ -741,7 +772,7 @@ fn rtl8139_arp_resolve64(
     output_mac: u64,
     descriptor: u32
 ) -> bool {
-    if descriptor >= 4 {
+    if descriptor > 4 {
         return false;
     }
     let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
@@ -775,12 +806,18 @@ fn rtl8139_arp_resolve64(
             *((target_ip + (index as u64)) as *u8);
         index = index + 1;
     }
-    outl(
-        g_rtl8139_io64 + (0x20 as u16) + ((descriptor * 4) as u16),
-        frame as u32);
-    outl(
-        g_rtl8139_io64 + (0x10 as u16) + ((descriptor * 4) as u16),
-        60);
+    if descriptor == 4 {
+        if !rtl8139_transmit_dynamic64(frame, 60) {
+            return false;
+        }
+    } else {
+        outl(
+            g_rtl8139_io64 + (0x20 as u16) + ((descriptor * 4) as u16),
+            frame as u32);
+        outl(
+            g_rtl8139_io64 + (0x10 as u16) + ((descriptor * 4) as u16),
+            60);
+    }
     let guard: u32 = 0;
     while guard < 2000000 {
         let length: u32 = rtl8139_poll_receive64(
@@ -839,7 +876,11 @@ fn dns_skip_name64(message: u64, length: u32, cursor: u32) -> u32 {
     return length + 1;
 }
 
-fn dns_extract_a64(message: u64, length: u32) -> bool {
+fn dns_extract_a64(
+    message: u64,
+    length: u32,
+    output_address: u64
+) -> bool {
     if length < 12
         || (*((message + 2) as *u8) & 0x80) == 0
         || (*((message + 3) as *u8) & 0x0F) != 0 {
@@ -886,7 +927,7 @@ fn dns_extract_a64(message: u64, length: u32) -> bool {
         if record_type == 1 && record_class == 1 && data_length == 4 {
             let index: u32 = 0;
             while index < 4 {
-                g_dns_answer64[index] =
+                *((output_address + (index as u64)) as *u8) =
                     *((message + (cursor as u64) + (index as u64)) as *u8);
                 index = index + 1;
             }
@@ -1000,7 +1041,169 @@ fn rtl8139_dns_probe64() -> bool {
                     let message: u64 = received_udp + 8;
                     if *(message as *u8) == 0x4D
                         && *((message + 1) as *u8) == 0x44
-                        && dns_extract_a64(message, udp_length - 8) {
+                        && dns_extract_a64(
+                            message, udp_length - 8,
+                            &g_dns_answer64 as u64) {
+                        return true;
+                    }
+                }
+            }
+        }
+        guard = guard + 1;
+    }
+    return false;
+}
+
+fn rtl8139_dns_resolve64(
+    name: u64,
+    name_length: u32,
+    output_address: u64
+) -> bool {
+    if !g_rtl8139_ready64 || name_length == 0 || name_length > 253 {
+        return false;
+    }
+    let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
+        & ~(3 as u64);
+    let dns: u64 = frame + 14 + 20 + 8;
+    let dns_cursor: u32 = 12;
+    let name_cursor: u32 = 0;
+    while name_cursor < name_length {
+        let label_start: u32 = name_cursor;
+        while name_cursor < name_length
+            && *((name + (name_cursor as u64)) as *u8) != 0x2E {
+            let character: u8 =
+                *((name + (name_cursor as u64)) as *u8);
+            let valid: bool =
+                (character >= 0x30 && character <= 0x39)
+                || (character >= 0x41 && character <= 0x5A)
+                || (character >= 0x61 && character <= 0x7A)
+                || character == 0x2D || character == 0x5F;
+            if !valid {
+                return false;
+            }
+            name_cursor = name_cursor + 1;
+        }
+        let label_length: u32 = name_cursor - label_start;
+        if label_length == 0 || label_length > 63
+            || dns_cursor + 1 + label_length + 5 > 267 {
+            return false;
+        }
+        *((dns + (dns_cursor as u64)) as *u8) = label_length as u8;
+        dns_cursor = dns_cursor + 1;
+        let character_index: u32 = 0;
+        while character_index < label_length {
+            *((dns + (dns_cursor as u64)) as *u8) =
+                *((name + ((label_start + character_index) as u64))
+                    as *u8);
+            dns_cursor = dns_cursor + 1;
+            character_index = character_index + 1;
+        }
+        if name_cursor < name_length {
+            name_cursor = name_cursor + 1;
+            if name_cursor == name_length {
+                return false;
+            }
+        }
+    }
+    *((dns + (dns_cursor as u64)) as *u8) = 0;
+    dns_cursor = dns_cursor + 1;
+    *((dns + (dns_cursor as u64)) as *u8) = 0;
+    *((dns + ((dns_cursor + 1) as u64)) as *u8) = 1;
+    *((dns + ((dns_cursor + 2) as u64)) as *u8) = 0;
+    *((dns + ((dns_cursor + 3) as u64)) as *u8) = 1;
+    dns_cursor = dns_cursor + 4;
+    let dns_length: u32 = dns_cursor;
+    let frame_length: u32 = 14 + 20 + 8 + dns_length;
+    let index: u32 = 0;
+    while index < 14 + 20 + 8 + 12 {
+        *((frame + (index as u64)) as *u8) = 0;
+        index = index + 1;
+    }
+    // The QNAME was built before the fixed headers were cleared; rebuild its
+    // twelve-byte DNS header without touching the variable query bytes.
+    index = 0;
+    while index < 12 {
+        *((dns + (index as u64)) as *u8) = 0;
+        index = index + 1;
+    }
+    index = 0;
+    while index < 6 {
+        *((frame + (index as u64)) as *u8) = g_dns_mac64[index];
+        *((frame + 6 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
+        index = index + 1;
+    }
+    *((frame + 12) as *u8) = 0x08;
+    *((frame + 13) as *u8) = 0;
+    let ip: u64 = frame + 14;
+    *((ip + 0) as *u8) = 0x45;
+    network_write16_64(ip + 2, (20 + 8 + dns_length) as u16);
+    network_write16_64(ip + 4, 0x4D47);
+    network_write16_64(ip + 6, 0x4000);
+    *((ip + 8) as *u8) = 64;
+    *((ip + 9) as *u8) = 17;
+    index = 0;
+    while index < 4 {
+        *((ip + 12 + (index as u64)) as *u8) = g_dhcp_address64[index];
+        *((ip + 16 + (index as u64)) as *u8) = g_dhcp_dns64[index];
+        index = index + 1;
+    }
+    network_write16_64(ip + 10, ipv4_checksum64(ip, 20));
+    let udp: u64 = ip + 20;
+    network_write16_64(udp + 0, 53001);
+    network_write16_64(udp + 2, 53);
+    network_write16_64(udp + 4, (8 + dns_length) as u16);
+    network_write16_64(udp + 6, 0);
+    network_write16_64(dns + 0, 0x4D47);
+    *((dns + 2) as *u8) = 1;                   // recursion desired
+    network_write16_64(dns + 4, 1);            // one question
+    if !rtl8139_transmit_dynamic64(frame, frame_length) {
+        return false;
+    }
+
+    let guard: u32 = 0;
+    while guard < 6000000 {
+        let length: u32 = rtl8139_poll_receive64(
+            &g_rtl8139_rx_probe64 as u64, 1536);
+        if length >= 14 + 20 + 8 + 12 {
+            let packet: u64 = &g_rtl8139_rx_probe64 as u64;
+            let received_ip: u64 = packet + 14;
+            let ip_header: u32 =
+                (((*(received_ip as *u8)) & 0x0F) as u32) * 4;
+            let total_length: u32 =
+                network_read16_64(received_ip + 2) as u32;
+            if *((packet + 12) as *u8) == 0x08
+                && *((packet + 13) as *u8) == 0
+                && ip_header >= 20
+                && total_length >= ip_header + 8 + 12
+                && total_length <= length - 14
+                && *((received_ip + 9) as *u8) == 17
+                && (network_read16_64(received_ip + 6) & 0x3FFF) == 0
+                && ipv4_checksum64(received_ip, ip_header) == 0 {
+                let matches: bool = true;
+                index = 0;
+                while matches && index < 4 {
+                    if *((received_ip + 12 + (index as u64)) as *u8)
+                            != g_dhcp_dns64[index]
+                        || *((received_ip + 16 + (index as u64)) as *u8)
+                            != g_dhcp_address64[index] {
+                        matches = false;
+                    }
+                    index = index + 1;
+                }
+                let received_udp: u64 =
+                    received_ip + (ip_header as u64);
+                let udp_length: u32 =
+                    network_read16_64(received_udp + 4) as u32;
+                if matches
+                    && network_read16_64(received_udp) == 53
+                    && network_read16_64(received_udp + 2) == 53001
+                    && udp_length >= 20
+                    && udp_length <= total_length - ip_header {
+                    let message: u64 = received_udp + 8;
+                    if network_read16_64(message) == 0x4D47
+                        && dns_extract_a64(
+                            message, udp_length - 8,
+                            output_address) {
                         return true;
                     }
                 }
@@ -1071,7 +1274,7 @@ fn rtl8139_tcp_control64(
     payload_length: u32,
     descriptor: u32
 ) -> bool {
-    if descriptor >= 4 || payload_length > 1460 {
+    if descriptor > 4 || payload_length > 1460 {
         return false;
     }
     let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
@@ -1128,6 +1331,9 @@ fn rtl8139_tcp_control64(
     }
     network_write16_64(
         tcp + 16, tcp_checksum64(ip, tcp, 20 + payload_length));
+    if descriptor == 4 {
+        return rtl8139_transmit_dynamic64(frame, wire_length);
+    }
     outl(
         g_rtl8139_io64 + (0x20 as u16) + ((descriptor * 4) as u16),
         frame as u32);
@@ -1755,6 +1961,7 @@ fn process_create64(
             g_process_connect_seen64[slot] = 0;
             g_process_socket_transfer_seen64[slot] = 0;
             g_process_socket_wait_seen64[slot] = 0;
+            g_process_dns_resolver_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_join_status64[slot] = 0;
@@ -3423,7 +3630,7 @@ fn handle_close_owner64(owner: u32, descriptor: u32) -> u64 {
                 0x11,                          // FIN | ACK
                 g_socket_send_sequence64[pipe],
                 g_socket_receive_sequence64[pipe],
-                0, 0, 1);
+                0, 0, 4);
         }
         g_socket_used64[pipe] = 0;
         g_socket_state64[pipe] = 0;
@@ -3632,6 +3839,26 @@ fn process_socket64(domain: u64, socket_type: u64, protocol: u64) -> u64 {
     return descriptor as u64;
 }
 
+fn process_resolve_a64(name: u64, output_address: u64) -> u64 {
+    if g_current_process64 >= 8 {
+        return ~(21 as u64);
+    }
+    let length: u64 = user_cstring_length64(name);
+    if length == 0 || length == 257 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if !user_range_writable64(output_address, 4) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    if !rtl8139_dns_resolve64(
+            name, length as u32, output_address) {
+        return ~(1 as u64);                     // -ENOENT
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    g_process_dns_resolver_seen64[owner] = 1;
+    return 0;
+}
+
 fn process_connect64(
     descriptor: u64,
     address: u64,
@@ -3687,7 +3914,7 @@ fn process_connect64(
     if same_subnet {
         route_ip = remote_ip;
     }
-    if !rtl8139_arp_resolve64(route_ip, remote_mac, 0) {
+    if !rtl8139_arp_resolve64(route_ip, remote_mac, 4) {
         g_socket_error64[socket] = 113;          // EHOSTUNREACH
         g_socket_state64[socket] = 4;
         return ~(112 as u64);
@@ -3697,7 +3924,7 @@ fn process_connect64(
     if !rtl8139_tcp_control64(
             remote_ip, remote_mac,
             g_socket_local_port64[socket],
-            remote_port, 0x02, initial_sequence, 0, 0, 0, 1) {
+            remote_port, 0x02, initial_sequence, 0, 0, 0, 4) {
         g_socket_error64[socket] = 5;            // EIO
         g_socket_state64[socket] = 4;
         return ~(4 as u64);
@@ -3756,7 +3983,7 @@ fn process_connect64(
                                 g_socket_local_port64[socket],
                                 remote_port, 0x10,
                                 initial_sequence + 1,
-                                received_sequence, 0, 0, 2) {
+                                received_sequence, 0, 0, 4) {
                             g_socket_error64[socket] = 5;
                             g_socket_state64[socket] = 4;
                             return ~(4 as u64);
@@ -3853,7 +4080,7 @@ fn socket_send64(
             0x18,                              // PSH | ACK
             g_socket_send_sequence64[socket],
             g_socket_receive_sequence64[socket],
-            buffer, count as u32, 3) {
+            buffer, count as u32, 4) {
         g_socket_error64[socket] = 5;
         g_socket_state64[socket] = 4;
         return ~(4 as u64);                     // -EIO
@@ -3931,7 +4158,7 @@ fn socket_pump_receive64(socket: u32) -> bool {
             0x10,
             g_socket_send_sequence64[socket],
             g_socket_receive_sequence64[socket],
-            0, 0, 0);
+            0, 0, 4);
         return false;
     }
     let available: u32 = 8192 - g_socket_rx_count64[socket];
@@ -3969,7 +4196,7 @@ fn socket_pump_receive64(socket: u32) -> bool {
             0x10,
             g_socket_send_sequence64[socket],
             g_socket_receive_sequence64[socket],
-            0, 0, 0);
+            0, 0, 4);
     }
     return changed;
 }
@@ -4853,6 +5080,9 @@ fn syscall_dispatch64(
         return process_getsockopt64(
             argument0, argument1, argument2, argument3, argument4);
     }
+    if number == 402 {
+        return process_resolve_a64(argument0, argument1);
+    }
     if number == 72 {
         return process_fcntl64(argument0, argument1, argument2);
     }
@@ -5225,6 +5455,7 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_connect_seen64[cxx_slot] != 0
                 && g_process_socket_transfer_seen64[cxx_slot] != 0
                 && g_process_socket_wait_seen64[cxx_slot] != 0
+                && g_process_dns_resolver_seen64[cxx_slot] != 0
                 && g_process_join_seen64[cxx_slot] != 0
                 && g_process_futex_timeout_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
@@ -5258,6 +5489,8 @@ fn kmain64(multiboot_info: u64) {
                     "MORT64: POSIX TCP HTTP stream transfer passed\r\n");
                 serial_write64(
                     "MORT64: POSIX TCP epoll readiness passed\r\n");
+                serial_write64(
+                    "MORT64: POSIX getaddrinfo DNS resolution passed\r\n");
                 serial_write64(
                     "MORT64: TLS errno and stack canary passed\r\n");
                 serial_write64(

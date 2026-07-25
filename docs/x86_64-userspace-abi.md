@@ -33,6 +33,14 @@ connects to a real Internet endpoint, sends an HTTP request, validates an
 with epoll and validates `EPOLLIN` plus the exact opaque userspace token.
 Retransmission and additional socket operations remain incomplete.
 
+The resolver ABI accepts a validated hostname and performs a fresh UDP A-record
+exchange through the DHCP-provided server. Libc exposes this as
+`getaddrinfo`/`freeaddrinfo`, including numeric IPv4 and numeric-service
+handling, and returns ordinary `addrinfo` plus `sockaddr_in` objects. The HTTP
+test resolves `example.com` in ring 3 and connects to the returned address.
+Post-boot frames use a checked rotating RTL8139 transmit descriptor so repeated
+DNS, ARP, payload, ACK, and FIN operations cannot skip the NIC's queue order.
+
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,
 `malloc`, `calloc`, `realloc`, `free`, C++ `new`/`delete`, compiler atomics,
