@@ -874,7 +874,10 @@ def run64():
     subprocess.run([
         qemu, "-machine", "q35", "-cpu", "max", "-m", "256M",
         "-display", "none",
-        "-serial", "stdio", "-monitor", "none", "-kernel", ELF64,
+        "-serial", "stdio", "-monitor", "none",
+        "-netdev", "user,id=mortnet",
+        "-device", "rtl8139,netdev=mortnet",
+        "-kernel", ELF64,
     ])
 
 

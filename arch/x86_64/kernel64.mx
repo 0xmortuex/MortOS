@@ -104,6 +104,14 @@ let g_timer_ticks64: u64 = 0;
 let g_realtime_ready64: bool = false;
 let g_realtime_boot_seconds64: u64 = 0;
 let g_realtime_boot_ticks64: u64 = 0;
+let g_rtl8139_ready64: bool = false;
+let g_rtl8139_io64: u16 = 0;
+let g_rtl8139_tx_storage64: [u8; 2052] = [0; 2052];
+let g_rtl8139_rx_storage64: [u8; 9732] = [0; 9732];
+let g_rtl8139_mac64: [u8; 6] = [0; 6];
+let g_rtl8139_rx_base64: u64 = 0;
+let g_rtl8139_rx_offset64: u32 = 0;
+let g_rtl8139_rx_probe64: [u8; 1536] = [0; 1536];
 let g_thread_exit_seen64: bool = false;
 let g_vexfs_image64: u64 = 0;
 let g_vexfs_size64: u64 = 0;
@@ -298,6 +306,240 @@ fn rtc_init64() -> bool {
         attempt = attempt + 1;
     }
     return false;
+}
+
+fn pci_config_address64(
+    bus: u8,
+    slot: u8,
+    function: u8,
+    offset: u8
+) -> u32 {
+    return 0x80000000
+        | ((bus as u32) << 16)
+        | ((slot as u32) << 11)
+        | ((function as u32) << 8)
+        | ((offset as u32) & 0xFC);
+}
+
+fn pci_read32_64(bus: u8, slot: u8, function: u8, offset: u8) -> u32 {
+    outl(0xCF8, pci_config_address64(bus, slot, function, offset));
+    return inl(0xCFC);
+}
+
+fn pci_write32_64(
+    bus: u8,
+    slot: u8,
+    function: u8,
+    offset: u8,
+    value: u32
+) {
+    outl(0xCF8, pci_config_address64(bus, slot, function, offset));
+    outl(0xCFC, value);
+}
+
+fn rtl8139_transmit_probe64() -> bool {
+    if !g_rtl8139_ready64 {
+        return false;
+    }
+    let base: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
+        & ~(3 as u64);
+    let index: u32 = 0;
+    while index < 60 {
+        *((base + (index as u64)) as *u8) = 0;
+        index = index + 1;
+    }
+    index = 0;
+    while index < 6 {
+        *((base + (index as u64)) as *u8) = 0xFF;
+        *((base + 6 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
+        index = index + 1;
+    }
+    *((base + 12) as *u8) = 0x88;
+    *((base + 13) as *u8) = 0xB5;
+    let message: *u8 = "MORT64NET";
+    index = 0;
+    while index < 9 {
+        *((base + 14 + (index as u64)) as *u8) =
+            *((message as u64 + (index as u64)) as *u8);
+        index = index + 1;
+    }
+    outl(g_rtl8139_io64 + 0x20, base as u32);   // TSAD0
+    outl(g_rtl8139_io64 + 0x10, 60);            // TSD0: hand to NIC
+    let guard: u32 = 0;
+    while guard < 1000000 {
+        let status: u32 = inl(g_rtl8139_io64 + 0x10);
+        if (status & 0x8000) != 0 {              // TOK
+            return true;
+        }
+        if (status & 0x4000) != 0 {              // transmit underrun
+            return false;
+        }
+        guard = guard + 1;
+    }
+    return false;
+}
+
+fn rtl8139_poll_receive64(output: u64, capacity: u32) -> u32 {
+    if !g_rtl8139_ready64 || capacity == 0
+        || (inb(g_rtl8139_io64 + 0x37) & 1) != 0 {
+        return 0;
+    }
+    let header: u64 = g_rtl8139_rx_base64
+        + (g_rtl8139_rx_offset64 as u64);
+    let status: u16 = *(header as *u16);
+    let dma_length: u32 = (*((header + 2) as *u16)) as u32;
+    if dma_length < 4 || dma_length > 1536 {
+        return 0;
+    }
+    let frame_length: u32 = dma_length - 4;      // discard Ethernet CRC
+    let copied: u32 = frame_length;
+    if copied > capacity {
+        copied = capacity;
+    }
+    if (status & 1) != 0 {
+        let index: u32 = 0;
+        while index < copied {
+            *((output + (index as u64)) as *u8) =
+                *((header + 4 + (index as u64)) as *u8);
+            index = index + 1;
+        }
+    }
+    let advance: u32 = (dma_length + 7) & 0xFFFFFFFC;
+    g_rtl8139_rx_offset64 =
+        (g_rtl8139_rx_offset64 + advance) % 8192;
+    outw(
+        g_rtl8139_io64 + 0x38,
+        (g_rtl8139_rx_offset64 - 16) as u16);    // CAPR quirk
+    if (status & 1) == 0 {
+        return 0;
+    }
+    return copied;
+}
+
+fn rtl8139_arp_probe64() -> bool {
+    if !g_rtl8139_ready64 {
+        return false;
+    }
+    let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
+        & ~(3 as u64);
+    let index: u32 = 0;
+    while index < 60 {
+        *((frame + (index as u64)) as *u8) = 0;
+        index = index + 1;
+    }
+    index = 0;
+    while index < 6 {
+        *((frame + (index as u64)) as *u8) = 0xFF;
+        *((frame + 6 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
+        *((frame + 22 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
+        index = index + 1;
+    }
+    *((frame + 12) as *u8) = 0x08;              // EtherType ARP
+    *((frame + 13) as *u8) = 0x06;
+    *((frame + 14) as *u8) = 0x00;              // Ethernet hardware
+    *((frame + 15) as *u8) = 0x01;
+    *((frame + 16) as *u8) = 0x08;              // IPv4 protocol
+    *((frame + 17) as *u8) = 0x00;
+    *((frame + 18) as *u8) = 6;
+    *((frame + 19) as *u8) = 4;
+    *((frame + 20) as *u8) = 0x00;              // ARP request
+    *((frame + 21) as *u8) = 0x01;
+    *((frame + 28) as *u8) = 10;                // sender 10.0.2.15
+    *((frame + 29) as *u8) = 0;
+    *((frame + 30) as *u8) = 2;
+    *((frame + 31) as *u8) = 15;
+    *((frame + 38) as *u8) = 10;                // target 10.0.2.2
+    *((frame + 39) as *u8) = 0;
+    *((frame + 40) as *u8) = 2;
+    *((frame + 41) as *u8) = 2;
+    outl(g_rtl8139_io64 + 0x24, frame as u32);  // TSAD1
+    outl(g_rtl8139_io64 + 0x14, 60);            // TSD1
+
+    let guard: u32 = 0;
+    while guard < 2000000 {
+        let length: u32 = rtl8139_poll_receive64(
+            &g_rtl8139_rx_probe64 as u64, 1536);
+        if length >= 42 {
+            let packet: u64 = &g_rtl8139_rx_probe64 as u64;
+            if *((packet + 12) as *u8) == 0x08
+                && *((packet + 13) as *u8) == 0x06
+                && *((packet + 20) as *u8) == 0x00
+                && *((packet + 21) as *u8) == 0x02
+                && *((packet + 28) as *u8) == 10
+                && *((packet + 29) as *u8) == 0
+                && *((packet + 30) as *u8) == 2
+                && *((packet + 31) as *u8) == 2
+                && *((packet + 38) as *u8) == 10
+                && *((packet + 39) as *u8) == 0
+                && *((packet + 40) as *u8) == 2
+                && *((packet + 41) as *u8) == 15 {
+                return true;
+            }
+        }
+        guard = guard + 1;
+    }
+    return false;
+}
+
+fn rtl8139_init64() -> bool {
+    let found: bool = false;
+    let device_slot: u8 = 0;
+    let slot: u32 = 0;
+    while slot < 32 {
+        let identity: u32 = pci_read32_64(0, slot as u8, 0, 0);
+        if (identity & 0xFFFF) == 0x10EC
+            && ((identity >> 16) & 0xFFFF) == 0x8139 {
+            device_slot = slot as u8;
+            found = true;
+            slot = 32;
+        } else {
+            slot = slot + 1;
+        }
+    }
+    if !found {
+        return false;
+    }
+    let bar0: u32 = pci_read32_64(0, device_slot, 0, 0x10);
+    if (bar0 & 1) == 0 {
+        return false;
+    }
+    g_rtl8139_io64 = (bar0 & 0xFFFC) as u16;
+    let command: u32 = pci_read32_64(0, device_slot, 0, 0x04);
+    pci_write32_64(0, device_slot, 0, 0x04, command | 0x5);
+
+    outb(g_rtl8139_io64 + 0x52, 0);             // power on
+    outb(g_rtl8139_io64 + 0x37, 0x10);          // software reset
+    let guard: u32 = 0;
+    while guard < 1000000
+        && (inb(g_rtl8139_io64 + 0x37) & 0x10) != 0 {
+        guard = guard + 1;
+    }
+    if (inb(g_rtl8139_io64 + 0x37) & 0x10) != 0 {
+        return false;
+    }
+    let rx_base: u64 = ((&g_rtl8139_rx_storage64 as u64) + 3)
+        & ~(3 as u64);
+    g_rtl8139_rx_base64 = rx_base;
+    g_rtl8139_rx_offset64 = 0;
+    outl(g_rtl8139_io64 + 0x30, rx_base as u32);// RBSTART
+    outl(g_rtl8139_io64 + 0x44, 0x8F);          // WRAP + accept frames
+    outw(g_rtl8139_io64 + 0x3C, 0);             // polling: mask IRQs
+    outw(g_rtl8139_io64 + 0x3E, 0xFFFF);        // clear pending ISR
+    outb(g_rtl8139_io64 + 0x37, 0x0C);          // receiver + transmitter
+
+    let any_mac: u8 = 0;
+    slot = 0;
+    while slot < 6 {
+        let octet: u8 = inb(g_rtl8139_io64 + (slot as u16));
+        g_rtl8139_mac64[slot] = octet;
+        any_mac = any_mac | octet;
+        slot = slot + 1;
+    }
+    if any_mac == 0 {
+        return false;
+    }
+    g_rtl8139_ready64 = true;
+    return rtl8139_transmit_probe64();
 }
 
 fn frame_byte64(index: u32) -> *u8 {
@@ -3491,6 +3733,20 @@ fn kmain64(multiboot_info: u64) {
             serial_write64("MORT64: CMOS realtime clock active\r\n");
         } else {
             serial_write64("MORT64 ERROR: CMOS realtime unavailable\r\n");
+        }
+        if rtl8139_init64() {
+            serial_write64(
+                "MORT64: RTL8139 Ethernet DMA transmit passed\r\n");
+        } else {
+            serial_write64(
+                "MORT64 ERROR: RTL8139 Ethernet unavailable\r\n");
+        }
+        if rtl8139_arp_probe64() {
+            serial_write64(
+                "MORT64: RTL8139 Ethernet ARP receive passed\r\n");
+        } else {
+            serial_write64(
+                "MORT64 ERROR: RTL8139 Ethernet receive failed\r\n");
         }
         asm("sti");
         serial_write64("MORT64: PIT timer interrupts active\r\n");

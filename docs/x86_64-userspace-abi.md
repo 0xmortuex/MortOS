@@ -9,6 +9,12 @@ anonymous mappings with a boot-tested RW→RX JIT execution transition,
 `yield`, `getpid`, `clock_gettime`, and `exit` are boot-tested. Other
 facilities remain planned unless explicitly marked otherwise.
 
+The native kernel also owns a Mort-written RTL8139 path: PCI configuration,
+bus-master enablement, aligned TX/RX DMA buffers, MAC discovery, transmit
+completion, receive-ring ownership, and a validated ARP exchange with QEMU's
+gateway are boot-tested. This proves the hardware data path; the POSIX socket
+layer and higher IPv4 transports remain the next networking stage.
+
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,
 `malloc`, `calloc`, `realloc`, `free`, C++ `new`/`delete`, compiler atomics,

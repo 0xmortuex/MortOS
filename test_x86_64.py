@@ -35,6 +35,8 @@ def main():
         "-display", "none",
         "-serial", "stdio",
         "-monitor", "none",
+        "-netdev", "user,id=mortnet",
+        "-device", "rtl8139,netdev=mortnet",
         "-no-reboot",
         "-kernel", ELF64,
     ]
@@ -58,6 +60,8 @@ def main():
         "MORT64: IDT breakpoint self-test passed",
         "MORT64: PIT timer interrupts active",
         "MORT64: CMOS realtime clock active",
+        "MORT64: RTL8139 Ethernet DMA transmit passed",
+        "MORT64: RTL8139 Ethernet ARP receive passed",
         "MORT64: ELF64 loader mapped five isolated processes",
         "MORT64: syscall rejected supervisor pointer",
         "MORT64 USERSPACE OK",
