@@ -12,7 +12,7 @@ results to POSIX conventions. `pthread_create` supplies protected workers with
 private stacks and TLS; mutexes, condition variables, read/write locks, and
 process-local POSIX semaphores use kernel scheduler futexes, and blocking join promptly reclaims each worker's scheduler slot,
 stack, and TLS. Futex waits also accept relative kernel deadlines for the
-timed synchronization layer. One-time initialization and 64 per-thread keys with exit
+absolute realtime condition-variable and semaphore APIs. One-time initialization and 64 per-thread keys with exit
 destructors cover additional Node/V8 runtime requirements. The canonical Vex port still requires the rest
 of libc/libc++, although CMOS-anchored realtime, monotonic clock, and
 scheduler-backed sleep wrappers are now present. Dynamic loading, networking, and

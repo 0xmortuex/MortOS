@@ -5,6 +5,8 @@ typedef struct {
     volatile unsigned int __value;
 } sem_t;
 
+struct timespec;
+
 #define SEM_VALUE_MAX 0x7FFFFFFF
 
 #ifdef __cplusplus
@@ -14,6 +16,13 @@ extern "C" {
 int sem_init(sem_t *semaphore, int process_shared, unsigned int value);
 int sem_destroy(sem_t *semaphore);
 int sem_wait(sem_t *semaphore);
+int sem_timedwait(
+    sem_t *semaphore,
+    const struct timespec *absolute_timeout);
+int sem_clockwait(
+    sem_t *semaphore,
+    int clock,
+    const struct timespec *absolute_timeout);
 int sem_trywait(sem_t *semaphore);
 int sem_post(sem_t *semaphore);
 int sem_getvalue(sem_t *semaphore, int *value);

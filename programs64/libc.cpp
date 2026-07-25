@@ -170,6 +170,41 @@ static int sleep_timespec_valid(const struct timespec *request) {
         && request->tv_nsec < 1000000000L;
 }
 
+static int absolute_timeout_milliseconds(
+    clockid_t clock,
+    const struct timespec *absolute,
+    unsigned long *milliseconds
+) {
+    if ((clock != CLOCK_REALTIME && clock != CLOCK_MONOTONIC)
+        || !sleep_timespec_valid(absolute) || !milliseconds) {
+        return EINVAL;
+    }
+    struct timespec now = {};
+    if (clock_gettime(clock, &now) != 0) {
+        return errno;
+    }
+    if (absolute->tv_sec < now.tv_sec
+        || (absolute->tv_sec == now.tv_sec
+            && absolute->tv_nsec <= now.tv_nsec)) {
+        *milliseconds = 0;
+        return 0;
+    }
+    unsigned long seconds = static_cast<unsigned long>(
+        absolute->tv_sec - now.tv_sec);
+    long nanoseconds = absolute->tv_nsec - now.tv_nsec;
+    if (nanoseconds < 0) {
+        --seconds;
+        nanoseconds += 1000000000L;
+    }
+    if (seconds > (0x7FFFFFFFFFFFFFFFUL / 1000UL)) {
+        return EINVAL;
+    }
+    *milliseconds = (seconds * 1000UL)
+        + ((static_cast<unsigned long>(nanoseconds) + 999999UL)
+            / 1000000UL);
+    return 0;
+}
+
 extern "C" int nanosleep(
     const struct timespec *request,
     struct timespec *remaining
@@ -636,6 +671,49 @@ extern "C" int pthread_cond_wait(
     return wait_error == EAGAIN ? 0 : wait_error;
 }
 
+extern "C" int pthread_cond_clockwait(
+    pthread_cond_t *condition,
+    pthread_mutex_t *mutex,
+    int clock,
+    const struct timespec *absolute_timeout
+) {
+    if (!condition || !mutex) {
+        return EINVAL;
+    }
+    unsigned long timeout = 0;
+    int timeout_error = absolute_timeout_milliseconds(
+        static_cast<clockid_t>(clock), absolute_timeout, &timeout);
+    if (timeout_error != 0) {
+        return timeout_error;
+    }
+    if (timeout == 0) {
+        return ETIMEDOUT;
+    }
+    unsigned int sequence = __atomic_load_n(
+        &condition->__sequence, __ATOMIC_ACQUIRE);
+    int unlock_error = pthread_mutex_unlock(mutex);
+    if (unlock_error != 0) {
+        return unlock_error;
+    }
+    int wait_error = pthread_futex_error(mortos_futex_timed(
+        const_cast<unsigned int *>(&condition->__sequence),
+        0, sequence, timeout));
+    int lock_error = pthread_mutex_lock(mutex);
+    if (lock_error != 0) {
+        return lock_error;
+    }
+    return wait_error == EAGAIN ? 0 : wait_error;
+}
+
+extern "C" int pthread_cond_timedwait(
+    pthread_cond_t *condition,
+    pthread_mutex_t *mutex,
+    const struct timespec *absolute_timeout
+) {
+    return pthread_cond_clockwait(
+        condition, mutex, CLOCK_REALTIME, absolute_timeout);
+}
+
 extern "C" int pthread_cond_signal(pthread_cond_t *condition) {
     if (!condition) {
         return EINVAL;
@@ -825,6 +903,54 @@ extern "C" int sem_wait(sem_t *semaphore) {
             return -1;
         }
     }
+}
+
+extern "C" int sem_clockwait(
+    sem_t *semaphore,
+    int clock,
+    const struct timespec *absolute_timeout
+) {
+    if (!semaphore) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (;;) {
+        unsigned int value = __atomic_load_n(
+            &semaphore->__value, __ATOMIC_RELAXED);
+        while (value != 0) {
+            if (__atomic_compare_exchange_n(
+                    &semaphore->__value, &value, value - 1U, true,
+                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                return 0;
+            }
+        }
+        unsigned long timeout = 0;
+        int timeout_error = absolute_timeout_milliseconds(
+            static_cast<clockid_t>(clock), absolute_timeout, &timeout);
+        if (timeout_error != 0 || timeout == 0) {
+            errno = timeout_error != 0 ? timeout_error : ETIMEDOUT;
+            return -1;
+        }
+        int wait_error = pthread_futex_error(mortos_futex_timed(
+            const_cast<unsigned int *>(&semaphore->__value),
+            0, 0, timeout));
+        if (wait_error == ETIMEDOUT) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        if (wait_error != 0 && wait_error != EAGAIN) {
+            errno = wait_error;
+            return -1;
+        }
+    }
+}
+
+extern "C" int sem_timedwait(
+    sem_t *semaphore,
+    const struct timespec *absolute_timeout
+) {
+    return sem_clockwait(
+        semaphore, CLOCK_REALTIME, absolute_timeout);
 }
 
 extern "C" int sem_post(sem_t *semaphore) {

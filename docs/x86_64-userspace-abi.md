@@ -31,7 +31,8 @@ error translation to `EBADF`. `pthread_create` provisions a private 64 KiB
 stack and TLS page, copies the process canary, and runs fully protected worker
 entrypoints with independent errno state. Futex-backed pthread mutexes,
 condition variables, read/write locks, and process-local POSIX semaphores provide the first POSIX
-synchronization surface. Blocking
+synchronization surface. Condition variables and semaphores expose absolute
+realtime deadlines backed by the kernel's timed futex state. Blocking
 `pthread_join` returns worker results and promptly reclaims the kernel task
 slot, stack mapping, and TLS mapping. `pthread_once` provides process-wide
 one-time initialization, while 64 thread-specific keys occupy independent TLS

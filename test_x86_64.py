@@ -86,6 +86,7 @@ def main():
         "MORT64: POSIX semaphore blocking passed",
         "MORT64: POSIX monotonic sleep passed",
         "MORT64: timed futex deadline passed",
+        "MORT64: timed pthread and semaphore passed",
         "MORT64: canonical Vex asset filesystem passed",
         "MORT64: canonical Vex hierarchy stat passed",
         "MORT64: canonical Vex directory enumeration passed",

@@ -53,6 +53,21 @@ static void record_key_destructor(void *value) {
         __ATOMIC_RELEASE);
 }
 
+static struct timespec realtime_deadline(unsigned long milliseconds) {
+    struct timespec deadline = {};
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        return deadline;
+    }
+    deadline.tv_sec += static_cast<time_t>(milliseconds / 1000UL);
+    deadline.tv_nsec += static_cast<long>(
+        (milliseconds % 1000UL) * 1000000UL);
+    if (deadline.tv_nsec >= 1000000000L) {
+        ++deadline.tv_sec;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    return deadline;
+}
+
 struct PipeWorkerArguments {
     unsigned int write_descriptor;
 };
@@ -465,6 +480,30 @@ extern "C" int main(int argc, char **argv, char **envp) {
         static_cast<unsigned long>(sleep_after.tv_sec) * 1000000000UL
         + static_cast<unsigned long>(sleep_after.tv_nsec);
     if (sleep_after_ns < sleep_before_ns + 10000000UL) {
+        return 20;
+    }
+    pthread_mutex_t timed_mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t timed_condition = PTHREAD_COND_INITIALIZER;
+    struct timespec condition_deadline = realtime_deadline(20);
+    if (condition_deadline.tv_sec == 0
+        || pthread_mutex_lock(&timed_mutex) != 0
+        || pthread_cond_timedwait(
+            &timed_condition, &timed_mutex,
+            &condition_deadline) != ETIMEDOUT
+        || pthread_mutex_unlock(&timed_mutex) != 0
+        || pthread_mutex_destroy(&timed_mutex) != 0
+        || pthread_cond_destroy(&timed_condition) != 0) {
+        return 20;
+    }
+    sem_t timed_semaphore = {};
+    struct timespec semaphore_deadline = realtime_deadline(20);
+    errno = 0;
+    if (sem_init(&timed_semaphore, 0, 0) != 0
+        || semaphore_deadline.tv_sec == 0
+        || sem_timedwait(
+            &timed_semaphore, &semaphore_deadline) != -1
+        || errno != ETIMEDOUT
+        || sem_destroy(&timed_semaphore) != 0) {
         return 20;
     }
     struct timespec realtime = {};
