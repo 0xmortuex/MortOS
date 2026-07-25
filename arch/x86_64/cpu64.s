@@ -263,6 +263,11 @@ mort64_rdrand_store:
 
 .type mort64_syscall_entry, @function
 mort64_syscall_entry:
+    cmp $232, %rax                  /* blocking epoll_wait */
+    jne .Lnot_epoll_wait
+    cmp $0, %r10
+    jne .Lsyscall_epoll_wait
+.Lnot_epoll_wait:
     cmp $7, %rax                    /* blocking poll returns to scheduler */
     jne .Lnot_poll_wait
     cmp $0, %rdx
@@ -453,6 +458,7 @@ mort64_syscall_entry:
     jns .Lsave_blocked_context
 
     /* Bit 63 marks a direct return; bit 62 distinguishes an errno. */
+.Lwait_direct_result:
     bt $62, %rax
     jc .Lpoll_wait_direct_error
     btr $63, %rax
@@ -471,6 +477,33 @@ mort64_syscall_entry:
     mov mort64_yield_rflags(%rip), %r11
     mov mort64_yield_rsp(%rip), %rsp
     sysretq
+
+.Lsyscall_epoll_wait:
+    mov %rdi, mort64_epoll_descriptor(%rip)
+    mov %rsi, mort64_epoll_events(%rip)
+    mov %rdx, mort64_epoll_maxevents(%rip)
+    mov %r10, mort64_epoll_timeout(%rip)
+    mov %rsp, mort64_yield_rsp(%rip)
+    mov %rcx, mort64_yield_rip(%rip)
+    mov %r11, mort64_yield_rflags(%rip)
+    mov %rbx, mort64_yield_rbx(%rip)
+    mov %rbp, mort64_yield_rbp(%rip)
+    mov %r12, mort64_yield_r12(%rip)
+    mov %r13, mort64_yield_r13(%rip)
+    mov %r14, mort64_yield_r14(%rip)
+    mov %r15, mort64_yield_r15(%rip)
+    mov mort64_kernel_rsp(%rip), %rsp
+    mov mort64_epoll_descriptor(%rip), %rdi
+    mov mort64_epoll_events(%rip), %rsi
+    mov mort64_epoll_maxevents(%rip), %rdx
+    mov mort64_epoll_timeout(%rip), %rcx
+    cld
+    sub $8, %rsp
+    call mort_on_epoll_wait64
+    add $8, %rsp
+    test %rax, %rax
+    jns .Lsave_blocked_context
+    jmp .Lwait_direct_result
 
 .Lsyscall_exit:
     /* rdi already contains the userspace exit status. */
@@ -741,4 +774,12 @@ mort64_pollfds:
 mort64_poll_count:
     .quad 0
 mort64_poll_timeout:
+    .quad 0
+mort64_epoll_descriptor:
+    .quad 0
+mort64_epoll_events:
+    .quad 0
+mort64_epoll_maxevents:
+    .quad 0
+mort64_epoll_timeout:
     .quad 0

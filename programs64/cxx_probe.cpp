@@ -43,6 +43,11 @@ extern "C" unsigned long mortos_getrandom(
     void *, unsigned long, unsigned long);
 extern "C" unsigned long mortos_eventfd2(
     unsigned long, unsigned long);
+extern "C" unsigned long mortos_epoll_create1(unsigned long);
+extern "C" unsigned long mortos_epoll_ctl(
+    unsigned long, unsigned long, unsigned long, void *);
+extern "C" unsigned long mortos_epoll_wait(
+    unsigned long, void *, unsigned long, unsigned long);
 extern "C" unsigned long mortos_lseek(
     unsigned long, unsigned long, unsigned long);
 extern "C" unsigned long mortos_pread(
@@ -67,6 +72,11 @@ struct PollDescriptor {
     int descriptor;
     unsigned short events;
     unsigned short returned;
+};
+
+struct __attribute__((packed)) EpollEvent {
+    unsigned int events;
+    unsigned long data;
 };
 
 static const char pipe_message[] = "descriptor-ipc";
@@ -308,9 +318,24 @@ extern "C" int main() {
     }
 
     unsigned long event_descriptor = mortos_eventfd2(0, 0x80800);
+    unsigned long epoll_descriptor = mortos_epoll_create1(0x80000);
     unsigned long event_stack = mortos_mmap(
         0, 8192, 3, 0x22, ~0UL, 0);
-    if (event_descriptor >= ~4095UL || event_stack >= ~4095UL) {
+    if (event_descriptor >= ~4095UL
+        || epoll_descriptor >= ~4095UL
+        || event_stack >= ~4095UL) {
+        return 18;
+    }
+    EpollEvent event_interest = {1U, 0x45504F4C4C564558UL};
+    if (mortos_epoll_ctl(
+            epoll_descriptor, 1, event_descriptor,
+            &event_interest) != 0) {
+        return 18;
+    }
+    event_interest.data = 0x45504F4C4C4D4F44UL;
+    if (mortos_epoll_ctl(
+            epoll_descriptor, 3, event_descriptor,
+            &event_interest) != 0) {
         return 18;
     }
     EventWorkerArguments event_arguments = {
@@ -319,18 +344,23 @@ extern "C" int main() {
         reinterpret_cast<unsigned long>(&event_worker),
         event_stack + 8192,
         reinterpret_cast<unsigned long>(&event_arguments));
-    PollDescriptor event_readiness[1] = {
-        {static_cast<int>(event_descriptor), 1, 0},
-    };
+    EpollEvent event_readiness = {};
     unsigned long event_value = 0;
     if (event_thread <= pipe_thread
-        || mortos_poll(event_readiness, 1, 1000) != 1
-        || (event_readiness[0].returned & 1) == 0
+        || mortos_epoll_wait(
+            epoll_descriptor, &event_readiness, 1, 1000) != 1
+        || (event_readiness.events & 1) == 0
+        || event_readiness.data != 0x45504F4C4C4D4F44UL
         || mortos_read(
             event_descriptor, &event_value, sizeof(event_value)) != 8
         || event_value != 7
         || mortos_read(
             event_descriptor, &event_value, sizeof(event_value)) != ~10UL
+        || mortos_epoll_wait(
+            epoll_descriptor, &event_readiness, 1, 20) != 0
+        || mortos_epoll_ctl(
+            epoll_descriptor, 2, event_descriptor, nullptr) != 0
+        || mortos_close(epoll_descriptor) != 0
         || mortos_close(event_descriptor) != 0
         || mortos_munmap(event_stack, 8192) != 0) {
         return 18;

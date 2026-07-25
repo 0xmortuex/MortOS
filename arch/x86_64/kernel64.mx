@@ -62,18 +62,26 @@ let g_process_path_length64: [u16; 8] = [0; 8];
 let g_process_path_error64: [u64; 8] = [0; 8];
 let g_process_path64: [u8; 2056] = [0; 2056];
 let g_process_wait_address64: [u64; 8] = [0; 8];
-// Wait kind: 0 none, 1 futex, 2 poll.
+// Wait kind: 0 none, 1 futex, 2 poll, 3 epoll.
 let g_process_wait_kind64: [u8; 8] = [0; 8];
 let g_process_pollfds64: [u64; 8] = [0; 8];
 let g_process_poll_count64: [u64; 8] = [0; 8];
 let g_process_poll_deadline64: [u64; 8] = [0; 8];
+let g_process_epoll_descriptor64: [u32; 8] = [0; 8];
+let g_process_epoll_events64: [u64; 8] = [0; 8];
+let g_process_epoll_maxevents64: [u64; 8] = [0; 8];
 // Eight descriptors per owning process. Types: 0 free, 2 pipe read, 3 write,
-// 4 read-only VexFS file, 5 read-only VexFS directory, 6 event counter.
+// 4 read-only VexFS file, 5 read-only VexFS directory, 6 event counter,
+// 7 epoll interest set.
 let g_handle_type64: [u8; 64] = [0; 64];
 let g_handle_object64: [u32; 64] = [0; 64];
 let g_handle_position64: [u32; 64] = [0; 64];
 let g_handle_flags64: [u32; 64] = [0; 64];
 let g_handle_value64: [u64; 64] = [0; 64];
+let g_epoll_used64: [u8; 512] = [0; 512];
+let g_epoll_descriptor64: [u32; 512] = [0; 512];
+let g_epoll_events64: [u32; 512] = [0; 512];
+let g_epoll_data64: [u64; 512] = [0; 512];
 // Directory descriptors retain a normalized absolute path. A fixed stride
 // keeps descriptor lifetime independent from userspace buffers.
 let g_handle_path64: [u8; 16448] = [0; 16448];
@@ -95,6 +103,7 @@ let g_vexfs_ready64: bool = false;
 let g_entropy_ready64: bool = false;
 let g_process_entropy_seen64: [u8; 8] = [0; 8];
 let g_process_eventfd_seen64: [u8; 8] = [0; 8];
+let g_process_epoll_seen64: [u8; 8] = [0; 8];
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
@@ -534,11 +543,15 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_path_error64[slot] = 0;
             g_process_entropy_seen64[slot] = 0;
             g_process_eventfd_seen64[slot] = 0;
+            g_process_epoll_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_pollfds64[slot] = 0;
             g_process_poll_count64[slot] = 0;
             g_process_poll_deadline64[slot] = 0;
+            g_process_epoll_descriptor64[slot] = 0;
+            g_process_epoll_events64[slot] = 0;
+            g_process_epoll_maxevents64[slot] = 0;
             let descriptor: u32 = 0;
             while descriptor < 8 {
                 g_handle_type64[(slot * 8) + descriptor] = 0;
@@ -2042,6 +2055,27 @@ fn handle_close_owner64(owner: u32, descriptor: u32) -> u64 {
             g_pipe_count64[pipe] = 0;
         }
     }
+    let epoll_descriptor: u32 = 3;
+    while epoll_descriptor < 8 {
+        let epoll_handle: u32 = (owner * 8) + epoll_descriptor;
+        if g_handle_type64[epoll_handle] == 7 {
+            let watch: u32 = 0;
+            while watch < 8 {
+                let epoll_index: u32 = (epoll_handle * 8) + watch;
+                if epoll_handle == index
+                    || (g_epoll_used64[epoll_index] != 0
+                        && g_epoll_descriptor64[epoll_index]
+                            == descriptor) {
+                    g_epoll_used64[epoll_index] = 0;
+                    g_epoll_descriptor64[epoll_index] = 0;
+                    g_epoll_events64[epoll_index] = 0;
+                    g_epoll_data64[epoll_index] = 0;
+                }
+                watch = watch + 1;
+            }
+        }
+        epoll_descriptor = epoll_descriptor + 1;
+    }
     g_handle_type64[index] = 0;
     g_handle_object64[index] = 0;
     g_handle_position64[index] = 0;
@@ -2272,6 +2306,59 @@ fn process_pipe_read64(
     return count;
 }
 
+fn descriptor_revents64(
+    owner: u32,
+    descriptor: i32,
+    events: u16
+) -> u16 {
+    let returned: u16 = 0;
+    if descriptor == 1 {
+        if (events & 4) != 0 {
+            returned = returned | 4;
+        }
+        return returned;
+    }
+    if owner >= 8 || descriptor < 0 || descriptor >= 8 {
+        return 32;                              // POLLNVAL
+    }
+    let handle: u32 = (owner * 8) + (descriptor as u32);
+    let kind: u8 = g_handle_type64[handle];
+    if kind == 0 {
+        return 32;
+    }
+    let object: u32 = g_handle_object64[handle];
+    if kind == 2 {
+        if (events & 1) != 0 && g_pipe_count64[object] > 0 {
+            returned = returned | 1;
+        }
+        if g_pipe_writers64[object] == 0 {
+            returned = returned | 16;
+        }
+    } else if kind == 3 {
+        if g_pipe_readers64[object] == 0 {
+            returned = returned | 8;
+        } else if (events & 4) != 0
+            && g_pipe_count64[object] < 256 {
+            returned = returned | 4;
+        }
+    } else if kind == 4 {
+        let header: u64 = g_vexfs_image64 + (object as u64);
+        let size: u32 = *((header + 4) as *u32);
+        if (events & 1) != 0 && g_handle_position64[handle] < size {
+            returned = returned | 1;
+        }
+    } else if kind == 6 {
+        if (events & 1) != 0 && g_handle_value64[handle] != 0 {
+            returned = returned | 1;
+        }
+        if (events & 4) != 0
+            && g_handle_value64[handle] < ~(1 as u64) {
+            returned = returned | 4;
+        }
+    }
+    return returned;
+}
+
 fn process_poll64(pollfds: u64, count: u64, timeout: u64) -> u64 {
     if g_current_process64 >= 8 || count > 8 {
         return ~(21 as u64);                    // -EINVAL
@@ -2350,6 +2437,157 @@ fn process_poll64(pollfds: u64, count: u64, timeout: u64) -> u64 {
     return ready;
 }
 
+fn process_epoll_create1_64(flags: u64) -> u64 {
+    if g_current_process64 >= 8
+        || (flags != 0 && flags != 0x80000) {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let descriptor: u32 = 3;
+    while descriptor < 8 {
+        let handle: u32 = (owner * 8) + descriptor;
+        if g_handle_type64[handle] == 0 {
+            g_handle_type64[handle] = 7;
+            g_handle_object64[handle] = 0;
+            g_handle_position64[handle] = 0;
+            g_handle_flags64[handle] = flags as u32;
+            g_handle_value64[handle] = 0;
+            let watch: u32 = 0;
+            while watch < 8 {
+                let index: u32 = (handle * 8) + watch;
+                g_epoll_used64[index] = 0;
+                g_epoll_descriptor64[index] = 0;
+                g_epoll_events64[index] = 0;
+                g_epoll_data64[index] = 0;
+                watch = watch + 1;
+            }
+            g_process_epoll_seen64[owner] = 1;
+            return descriptor as u64;
+        }
+        descriptor = descriptor + 1;
+    }
+    return ~(23 as u64);                        // -EMFILE
+}
+
+fn process_epoll_ctl64(
+    epoll_descriptor: u64,
+    operation: u64,
+    descriptor: u64,
+    event: u64
+) -> u64 {
+    if g_current_process64 >= 8
+        || epoll_descriptor >= 8 || descriptor >= 8
+        || epoll_descriptor == descriptor {
+        return ~(8 as u64);                     // -EBADF
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let epoll_handle: u32 = (owner * 8) + (epoll_descriptor as u32);
+    let target_handle: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[epoll_handle] != 7
+        || g_handle_type64[target_handle] == 0 {
+        return ~(8 as u64);
+    }
+    if g_handle_type64[target_handle] == 7 {
+        return ~(21 as u64);                    // nested epoll unsupported
+    }
+    let found: u32 = 8;
+    let free: u32 = 8;
+    let watch: u32 = 0;
+    while watch < 8 {
+        let index: u32 = (epoll_handle * 8) + watch;
+        if g_epoll_used64[index] != 0
+            && g_epoll_descriptor64[index] == descriptor as u32 {
+            found = watch;
+        } else if g_epoll_used64[index] == 0 && free == 8 {
+            free = watch;
+        }
+        watch = watch + 1;
+    }
+    if operation == 2 {                        // EPOLL_CTL_DEL
+        if found == 8 {
+            return ~(1 as u64);                 // -ENOENT
+        }
+        let index: u32 = (epoll_handle * 8) + found;
+        g_epoll_used64[index] = 0;
+        g_epoll_descriptor64[index] = 0;
+        g_epoll_events64[index] = 0;
+        g_epoll_data64[index] = 0;
+        return 0;
+    }
+    if operation != 1 && operation != 3 {
+        return ~(21 as u64);
+    }
+    if !user_range_readable64(event, 12) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    let requested: u32 = *(event as *u32);
+    if (requested & ~(0x201D as u32)) != 0 {
+        return ~(21 as u64);                    // unsupported epoll mode
+    }
+    if operation == 1 && found != 8 {
+        return ~(16 as u64);                    // -EEXIST
+    }
+    if operation == 3 && found == 8 {
+        return ~(1 as u64);                     // -ENOENT
+    }
+    let selected: u32 = found;
+    if operation == 1 {
+        if free == 8 {
+            return ~(27 as u64);                // -ENOSPC
+        }
+        selected = free;
+    }
+    let index: u32 = (epoll_handle * 8) + selected;
+    g_epoll_used64[index] = 1;
+    g_epoll_descriptor64[index] = descriptor as u32;
+    g_epoll_events64[index] = requested;
+    g_epoll_data64[index] = *((event + 4) as *u64);
+    return 0;
+}
+
+fn process_epoll_wait64(
+    epoll_descriptor: u64,
+    events: u64,
+    maxevents: u64,
+    timeout: u64
+) -> u64 {
+    if g_current_process64 >= 8 || epoll_descriptor >= 8
+        || maxevents == 0 || maxevents > 8 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if timeout != 0 {
+        return ~(37 as u64);                    // blocking entry handles this
+    }
+    if !user_range_writable64(events, maxevents * 12) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let epoll_handle: u32 = (owner * 8) + (epoll_descriptor as u32);
+    if g_handle_type64[epoll_handle] != 7 {
+        return ~(8 as u64);                     // -EBADF
+    }
+    let ready: u64 = 0;
+    let watch: u32 = 0;
+    while watch < 8 && ready < maxevents {
+        let index: u32 = (epoll_handle * 8) + watch;
+        if g_epoll_used64[index] != 0 {
+            let requested: u32 = g_epoll_events64[index];
+            let returned: u16 = descriptor_revents64(
+                owner,
+                g_epoll_descriptor64[index] as i32,
+                requested as u16);
+            if returned != 0 {
+                let output: u64 = events + (ready * 12);
+                *(output as *u32) = returned as u32;
+                *((output + 4) as *u64) = g_epoll_data64[index];
+                ready = ready + 1;
+            }
+        }
+        watch = watch + 1;
+    }
+    return ready;
+}
+
 fn task_wait_return64(slot: u32, result: u64) {
     if slot >= 8 {
         return;
@@ -2361,6 +2599,9 @@ fn task_wait_return64(slot: u32, result: u64) {
     g_process_pollfds64[slot] = 0;
     g_process_poll_count64[slot] = 0;
     g_process_poll_deadline64[slot] = 0;
+    g_process_epoll_descriptor64[slot] = 0;
+    g_process_epoll_events64[slot] = 0;
+    g_process_epoll_maxevents64[slot] = 0;
     g_process_state64[slot] = 1;
 }
 
@@ -2404,6 +2645,53 @@ fn on_poll_wait64(pollfds: u64, count: u64, timeout: u64) -> u64 {
         + ((slot as u64) * 144);
 }
 
+fn on_epoll_wait64(
+    epoll_descriptor: u64,
+    events: u64,
+    maxevents: u64,
+    timeout: u64
+) -> u64 {
+    let direct_bit: u64 = (1 as u64) << 63;
+    let error_bit: u64 = (1 as u64) << 62;
+    let result: u64 = process_epoll_wait64(
+        epoll_descriptor, events, maxevents, 0);
+    if result > ~(4095 as u64) {
+        let error: u64 = (~result) + 1;
+        return direct_bit | error_bit | error;
+    }
+    if result != 0 {
+        return direct_bit | result;
+    }
+    if timeout != ~(0 as u64)
+        && timeout > 0x7FFFFFFFFFFFFFFF {
+        return direct_bit | error_bit | 22;
+    }
+    if g_current_process64 >= 8 {
+        return direct_bit | error_bit | 22;
+    }
+    let slot: u32 = g_current_process64;
+    let deadline: u64 = ~(0 as u64);
+    if timeout != ~(0 as u64) {
+        let delta: u64 = (timeout + 9) / 10;
+        deadline = g_timer_ticks64 + delta;
+        if deadline < g_timer_ticks64 {
+            deadline = (~(0 as u64)) - 1;
+        }
+    }
+    g_process_state64[slot] = 5;
+    g_process_wait_kind64[slot] = 3;
+    g_process_epoll_descriptor64[slot] = epoll_descriptor as u32;
+    g_process_epoll_events64[slot] = events;
+    g_process_epoll_maxevents64[slot] = maxevents;
+    g_process_poll_deadline64[slot] = deadline;
+    g_process_context_valid64[slot] = 1;
+    let owner: u32 = g_process_handle_owner64[slot];
+    g_process_epoll_seen64[owner] = 1;
+    g_process_poll_block_seen64[owner] = 1;
+    return (&g_process_context64 as u64)
+        + ((slot as u64) * 144);
+}
+
 fn wake_poll_waiters64() {
     if g_current_process64 >= 8 {
         return;
@@ -2412,14 +2700,24 @@ fn wake_poll_waiters64() {
     let slot: u32 = 0;
     while slot < 8 {
         if g_process_state64[slot] == 5
-            && g_process_wait_kind64[slot] == 2
             && g_process_root64[slot] == root {
-            let result: u64 = process_poll64(
-                g_process_pollfds64[slot],
-                g_process_poll_count64[slot],
-                0);
-            if result != 0 {
-                task_wait_return64(slot, result);
+            if g_process_wait_kind64[slot] == 2 {
+                let result: u64 = process_poll64(
+                    g_process_pollfds64[slot],
+                    g_process_poll_count64[slot],
+                    0);
+                if result != 0 {
+                    task_wait_return64(slot, result);
+                }
+            } else if g_process_wait_kind64[slot] == 3 {
+                let result: u64 = process_epoll_wait64(
+                    g_process_epoll_descriptor64[slot] as u64,
+                    g_process_epoll_events64[slot],
+                    g_process_epoll_maxevents64[slot],
+                    0);
+                if result != 0 {
+                    task_wait_return64(slot, result);
+                }
             }
         }
         slot = slot + 1;
@@ -2430,7 +2728,8 @@ fn wake_poll_timeouts64() {
     let slot: u32 = 0;
     while slot < 8 {
         if g_process_state64[slot] == 5
-            && g_process_wait_kind64[slot] == 2
+            && (g_process_wait_kind64[slot] == 2
+                || g_process_wait_kind64[slot] == 3)
             && g_process_poll_deadline64[slot] != ~(0 as u64)
             && g_timer_ticks64 >= g_process_poll_deadline64[slot] {
             let owner: u32 = g_process_handle_owner64[slot];
@@ -2550,8 +2849,19 @@ fn syscall_dispatch64(
     if number == 217 {
         return process_getdents64(argument0, argument1, argument2);
     }
+    if number == 232 {
+        return process_epoll_wait64(
+            argument0, argument1, argument2, argument3);
+    }
+    if number == 233 {
+        return process_epoll_ctl64(
+            argument0, argument1, argument2, argument3);
+    }
     if number == 318 {
         return process_getrandom64(argument0, argument1, argument2);
+    }
+    if number == 291 {
+        return process_epoll_create1_64(argument0);
     }
     if number == 1 {
         if argument0 != 1 {
@@ -2804,9 +3114,12 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_cwd_seen64[cxx_slot] != 0
                 && g_process_entropy_seen64[cxx_slot] != 0
                 && g_process_eventfd_seen64[cxx_slot] != 0
+                && g_process_epoll_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
                 serial_write64(
-                    "MORT64: eventfd poll wakeup passed\r\n");
+                    "MORT64: blocking epoll event loop passed\r\n");
+                serial_write64(
+                    "MORT64: eventfd readiness passed\r\n");
                 serial_write64(
                     "MORT64: getrandom entropy ABI passed\r\n");
                 serial_write64(

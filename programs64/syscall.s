@@ -228,6 +228,32 @@ mortos_eventfd2:
     ret
 .size mortos_eventfd2, . - mortos_eventfd2
 
+.global mortos_epoll_create1
+.type mortos_epoll_create1, @function
+mortos_epoll_create1:
+    mov $291, %rax                 /* SYS_epoll_create1 */
+    syscall
+    ret
+.size mortos_epoll_create1, . - mortos_epoll_create1
+
+.global mortos_epoll_ctl
+.type mortos_epoll_ctl, @function
+mortos_epoll_ctl:
+    mov %rcx, %r10
+    mov $233, %rax                 /* SYS_epoll_ctl */
+    syscall
+    ret
+.size mortos_epoll_ctl, . - mortos_epoll_ctl
+
+.global mortos_epoll_wait
+.type mortos_epoll_wait, @function
+mortos_epoll_wait:
+    mov %rcx, %r10
+    mov $232, %rax                 /* SYS_epoll_wait */
+    syscall
+    ret
+.size mortos_epoll_wait, . - mortos_epoll_wait
+
 .global mortos_lseek
 .type mortos_lseek, @function
 mortos_lseek:
