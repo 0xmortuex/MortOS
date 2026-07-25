@@ -141,6 +141,15 @@ struct PthreadStartContext {
     unsigned long tls;
 };
 
+struct PthreadRecord {
+    volatile unsigned int claimed;
+    pthread_t thread;
+    unsigned long stack;
+    unsigned long tls;
+};
+
+static PthreadRecord pthread_records[8] = {};
+
 extern "C" __attribute__((no_stack_protector))
 unsigned long mortos_pthread_start(void *opaque) {
     auto *context = static_cast<PthreadStartContext *>(opaque);
@@ -163,6 +172,19 @@ extern "C" int pthread_create(
     if (!thread || !start || attributes) {
         return EINVAL;
     }
+    PthreadRecord *record = nullptr;
+    for (unsigned long index = 0; index < 8; ++index) {
+        unsigned int expected = 0;
+        if (__atomic_compare_exchange_n(
+                &pthread_records[index].claimed, &expected, 1U, false,
+                __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            record = &pthread_records[index];
+            break;
+        }
+    }
+    if (!record) {
+        return EAGAIN;
+    }
     unsigned long stack = mortos_mmap(
         0, 65536, PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS, ~0UL, 0);
@@ -176,6 +198,7 @@ extern "C" int pthread_create(
         if (tls < ERROR_LIMIT) {
             mortos_munmap(tls, 4096);
         }
+        __atomic_store_n(&record->claimed, 0U, __ATOMIC_RELEASE);
         return EAGAIN;
     }
     unsigned long parent_tls = mortos_fs_load(0);
@@ -188,6 +211,7 @@ extern "C" int pthread_create(
     if (!context) {
         mortos_munmap(stack, 65536);
         mortos_munmap(tls, 4096);
+        __atomic_store_n(&record->claimed, 0U, __ATOMIC_RELEASE);
         return EAGAIN;
     }
     context->start = start;
@@ -201,9 +225,49 @@ extern "C" int pthread_create(
         free(context);
         mortos_munmap(stack, 65536);
         mortos_munmap(tls, 4096);
+        __atomic_store_n(&record->claimed, 0U, __ATOMIC_RELEASE);
         return static_cast<int>((~result) + 1);
     }
+    record->thread = result;
+    record->stack = stack;
+    record->tls = tls;
     *thread = result;
+    return 0;
+}
+
+extern "C" int pthread_join(pthread_t thread, void **result) {
+    PthreadRecord *record = nullptr;
+    for (unsigned long index = 0; index < 8; ++index) {
+        if (__atomic_load_n(
+                &pthread_records[index].claimed, __ATOMIC_ACQUIRE) == 1
+            && pthread_records[index].thread == thread) {
+            unsigned int expected = 1;
+            if (__atomic_compare_exchange_n(
+                    &pthread_records[index].claimed, &expected, 2U, false,
+                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                record = &pthread_records[index];
+                break;
+            }
+        }
+    }
+    if (!record) {
+        return ESRCH;
+    }
+    unsigned long status = 0;
+    unsigned long join_result = mortos_thread_join(thread, &status);
+    if (join_result >= ERROR_LIMIT) {
+        __atomic_store_n(&record->claimed, 1U, __ATOMIC_RELEASE);
+        return static_cast<int>((~join_result) + 1);
+    }
+    mortos_munmap(record->stack, 65536);
+    mortos_munmap(record->tls, 4096);
+    record->thread = 0;
+    record->stack = 0;
+    record->tls = 0;
+    __atomic_store_n(&record->claimed, 0U, __ATOMIC_RELEASE);
+    if (result) {
+        *result = reinterpret_cast<void *>(status);
+    }
     return 0;
 }
 

@@ -281,6 +281,14 @@ mortos_thread_create:
     ret
 .size mortos_thread_create, . - mortos_thread_create
 
+.global mortos_thread_join
+.type mortos_thread_join, @function
+mortos_thread_join:
+    mov $401, %rax                 /* MortOS SYS_thread_join */
+    syscall
+    ret
+.size mortos_thread_join, . - mortos_thread_join
+
 .type mortos_thread_return, @function
 mortos_thread_return:
     mov %rax, %rdi

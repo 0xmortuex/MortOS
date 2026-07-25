@@ -10,7 +10,7 @@ CRT startup establishes main-thread TLS, thread-local `errno`, and a stack
 canary; the first `unistd` and memory-mapping wrappers translate raw kernel
 results to POSIX conventions. `pthread_create` supplies protected workers with
 private stacks and TLS; mutexes and condition variables use kernel scheduler
-futexes. Join and prompt thread-resource reclamation are
-still pending. The canonical Vex port still requires the rest
+futexes, and blocking join promptly reclaims each worker's scheduler slot,
+stack, and TLS. The canonical Vex port still requires the rest
 of libc/libc++, dynamic loading, networking, and
 device/window APIs. Raw calls stay available under `<mortos/syscall.h>`.

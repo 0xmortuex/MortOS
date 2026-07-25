@@ -30,8 +30,9 @@ The probe is compiled with full stack protection and verifies POSIX `read`
 error translation to `EBADF`. `pthread_create` provisions a private 64 KiB
 stack and TLS page, copies the process canary, and runs fully protected worker
 entrypoints with independent errno state. Futex-backed pthread mutexes and
-condition variables provide the first POSIX synchronization surface. Join and prompt per-thread mapping
-reclamation remain part of the next pthread lifecycle slice. Raw calls remain available under
+condition variables provide the first POSIX synchronization surface. Blocking
+`pthread_join` returns worker results and promptly reclaims the kernel task
+slot, stack mapping, and TLS mapping. Raw calls remain available under
 `<mortos/syscall.h>` while the rest of the POSIX libc surface is implemented.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
@@ -108,6 +109,7 @@ The initial numeric assignments are:
 | 293 | `pipe2(descriptors, flags)` | Implements a bounded in-kernel pipe and two per-process descriptors |
 | 318 | `getrandom(buffer, length, flags)` | Fills validated user buffers from x86 RDRAND with bounded retries and fails closed when hardware entropy is unavailable |
 | 400 | `thread_create(entry, stack_top, argument, return_trampoline)` | MortOS-native validated thread primitive; shares the process address space and schedules a full independent context |
+| 401 | `thread_join(tid, status)` | Blocks without spinning until a sibling thread exits, returns its status, and releases the terminal scheduler slot |
 
 The remaining implementation order is:
 

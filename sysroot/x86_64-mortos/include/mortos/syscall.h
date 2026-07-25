@@ -59,6 +59,8 @@ unsigned long mortos_pread(
     unsigned long length, unsigned long offset);
 unsigned long mortos_thread_create(
     unsigned long entry, unsigned long stack_top, unsigned long argument);
+unsigned long mortos_thread_join(
+    unsigned long thread, unsigned long *status);
 void mortos_spin(unsigned long iterations);
 
 #ifdef __cplusplus

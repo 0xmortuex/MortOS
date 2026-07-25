@@ -23,6 +23,7 @@ int pthread_create(
     const void *attributes,
     void *(*start)(void *),
     void *argument);
+int pthread_join(pthread_t thread, void **result);
 pthread_t pthread_self(void);
 int pthread_equal(pthread_t left, pthread_t right);
 

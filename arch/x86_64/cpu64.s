@@ -278,6 +278,8 @@ mort64_syscall_entry:
     cmp $0, %rsi
     je .Lsyscall_futex_wait
 .Lnot_futex_wait:
+    cmp $401, %rax                  /* blocking MortOS thread_join */
+    je .Lsyscall_thread_join
     cmp $24, %rax                   /* cooperative process yield */
     je .Lsyscall_yield
     cmp $60, %rax                   /* process exit */
@@ -432,6 +434,29 @@ mort64_syscall_entry:
     mov mort64_yield_rflags(%rip), %r11
     mov mort64_yield_rsp(%rip), %rsp
     sysretq
+
+.Lsyscall_thread_join:
+    mov %rdi, mort64_join_tid(%rip)
+    mov %rsi, mort64_join_status(%rip)
+    mov %rsp, mort64_yield_rsp(%rip)
+    mov %rcx, mort64_yield_rip(%rip)
+    mov %r11, mort64_yield_rflags(%rip)
+    mov %rbx, mort64_yield_rbx(%rip)
+    mov %rbp, mort64_yield_rbp(%rip)
+    mov %r12, mort64_yield_r12(%rip)
+    mov %r13, mort64_yield_r13(%rip)
+    mov %r14, mort64_yield_r14(%rip)
+    mov %r15, mort64_yield_r15(%rip)
+    mov mort64_kernel_rsp(%rip), %rsp
+    mov mort64_join_tid(%rip), %rdi
+    mov mort64_join_status(%rip), %rsi
+    cld
+    sub $8, %rsp
+    call mort_on_thread_join64
+    add $8, %rsp
+    test %rax, %rax
+    jg .Lsave_blocked_context
+    jmp .Lfutex_wait_error
 
 .Lsyscall_poll_wait:
     mov %rdi, mort64_pollfds(%rip)
@@ -768,6 +793,10 @@ mort64_yield_r15:
 mort64_futex_address:
     .quad 0
 mort64_futex_expected:
+    .quad 0
+mort64_join_tid:
+    .quad 0
+mort64_join_status:
     .quad 0
 mort64_pollfds:
     .quad 0

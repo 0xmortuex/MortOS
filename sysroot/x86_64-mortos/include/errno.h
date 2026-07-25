@@ -17,8 +17,10 @@ int *__errno_location(void);
 #define EBADF 9
 #define EBUSY 16
 #define EFAULT 14
+#define EDEADLK 35
 #define EINVAL 22
 #define ENOSYS 38
 #define EPERM 1
+#define ESRCH 3
 
 #endif

@@ -103,6 +103,13 @@ extern "C" void *event_worker(void *opaque) {
     return reinterpret_cast<void *>(33UL);
 }
 
+extern "C" void *join_worker(void *) {
+    if (errno != 0 || pthread_self() == 5) {
+        return reinterpret_cast<void *>(42UL);
+    }
+    return reinterpret_cast<void *>(34UL);
+}
+
 static bool contains_text(
     const char *haystack,
     unsigned long haystack_size,
@@ -307,6 +314,19 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || pthread_cond_destroy(&thread_condition) != 0) {
         return 9;
     }
+    void *thread_result = nullptr;
+    if (pthread_join(thread_id, &thread_result) != 0
+        || thread_result != reinterpret_cast<void *>(31UL)) {
+        return 9;
+    }
+    pthread_t joined_thread = 0;
+    if (pthread_create(
+            &joined_thread, nullptr, join_worker, nullptr) != 0
+        || pthread_join(joined_thread, &thread_result) != 0
+        || thread_result != reinterpret_cast<void *>(34UL)
+        || pthread_join(joined_thread, nullptr) != ESRCH) {
+        return 9;
+    }
     if (mortos_fs_load(8) != 0x544C5356414C5545UL
         || mortos_arch_prctl(0x1003, tls + 16) != 0
         || *reinterpret_cast<unsigned long *>(tls + 16) != tls) {
@@ -344,6 +364,10 @@ extern "C" int main(int argc, char **argv, char **envp) {
         if (pipe_result[index] != pipe_message[index]) {
             return 11;
         }
+    }
+    if (pthread_join(pipe_thread, &thread_result) != 0
+        || thread_result != reinterpret_cast<void *>(32UL)) {
+        return 11;
     }
     readiness[0].returned = 0;
     if (mortos_poll(readiness, 1, 20) != 0
@@ -391,6 +415,8 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || mortos_read(
             event_descriptor, &event_value, sizeof(event_value)) != 8
         || event_value != 7
+        || pthread_join(event_thread, &thread_result) != 0
+        || thread_result != reinterpret_cast<void *>(33UL)
         || mortos_read(
             event_descriptor, &event_value, sizeof(event_value)) != ~10UL
         || mortos_epoll_wait(

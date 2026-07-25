@@ -46,6 +46,7 @@ let g_process_mmap_seen64: [u8; 8] = [0; 8];
 let g_process_fs_base64: [u64; 8] = [0; 8];
 let g_process_tls_seen64: [u8; 8] = [0; 8];
 let g_process_thread_seen64: [u8; 8] = [0; 8];
+let g_process_join_seen64: [u8; 8] = [0; 8];
 let g_process_handle_owner64: [u32; 8] = [0; 8];
 let g_process_pipe_seen64: [u8; 8] = [0; 8];
 let g_process_futex_seen64: [u8; 8] = [0; 8];
@@ -64,8 +65,9 @@ let g_process_path_length64: [u16; 8] = [0; 8];
 let g_process_path_error64: [u64; 8] = [0; 8];
 let g_process_path64: [u8; 2056] = [0; 2056];
 let g_process_wait_address64: [u64; 8] = [0; 8];
-// Wait kind: 0 none, 1 futex, 2 poll, 3 epoll.
+// Wait kind: 0 none, 1 futex, 2 poll, 3 epoll, 4 thread join.
 let g_process_wait_kind64: [u8; 8] = [0; 8];
+let g_process_join_status64: [u64; 8] = [0; 8];
 let g_process_pollfds64: [u64; 8] = [0; 8];
 let g_process_poll_count64: [u64; 8] = [0; 8];
 let g_process_poll_deadline64: [u64; 8] = [0; 8];
@@ -639,6 +641,7 @@ fn process_create64(
             g_process_fs_base64[slot] = 0;
             g_process_tls_seen64[slot] = 0;
             g_process_thread_seen64[slot] = 0;
+            g_process_join_seen64[slot] = 0;
             g_process_handle_owner64[slot] = slot;
             g_process_pipe_seen64[slot] = 0;
             g_process_futex_seen64[slot] = 0;
@@ -661,6 +664,7 @@ fn process_create64(
             g_process_epoll_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
+            g_process_join_status64[slot] = 0;
             g_process_pollfds64[slot] = 0;
             g_process_poll_count64[slot] = 0;
             g_process_poll_deadline64[slot] = 0;
@@ -853,6 +857,7 @@ fn thread_create64(
             g_process_preemptions64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
+            g_process_join_status64[slot] = 0;
             g_process_thread_seen64[parent] = 1;
             g_next_pid64 = g_next_pid64 + 1;
             return g_process_tid64[slot];
@@ -860,6 +865,124 @@ fn thread_create64(
         slot = slot + 1;
     }
     return ~(10 as u64);                       // -EAGAIN
+}
+
+// A joined thread shares every page table with its process owner, so releasing
+// its scheduler slot must never free address-space frames or process handles.
+fn thread_slot_release64(slot: u32) {
+    if slot >= 8 {
+        return;
+    }
+    g_process_state64[slot] = 0;
+    g_process_pid64[slot] = 0;
+    g_process_tid64[slot] = 0;
+    g_process_is_thread64[slot] = 0;
+    g_process_root64[slot] = 0;
+    g_process_pt64[slot] = 0;
+    g_process_mmap_pt64[slot] = 0;
+    g_process_entry64[slot] = 0;
+    g_process_stack64[slot] = 0;
+    g_process_exit64[slot] = 0;
+    g_process_fault64[slot] = 0;
+    g_process_fs_base64[slot] = 0;
+    g_process_context_valid64[slot] = 0;
+    g_process_wait_address64[slot] = 0;
+    g_process_wait_kind64[slot] = 0;
+    g_process_join_status64[slot] = 0;
+    g_process_handle_owner64[slot] = slot;
+}
+
+// Return a terminal thread immediately, or atomically block the caller until
+// the selected sibling exits. A positive return is a scheduler context; zero
+// and negative errno values return directly to userspace.
+fn on_thread_join64(tid: u64, status_address: u64) -> u64 {
+    if g_current_process64 >= 8 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if status_address != 0
+        && !user_range_writable64(status_address, 8) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    let current: u32 = g_current_process64;
+    let owner: u32 = g_process_handle_owner64[current];
+    g_process_join_seen64[owner] = 1;
+    if g_process_tid64[current] == tid {
+        return ~(34 as u64);                    // -EDEADLK
+    }
+    let target: u32 = 0;
+    while target < 8 {
+        if g_process_state64[target] != 0
+            && g_process_tid64[target] == tid
+            && g_process_is_thread64[target] != 0
+            && g_process_root64[target]
+                == g_process_root64[current] {
+            if g_process_state64[target] == 3 {
+                if status_address != 0 {
+                    *(status_address as *u64) = g_process_exit64[target];
+                }
+                thread_slot_release64(target);
+                return 0;
+            }
+            if g_process_state64[target] == 4 {
+                return ~(13 as u64);            // -EFAULT
+            }
+            let waiter: u32 = 0;
+            while waiter < 8 {
+                if g_process_state64[waiter] == 5
+                    && g_process_wait_kind64[waiter] == 4
+                    && g_process_wait_address64[waiter] == tid {
+                    return ~(21 as u64);        // -EINVAL
+                }
+                waiter = waiter + 1;
+            }
+            g_process_state64[current] = 5;
+            g_process_wait_kind64[current] = 4;
+            g_process_wait_address64[current] = tid;
+            g_process_join_status64[current] = status_address;
+            g_process_context_valid64[current] = 1;
+            return (&g_process_context64 as u64)
+                + ((current as u64) * 144);
+        }
+        target = target + 1;
+    }
+    return ~(2 as u64);                         // -ESRCH
+}
+
+fn thread_join_wake64(target: u32) {
+    if target >= 8 {
+        return;
+    }
+    let tid: u64 = g_process_tid64[target];
+    let waiter: u32 = 0;
+    while waiter < 8 {
+        if g_process_state64[waiter] == 5
+            && g_process_wait_kind64[waiter] == 4
+            && g_process_wait_address64[waiter] == tid
+            && g_process_root64[waiter] == g_process_root64[target] {
+            let status_address: u64 = g_process_join_status64[waiter];
+            if status_address != 0
+                && !user_range_writable64(status_address, 8) {
+                let context: u64 = (&g_process_context64 as u64)
+                    + ((waiter as u64) * 144);
+                *((context + 112) as *u64) = ~(13 as u64);
+                g_process_wait_address64[waiter] = 0;
+                g_process_wait_kind64[waiter] = 0;
+                g_process_join_status64[waiter] = 0;
+                g_process_state64[waiter] = 1;
+                return;
+            }
+            if status_address != 0 {
+                *(status_address as *u64) = g_process_exit64[target];
+            }
+            g_process_wait_address64[waiter] = 0;
+            g_process_wait_kind64[waiter] = 0;
+            g_process_join_status64[waiter] = 0;
+            g_process_state64[waiter] = 1;
+            thread_slot_release64(target);
+            return;
+        }
+        waiter = waiter + 1;
+    }
 }
 
 // Reclaim every user leaf and paging structure owned by a terminal process.
@@ -895,6 +1018,7 @@ fn process_reap64(slot: u32) -> bool {
             g_process_context_valid64[sibling] = 0;
             g_process_wait_address64[sibling] = 0;
             g_process_wait_kind64[sibling] = 0;
+            g_process_join_status64[sibling] = 0;
             g_process_handle_owner64[sibling] = sibling;
         }
         sibling = sibling + 1;
@@ -963,6 +1087,7 @@ fn process_reap64(slot: u32) -> bool {
     g_process_fs_base64[slot] = 0;
     g_process_wait_address64[slot] = 0;
     g_process_wait_kind64[slot] = 0;
+    g_process_join_status64[slot] = 0;
     g_process_handle_owner64[slot] = slot;
     g_process_context_valid64[slot] = 0;
     return true;
@@ -3076,6 +3201,9 @@ fn on_user_exit64(status: u64) {
             && status == 31 {
             g_thread_exit_seen64 = true;
         }
+        if g_process_is_thread64[g_current_process64] != 0 {
+            thread_join_wake64(g_current_process64);
+        }
     }
 }
 
@@ -3238,11 +3366,14 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_entropy_seen64[cxx_slot] != 0
                 && g_process_eventfd_seen64[cxx_slot] != 0
                 && g_process_epoll_seen64[cxx_slot] != 0
+                && g_process_join_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
                 serial_write64(
                     "MORT64: pthread TLS protected workers passed\r\n");
                 serial_write64(
                     "MORT64: pthread mutex and condition passed\r\n");
+                serial_write64(
+                    "MORT64: pthread join lifecycle passed\r\n");
                 serial_write64(
                     "MORT64: TLS errno and stack canary passed\r\n");
                 serial_write64(
