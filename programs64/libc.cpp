@@ -7,10 +7,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <mortos/syscall.h>
+#include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -128,6 +131,63 @@ extern "C" int pipe2(int descriptors[2], int flags) {
 
 extern "C" int pipe(int descriptors[2]) {
     return pipe2(descriptors, 0);
+}
+
+extern "C" int poll(
+    struct pollfd *descriptors,
+    nfds_t count,
+    int timeout
+) {
+    return static_cast<int>(posix_result(mortos_poll(
+        descriptors, count, static_cast<unsigned long>(timeout))));
+}
+
+extern "C" int eventfd(unsigned int initial, int flags) {
+    return static_cast<int>(posix_result(mortos_eventfd2(
+        initial, static_cast<unsigned long>(flags))));
+}
+
+extern "C" int eventfd_read(int descriptor, eventfd_t *value) {
+    if (!value) {
+        errno = EFAULT;
+        return -1;
+    }
+    return read(descriptor, value, sizeof(*value)) == sizeof(*value)
+        ? 0 : -1;
+}
+
+extern "C" int eventfd_write(int descriptor, eventfd_t value) {
+    return write(descriptor, &value, sizeof(value)) == sizeof(value)
+        ? 0 : -1;
+}
+
+extern "C" int epoll_create1(int flags) {
+    return static_cast<int>(posix_result(mortos_epoll_create1(
+        static_cast<unsigned long>(flags))));
+}
+
+extern "C" int epoll_ctl(
+    int epoll_descriptor,
+    int operation,
+    int descriptor,
+    struct epoll_event *event
+) {
+    return static_cast<int>(posix_result(mortos_epoll_ctl(
+        static_cast<unsigned long>(epoll_descriptor),
+        static_cast<unsigned long>(operation),
+        static_cast<unsigned long>(descriptor), event)));
+}
+
+extern "C" int epoll_wait(
+    int epoll_descriptor,
+    struct epoll_event *events,
+    int maxevents,
+    int timeout
+) {
+    return static_cast<int>(posix_result(mortos_epoll_wait(
+        static_cast<unsigned long>(epoll_descriptor), events,
+        static_cast<unsigned long>(maxevents),
+        static_cast<unsigned long>(timeout))));
 }
 
 extern "C" pid_t getpid() {

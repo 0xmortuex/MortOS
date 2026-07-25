@@ -4,9 +4,12 @@
 #include <mortos/syscall.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -25,17 +28,6 @@ static StartupProbe startup_probe;
 struct Widget {
     explicit Widget(unsigned long initial) : value(initial) {}
     unsigned long value;
-};
-
-struct PollDescriptor {
-    int descriptor;
-    unsigned short events;
-    unsigned short returned;
-};
-
-struct __attribute__((packed)) EpollEvent {
-    unsigned int events;
-    unsigned long data;
 };
 
 static const char pipe_message[] = "descriptor-ipc";
@@ -553,11 +545,11 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || pipe_thread <= thread_id) {
         return 11;
     }
-    PollDescriptor readiness[1] = {
-        {static_cast<int>(pipe_descriptors[0]), 1, 0},
+    struct pollfd readiness[1] = {
+        {static_cast<int>(pipe_descriptors[0]), POLLIN, 0},
     };
-    if (mortos_poll(readiness, 1, 1000) != 1
-        || (readiness[0].returned & 1) == 0
+    if (poll(readiness, 1, 1000) != 1
+        || (readiness[0].revents & POLLIN) == 0
         || mortos_read(
             pipe_descriptors[0], pipe_result,
             sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1) {
@@ -572,9 +564,9 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || thread_result != reinterpret_cast<void *>(32UL)) {
         return 11;
     }
-    readiness[0].returned = 0;
-    if (mortos_poll(readiness, 1, 20) != 0
-        || readiness[0].returned != 0) {
+    readiness[0].revents = 0;
+    if (poll(readiness, 1, 20) != 0
+        || readiness[0].revents != 0) {
         return 11;
     }
     if (mortos_close(pipe_descriptors[0]) != 0
@@ -582,21 +574,22 @@ extern "C" int main(int argc, char **argv, char **envp) {
         return 11;
     }
 
-    unsigned long event_descriptor = mortos_eventfd2(0, 0x80800);
-    unsigned long epoll_descriptor = mortos_epoll_create1(0x80000);
-    if (event_descriptor >= ~4095UL
-        || epoll_descriptor >= ~4095UL) {
+    int event_descriptor = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    int epoll_descriptor = epoll_create1(EPOLL_CLOEXEC);
+    if (event_descriptor < 0 || epoll_descriptor < 0) {
         return 18;
     }
-    EpollEvent event_interest = {1U, 0x45504F4C4C564558UL};
-    if (mortos_epoll_ctl(
-            epoll_descriptor, 1, event_descriptor,
+    struct epoll_event event_interest = {};
+    event_interest.events = EPOLLIN;
+    event_interest.data.u64 = 0x45504F4C4C564558UL;
+    if (epoll_ctl(
+            epoll_descriptor, EPOLL_CTL_ADD, event_descriptor,
             &event_interest) != 0) {
         return 18;
     }
-    event_interest.data = 0x45504F4C4C4D4F44UL;
-    if (mortos_epoll_ctl(
-            epoll_descriptor, 3, event_descriptor,
+    event_interest.data.u64 = 0x45504F4C4C4D4F44UL;
+    if (epoll_ctl(
+            epoll_descriptor, EPOLL_CTL_MOD, event_descriptor,
             &event_interest) != 0) {
         return 18;
     }
@@ -608,26 +601,26 @@ extern "C" int main(int argc, char **argv, char **envp) {
             &event_arguments) != 0) {
         return 18;
     }
-    EpollEvent event_readiness = {};
-    unsigned long event_value = 0;
+    struct epoll_event event_readiness = {};
+    eventfd_t event_value = 0;
     if (event_thread <= pipe_thread
-        || mortos_epoll_wait(
+        || epoll_wait(
             epoll_descriptor, &event_readiness, 1, 1000) != 1
-        || (event_readiness.events & 1) == 0
-        || event_readiness.data != 0x45504F4C4C4D4F44UL
-        || mortos_read(
-            event_descriptor, &event_value, sizeof(event_value)) != 8
+        || (event_readiness.events & EPOLLIN) == 0
+        || event_readiness.data.u64 != 0x45504F4C4C4D4F44UL
+        || eventfd_read(event_descriptor, &event_value) != 0
         || event_value != 7
         || pthread_join(event_thread, &thread_result) != 0
         || thread_result != reinterpret_cast<void *>(33UL)
-        || mortos_read(
-            event_descriptor, &event_value, sizeof(event_value)) != ~10UL
-        || mortos_epoll_wait(
+        || eventfd_read(event_descriptor, &event_value) != -1
+        || errno != EAGAIN
+        || epoll_wait(
             epoll_descriptor, &event_readiness, 1, 20) != 0
-        || mortos_epoll_ctl(
-            epoll_descriptor, 2, event_descriptor, nullptr) != 0
-        || mortos_close(epoll_descriptor) != 0
-        || mortos_close(event_descriptor) != 0) {
+        || epoll_ctl(
+            epoll_descriptor, EPOLL_CTL_DEL,
+            event_descriptor, nullptr) != 0
+        || close(epoll_descriptor) != 0
+        || close(event_descriptor) != 0) {
         return 18;
     }
 
