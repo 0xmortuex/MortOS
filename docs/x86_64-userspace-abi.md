@@ -20,6 +20,14 @@ and verifies bounded `write`/`read` transfer plus `close` cleanup. This is a
 bootstrap runtime, not yet the complete libc/libc++ surface required by
 Chromium.
 
+`python build.py build64` now materializes a reusable bootstrap SDK at
+`build/x86_64/sysroot`: installed headers, `lib/crt1.o`, and
+`lib/libmortos.a`. The C++ conformance process is compiled against those
+installed headers and linked through that archive, so the sysroot itself is
+covered by the boot test. Its raw-call API intentionally remains under
+`<mortos/syscall.h>` until thread-local `errno` and the full POSIX libc surface
+are implemented.
+
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
 Mort 0.39's hosted `net_*` intrinsic detection collides with MortOS's own
 kernel network functions and must be fixed before the OS toolchain advances.

@@ -1,57 +1,10 @@
 // A separately linked freestanding C++ process. This validates constructor
 // startup, C allocation, C++ new/delete, and syscall linkage at ring 3.
 
-using size_type = unsigned long;
+#include <mortos/syscall.h>
+#include <stdlib.h>
 
-extern "C" unsigned long mortos_write(const char *, unsigned long);
-extern "C" unsigned long mortos_getpid();
-extern "C" void *malloc(size_type);
-extern "C" void free(void *);
-extern "C" void *calloc(size_type, size_type);
-extern "C" void *realloc(void *, size_type);
-extern "C" unsigned long mortos_mmap(
-    unsigned long, unsigned long, unsigned long,
-    unsigned long, unsigned long, unsigned long);
-extern "C" unsigned long mortos_munmap(unsigned long, unsigned long);
-extern "C" unsigned long mortos_arch_prctl(unsigned long, unsigned long);
-extern "C" unsigned long mortos_yield();
-extern "C" void mortos_fs_store(unsigned long, unsigned long);
-extern "C" unsigned long mortos_fs_load(unsigned long);
-extern "C" unsigned long mortos_gettid();
-extern "C" unsigned long mortos_thread_create(
-    unsigned long, unsigned long, unsigned long);
-extern "C" unsigned long mortos_read(
-    unsigned long, void *, unsigned long);
-extern "C" unsigned long mortos_close(unsigned long);
-extern "C" unsigned long mortos_pipe2(unsigned int *, unsigned long);
-extern "C" unsigned long mortos_fd_write(
-    unsigned long, const void *, unsigned long);
-extern "C" unsigned long mortos_futex(
-    unsigned int *, unsigned long, unsigned int);
-extern "C" unsigned long mortos_poll(
-    void *, unsigned long, unsigned long);
-extern "C" unsigned long mortos_openat(
-    unsigned long, const char *, unsigned long, unsigned long);
-extern "C" unsigned long mortos_fstat(unsigned long, void *);
-extern "C" unsigned long mortos_newfstatat(
-    unsigned long, const char *, void *, unsigned long);
-extern "C" unsigned long mortos_getdents64(
-    unsigned long, void *, unsigned long);
-extern "C" unsigned long mortos_getcwd(void *, unsigned long);
-extern "C" unsigned long mortos_chdir(const char *);
-extern "C" unsigned long mortos_getrandom(
-    void *, unsigned long, unsigned long);
-extern "C" unsigned long mortos_eventfd2(
-    unsigned long, unsigned long);
-extern "C" unsigned long mortos_epoll_create1(unsigned long);
-extern "C" unsigned long mortos_epoll_ctl(
-    unsigned long, unsigned long, unsigned long, void *);
-extern "C" unsigned long mortos_epoll_wait(
-    unsigned long, void *, unsigned long, unsigned long);
-extern "C" unsigned long mortos_lseek(
-    unsigned long, unsigned long, unsigned long);
-extern "C" unsigned long mortos_pread(
-    unsigned long, void *, unsigned long, unsigned long);
+using size_type = unsigned long;
 
 static unsigned long constructor_value;
 

@@ -90,6 +90,8 @@ USER64_ELFS = {
 USER64_ELF = USER64_ELFS["probe"]
 CXX64_ELF = os.path.join(BUILD64, "user_cxx.elf")
 VEXFS64 = os.path.join(BUILD64, "vexfs.bin")
+SYSROOT_SOURCE64 = os.path.join(HERE, "sysroot", "x86_64-mortos")
+SYSROOT64 = os.path.join(BUILD64, "sysroot")
 VEX_EXPECTED_COMMIT = "1b10ec57fa9ebf77ed86c2d5d28f72aad7c1007a"
 DISK = os.path.join(BUILD, "disk.img")
 
@@ -276,6 +278,14 @@ def build64():
     drivers and userspace move across in tested slices.
     """
     os.makedirs(BUILD64, exist_ok=True)
+    sysroot_include = os.path.join(SYSROOT64, "include")
+    sysroot_lib = os.path.join(SYSROOT64, "lib")
+    os.makedirs(sysroot_lib, exist_ok=True)
+    shutil.copytree(
+        os.path.join(SYSROOT_SOURCE64, "include"),
+        sysroot_include,
+        dirs_exist_ok=True,
+    )
     vexfs = _build_vexfs()
     cc = _zig()
     arch = os.path.join(HERE, "arch", "x86_64")
@@ -325,7 +335,7 @@ def build64():
     cxx = cc[:-1] + ["c++"]
     cxx_flags = [
         *c_flags, "-fno-exceptions", "-fno-rtti",
-        "-fno-threadsafe-statics",
+        "-fno-threadsafe-statics", "-isystem", sysroot_include,
     ]
     cxx_start_o = os.path.join(BUILD64, "user_cxx_start.o")
     cxx_runtime_o = os.path.join(BUILD64, "user_cxx_runtime.o")
@@ -339,12 +349,19 @@ def build64():
     subprocess.run([*cxx, *cxx_flags, "-c",
                     os.path.join(PROGRAMS64, "cxx_probe.cpp"),
                     "-o", cxx_probe_o], check=True)
+    crt1 = os.path.join(sysroot_lib, "crt1.o")
+    libmortos = os.path.join(sysroot_lib, "libmortos.a")
+    shutil.copy2(cxx_start_o, crt1)
+    ar = cc[:-1] + ["ar"]
+    subprocess.run([
+        *ar, "rcs", libmortos,
+        user_syscall_o, cxx_runtime_o, user_runtime_o,
+    ], check=True)
     subprocess.run([
         *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",
         "-Wl,-T," + os.path.join(PROGRAMS64, "prog.ld"),
         "-Wl,--build-id=none", "-Wl,-e,_user_start",
-        "-o", CXX64_ELF, cxx_start_o, user_syscall_o, cxx_probe_o,
-        cxx_runtime_o, user_runtime_o,
+        "-o", CXX64_ELF, crt1, cxx_probe_o, libmortos,
     ], check=True)
 
     # Invalidate Zig's .incbin cache whenever the userspace ELF changes.
@@ -420,6 +437,8 @@ def build64():
     for user_elf in USER64_ELFS.values():
         print(f"built {os.path.relpath(user_elf, ROOT)} (ELF64 Mort userspace)")
     print(f"built {os.path.relpath(CXX64_ELF, ROOT)} (ELF64 C++ userspace)")
+    print(f"built {os.path.relpath(SYSROOT64, ROOT)} "
+          "(x86_64-mortos bootstrap sysroot)")
     print(f"built {os.path.relpath(ELF64, ROOT)} (Multiboot trampoline + payload)")
 
 
@@ -434,6 +453,25 @@ def check64():
     def require(cond, msg):
         if not cond:
             sys.exit(f"x86-64 kernel check FAILED: {msg}")
+
+    sysroot_header = os.path.join(
+        SYSROOT64, "include", "mortos", "syscall.h")
+    sysroot_stdlib = os.path.join(SYSROOT64, "include", "stdlib.h")
+    sysroot_crt = os.path.join(SYSROOT64, "lib", "crt1.o")
+    sysroot_library = os.path.join(SYSROOT64, "lib", "libmortos.a")
+    for required_sysroot_file in (
+        sysroot_header, sysroot_stdlib, sysroot_crt, sysroot_library,
+    ):
+        require(os.path.isfile(required_sysroot_file),
+                f"bootstrap sysroot is missing {required_sysroot_file}")
+    with open(sysroot_header, "rb") as fh:
+        syscall_header = fh.read()
+    require(b"mortos_epoll_wait" in syscall_header
+            and b"mortos_getrandom" in syscall_header,
+            "bootstrap syscall header is incomplete")
+    with open(sysroot_library, "rb") as fh:
+        require(fh.read(8) == b"!<arch>\n",
+                "libmortos.a is not a static archive")
 
     require(payload[:4] == b"\x7fELF", "payload is not an ELF file")
     require(payload[4] == 2, "kernel payload is not ELFCLASS64")
