@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
 
 using size_type = unsigned long;
@@ -444,6 +445,27 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || mortos_munmap(tls, 4096) != 0
         || errno != EBADF) {
         return 10;
+    }
+    struct timespec clock_resolution = {};
+    struct timespec sleep_before = {};
+    struct timespec sleep_after = {};
+    struct timespec sleep_duration = {0, 20000000L};
+    if (clock_getres(CLOCK_MONOTONIC, &clock_resolution) != 0
+        || clock_resolution.tv_sec != 0
+        || clock_resolution.tv_nsec != 10000000L
+        || clock_gettime(CLOCK_MONOTONIC, &sleep_before) != 0
+        || nanosleep(&sleep_duration, nullptr) != 0
+        || clock_gettime(CLOCK_MONOTONIC, &sleep_after) != 0) {
+        return 20;
+    }
+    unsigned long sleep_before_ns =
+        static_cast<unsigned long>(sleep_before.tv_sec) * 1000000000UL
+        + static_cast<unsigned long>(sleep_before.tv_nsec);
+    unsigned long sleep_after_ns =
+        static_cast<unsigned long>(sleep_after.tv_sec) * 1000000000UL
+        + static_cast<unsigned long>(sleep_after.tv_nsec);
+    if (sleep_after_ns < sleep_before_ns + 10000000UL) {
+        return 20;
     }
 
     unsigned int pipe_descriptors[2] = {};

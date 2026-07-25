@@ -13,6 +13,8 @@ int close(int descriptor);
 pid_t getpid(void);
 pid_t gettid(void);
 off_t lseek(int descriptor, off_t offset, int origin);
+unsigned int sleep(unsigned int seconds);
+int usleep(unsigned int microseconds);
 
 #ifdef __cplusplus
 }

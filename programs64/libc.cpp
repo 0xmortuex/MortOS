@@ -10,6 +10,7 @@
 #include <semaphore.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 static constexpr unsigned long ERROR_LIMIT = ~4095UL;
@@ -134,6 +135,119 @@ extern "C" int mprotect(void *address, size_t length, int protection) {
 extern "C" int munmap(void *address, size_t length) {
     return static_cast<int>(posix_result(mortos_munmap(
         reinterpret_cast<unsigned long>(address), length)));
+}
+
+extern "C" int clock_gettime(
+    clockid_t clock,
+    struct timespec *time
+) {
+    if (!time) {
+        errno = EFAULT;
+        return -1;
+    }
+    return static_cast<int>(posix_result(mortos_clock_gettime(
+        static_cast<unsigned long>(clock), time)));
+}
+
+extern "C" int clock_getres(
+    clockid_t clock,
+    struct timespec *resolution
+) {
+    if (clock != CLOCK_MONOTONIC) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (resolution) {
+        resolution->tv_sec = 0;
+        resolution->tv_nsec = 10000000L;
+    }
+    return 0;
+}
+
+static int sleep_timespec_valid(const struct timespec *request) {
+    return request && request->tv_sec >= 0
+        && request->tv_nsec >= 0
+        && request->tv_nsec < 1000000000L;
+}
+
+extern "C" int nanosleep(
+    const struct timespec *request,
+    struct timespec *remaining
+) {
+    if (!sleep_timespec_valid(request)
+        || static_cast<unsigned long>(request->tv_sec)
+            > (0x7FFFFFFFFFFFFFFFUL / 1000UL)) {
+        errno = EINVAL;
+        return -1;
+    }
+    unsigned long milliseconds =
+        static_cast<unsigned long>(request->tv_sec) * 1000UL;
+    milliseconds += (
+        static_cast<unsigned long>(request->tv_nsec) + 999999UL)
+        / 1000000UL;
+    if (milliseconds != 0) {
+        unsigned long result = mortos_poll(nullptr, 0, milliseconds);
+        if (result >= ERROR_LIMIT) {
+            errno = static_cast<int>((~result) + 1);
+            return -1;
+        }
+    }
+    if (remaining) {
+        remaining->tv_sec = 0;
+        remaining->tv_nsec = 0;
+    }
+    return 0;
+}
+
+extern "C" int clock_nanosleep(
+    clockid_t clock,
+    int flags,
+    const struct timespec *request,
+    struct timespec *remaining
+) {
+    if (clock != CLOCK_MONOTONIC
+        || (flags != 0 && flags != TIMER_ABSTIME)
+        || !sleep_timespec_valid(request)) {
+        return EINVAL;
+    }
+    if (flags == 0) {
+        return nanosleep(request, remaining) == 0 ? 0 : errno;
+    }
+    struct timespec now = {};
+    if (clock_gettime(clock, &now) != 0) {
+        return errno;
+    }
+    struct timespec relative = {};
+    if (request->tv_sec < now.tv_sec
+        || (request->tv_sec == now.tv_sec
+            && request->tv_nsec <= now.tv_nsec)) {
+        return 0;
+    }
+    relative.tv_sec = request->tv_sec - now.tv_sec;
+    relative.tv_nsec = request->tv_nsec - now.tv_nsec;
+    if (relative.tv_nsec < 0) {
+        --relative.tv_sec;
+        relative.tv_nsec += 1000000000L;
+    }
+    return nanosleep(&relative, remaining) == 0 ? 0 : errno;
+}
+
+extern "C" unsigned int sleep(unsigned int seconds) {
+    struct timespec request = {static_cast<time_t>(seconds), 0};
+    struct timespec remaining = {};
+    if (nanosleep(&request, &remaining) == 0) {
+        return 0;
+    }
+    return static_cast<unsigned int>(remaining.tv_sec
+        + (remaining.tv_nsec != 0 ? 1 : 0));
+}
+
+extern "C" int usleep(unsigned int microseconds) {
+    struct timespec request = {
+        static_cast<time_t>(microseconds / 1000000U),
+        static_cast<long>((microseconds % 1000000U) * 1000U),
+    };
+    return nanosleep(&request, nullptr);
 }
 
 struct PthreadStartContext {

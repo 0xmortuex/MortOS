@@ -35,7 +35,9 @@ synchronization surface. Blocking
 `pthread_join` returns worker results and promptly reclaims the kernel task
 slot, stack mapping, and TLS mapping. `pthread_once` provides process-wide
 one-time initialization, while 64 thread-specific keys occupy independent TLS
-slots and run registered destructors before worker exit. Raw calls remain available under
+slots and run registered destructors before worker exit. The time layer wraps
+the 100 Hz monotonic clock and implements interruptible scheduler-backed sleep
+without a userspace spin loop. Raw calls remain available under
 `<mortos/syscall.h>` while the rest of the POSIX libc surface is implemented.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
