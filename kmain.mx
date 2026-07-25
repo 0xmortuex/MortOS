@@ -624,8 +624,6 @@ fn draw_topbar() {
     draw_brand_mark(28, 22);
     draw_text_abs("mortuexOS", 56, 14, 0xe9ebf5, 0x0b0d14);
     draw_text_abs("bare metal / Mort native", 152, 14, 0x5d6379, 0x0b0d14);
-    draw_text_abs("F5 home", g_fb_w - 280, 4, 0x6a7b83, 0x0b0d14);
-    draw_text_abs("F12 power", g_fb_w - 280, 24, 0x6a7b83, 0x0b0d14);
     draw_clock();
 }
 
