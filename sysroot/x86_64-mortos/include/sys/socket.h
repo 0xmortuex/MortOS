@@ -2,6 +2,7 @@
 #define MORTOS_SYS_SOCKET_H
 
 #include <sys/types.h>
+#include <sys/uio.h>
 
 typedef unsigned int socklen_t;
 typedef unsigned short sa_family_t;
@@ -9,6 +10,16 @@ typedef unsigned short sa_family_t;
 struct sockaddr {
     sa_family_t sa_family;
     char sa_data[14];
+};
+
+struct msghdr {
+    void *msg_name;
+    socklen_t msg_namelen;
+    struct iovec *msg_iov;
+    size_t msg_iovlen;
+    void *msg_control;
+    size_t msg_controllen;
+    int msg_flags;
 };
 
 #define AF_UNSPEC 0
@@ -44,6 +55,9 @@ int connect(
 ssize_t send(
     int descriptor, const void *buffer, size_t length, int flags);
 ssize_t recv(int descriptor, void *buffer, size_t length, int flags);
+ssize_t sendmsg(
+    int descriptor, const struct msghdr *message, int flags);
+ssize_t recvmsg(int descriptor, struct msghdr *message, int flags);
 int shutdown(int descriptor, int how);
 int getsockname(
     int descriptor, struct sockaddr *address, socklen_t *length);

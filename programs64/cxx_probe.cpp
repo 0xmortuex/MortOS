@@ -852,16 +852,31 @@ extern "C" int main(int argc, char **argv, char **envp) {
     }
     freeaddrinfo(resolved);
     resolved = nullptr;
-    static const char http_request[] =
-        "GET / HTTP/1.0\r\n"
-        "Host: example.com\r\n"
-        "Connection: close\r\n\r\n";
+    static char http_request_line[] = "GET / HTTP/1.0\r\n";
+    static char http_host_line[] = "Host: example.com\r\n";
+    static char http_close_line[] = "Connection: close\r\n\r\n";
+    static struct iovec http_request_vectors[3] = {
+        {http_request_line, sizeof(http_request_line) - 1},
+        {http_host_line, sizeof(http_host_line) - 1},
+        {http_close_line, sizeof(http_close_line) - 1},
+    };
+    static struct msghdr http_request_message = {};
+    http_request_message.msg_iov = http_request_vectors;
+    http_request_message.msg_iovlen = 3;
+    constexpr size_t http_request_size =
+        sizeof(http_request_line) - 1
+        + sizeof(http_host_line) - 1
+        + sizeof(http_close_line) - 1;
     static char http_response[1024] = {};
+    static struct iovec http_response_vector = {
+        http_response, sizeof(http_response)};
+    static struct msghdr http_response_message = {};
+    http_response_message.msg_iov = &http_response_vector;
+    http_response_message.msg_iovlen = 1;
     ssize_t http_bytes = 0;
-    if (send(
-            connected_socket, http_request,
-            sizeof(http_request) - 1,
-            MSG_NOSIGNAL) != sizeof(http_request) - 1) {
+    if (sendmsg(
+            connected_socket, &http_request_message,
+            MSG_NOSIGNAL) != static_cast<ssize_t>(http_request_size)) {
         return 19;
     }
     int network_epoll = epoll_create1(EPOLL_CLOEXEC);
@@ -878,15 +893,14 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || (network_readiness.events & EPOLLIN) == 0
         || network_readiness.data.u64 != 0x5443504854545055UL
         || close(network_epoll) != 0
-        || (http_bytes = recv(
-                connected_socket, http_response,
-                sizeof(http_response), 0)) <= 0
+        || (http_bytes = recvmsg(
+                connected_socket, &http_response_message, 0)) <= 0
         || !contains_text(
             http_response, static_cast<unsigned long>(http_bytes),
             "HTTP/", 5)
         || shutdown(connected_socket, SHUT_WR) != 0
         || send(
-            connected_socket, http_request, 1,
+            connected_socket, http_request_line, 1,
             MSG_NOSIGNAL) != -1
         || errno != EPIPE
         || close(connected_socket) != 0) {

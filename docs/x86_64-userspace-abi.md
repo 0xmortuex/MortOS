@@ -47,6 +47,12 @@ The tested option set includes reuse, send/receive buffer, keepalive, and
 TCP_NODELAY controls. Half-close emits one FIN, suppresses a duplicate FIN at
 descriptor cleanup, and returns `EPIPE` for later writes.
 
+Libc defines the standard `iovec` and `msghdr` layouts and implements
+`readv`, `writev`, `sendmsg`, and `recvmsg` with bounded vector counts,
+partial-transfer behavior, and errno propagation. The network regression sends
+one HTTP request across three vectors and receives its response through a
+message vector.
+
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,
 `malloc`, `calloc`, `realloc`, `free`, C++ `new`/`delete`, compiler atomics,

@@ -5774,6 +5774,8 @@ fn kmain64(multiboot_info: u64) {
                 serial_write64(
                     "MORT64: POSIX TCP socket controls passed\r\n");
                 serial_write64(
+                    "MORT64: POSIX vectored socket I/O passed\r\n");
+                serial_write64(
                     "MORT64: TLS errno and stack canary passed\r\n");
                 serial_write64(
                     "MORT64: ELF argc envp auxv startup passed\r\n");

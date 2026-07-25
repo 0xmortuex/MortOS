@@ -1,0 +1,24 @@
+#ifndef MORTOS_SYS_UIO_H
+#define MORTOS_SYS_UIO_H
+
+#include <sys/types.h>
+
+struct iovec {
+    void *iov_base;
+    size_t iov_len;
+};
+
+#define IOV_MAX 1024
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+ssize_t readv(int descriptor, const struct iovec *vectors, int count);
+ssize_t writev(int descriptor, const struct iovec *vectors, int count);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

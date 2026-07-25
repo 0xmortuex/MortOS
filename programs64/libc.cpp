@@ -17,6 +17,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -133,6 +134,148 @@ extern "C" ssize_t recv(
     return static_cast<ssize_t>(posix_result(mortos_recvfrom(
         static_cast<unsigned long>(descriptor), buffer, length,
         static_cast<unsigned long>(flags), nullptr, nullptr)));
+}
+
+extern "C" ssize_t writev(
+    int descriptor,
+    const struct iovec *vectors,
+    int count
+) {
+    if (count < 0 || count > IOV_MAX || (count && !vectors)) {
+        errno = EINVAL;
+        return -1;
+    }
+    ssize_t total = 0;
+    for (int index = 0; index < count; ++index) {
+        const auto *bytes =
+            static_cast<const unsigned char *>(vectors[index].iov_base);
+        size_t remaining = vectors[index].iov_len;
+        if (remaining && !bytes) {
+            errno = EFAULT;
+            return total ? total : -1;
+        }
+        while (remaining) {
+            ssize_t written = write(descriptor, bytes, remaining);
+            if (written < 0) {
+                return total ? total : -1;
+            }
+            if (!written) {
+                return total;
+            }
+            total += written;
+            bytes += written;
+            remaining -= static_cast<size_t>(written);
+        }
+    }
+    return total;
+}
+
+extern "C" ssize_t readv(
+    int descriptor,
+    const struct iovec *vectors,
+    int count
+) {
+    if (count < 0 || count > IOV_MAX || (count && !vectors)) {
+        errno = EINVAL;
+        return -1;
+    }
+    ssize_t total = 0;
+    for (int index = 0; index < count; ++index) {
+        void *base = vectors[index].iov_base;
+        size_t length = vectors[index].iov_len;
+        if (length && !base) {
+            errno = EFAULT;
+            return total ? total : -1;
+        }
+        ssize_t received = read(descriptor, base, length);
+        if (received < 0) {
+            return total ? total : -1;
+        }
+        total += received;
+        if (static_cast<size_t>(received) < length) {
+            return total;
+        }
+    }
+    return total;
+}
+
+extern "C" ssize_t sendmsg(
+    int descriptor,
+    const struct msghdr *message,
+    int flags
+) {
+    if (!message || message->msg_name || message->msg_namelen
+        || message->msg_control || message->msg_controllen
+        || message->msg_iovlen > IOV_MAX
+        || (message->msg_iovlen && !message->msg_iov)) {
+        errno = EINVAL;
+        return -1;
+    }
+    ssize_t total = 0;
+    for (size_t index = 0; index < message->msg_iovlen; ++index) {
+        const auto *bytes = static_cast<const unsigned char *>(
+            message->msg_iov[index].iov_base);
+        size_t remaining = message->msg_iov[index].iov_len;
+        if (remaining && !bytes) {
+            errno = EFAULT;
+            return total ? total : -1;
+        }
+        while (remaining) {
+            ssize_t sent = send(descriptor, bytes, remaining, flags);
+            if (sent < 0) {
+                return total ? total : -1;
+            }
+            if (!sent) {
+                return total;
+            }
+            total += sent;
+            bytes += sent;
+            remaining -= static_cast<size_t>(sent);
+        }
+    }
+    return total;
+}
+
+extern "C" ssize_t recvmsg(
+    int descriptor,
+    struct msghdr *message,
+    int flags
+) {
+    if (!message || message->msg_control || message->msg_controllen
+        || message->msg_iovlen > IOV_MAX
+        || (message->msg_iovlen && !message->msg_iov)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (message->msg_name) {
+        socklen_t length = message->msg_namelen;
+        if (getpeername(
+                descriptor,
+                static_cast<struct sockaddr *>(message->msg_name),
+                &length) != 0) {
+            return -1;
+        }
+        message->msg_namelen = length;
+    }
+    message->msg_flags = 0;
+    ssize_t total = 0;
+    for (size_t index = 0; index < message->msg_iovlen; ++index) {
+        void *base = message->msg_iov[index].iov_base;
+        size_t length = message->msg_iov[index].iov_len;
+        if (length && !base) {
+            errno = EFAULT;
+            return total ? total : -1;
+        }
+        ssize_t received = recv(descriptor, base, length, flags);
+        if (received < 0) {
+            return total ? total : -1;
+        }
+        total += received;
+        if (static_cast<size_t>(received) < length) {
+            return total;
+        }
+    }
+    return total;
 }
 
 extern "C" int shutdown(int descriptor, int how) {
