@@ -11,6 +11,13 @@ point is `src/main.js`; its package starts Electron directly. The current
 Windows package is only one host build. MortOS will become another host target:
 `x86_64-mortos`.
 
+The runtime baseline is CastLabs Electron `42.5.2+wvcus`, which carries
+Chromium 148 and Node.js 24.17.0. MortOS pins libuv 1.52.1 at
+`1cfa32ff59c076ffb6ed735bbc8c18361558661f`, the exact libuv release used by
+that Node baseline. `python test_libuv_headers.py` rebuilds the MortOS sysroot,
+verifies the pin, and compiles upstream's unmodified public `uv.h` for the
+`x86_64-mortos` target.
+
 ## What “the actual Vex” means
 
 - The canonical Vex repository remains the application source of truth.
@@ -63,7 +70,7 @@ This is only the architectural bootstrap. It does not yet run Vex.
 | MortOS ABI | Stable syscalls for files, memory, time, networking, graphics, input, audio, and entropy | File/memory/thread IPC, CMOS-anchored realtime plus monotonic clocks, fail-closed hardware `getrandom`, RTL8139 PCI/DMA Ethernet with real ARP, IPv4/UDP/DHCP, reusable `getaddrinfo` DNS, and POSIX IPv4 connect/send/recv/naming/options/shutdown over a live HTTP stream boot-tested; retransmission, server/datagram operations, and remaining device APIs in progress |
 | C/C++ platform | System V `argc`/`argv`/`envp`/auxv startup, freestanding constructors, C allocation, C++ `new`/`delete`, atomics, FS-base TLS, thread-local errno, stack canaries, protected pthread create/join with prompt stack/TLS reclamation, futex-backed mutexes/conditions/read-write locks/POSIX semaphores with absolute timed waits, `pthread_once`, per-thread keys and exit destructors, realtime/monotonic clocks and scheduler-backed sleep, installed `poll`/`epoll`/`eventfd` interfaces, then LLVM target, full libc/libc++, build tools | Reusable headers, `crt1.o`, and `libmortos.a` sysroot boot-tested; full platform in progress |
 | Application filesystem | Deterministic, hash-verified packaging and read-only access to the canonical Vex Electron tree | 159-file VexFS image, normalized relative lookup, hierarchy metadata, directory enumeration, and private file mappings boot-tested |
-| Node/V8 | V8 JIT permissions, libuv event loop, Node filesystem/network/process APIs | JIT memory, pthread/timers/event-loop foundation, bidirectional Ethernet, ARP, DHCP, POSIX `getaddrinfo`, IPv4 connect/naming/options/shutdown, vectored `sendmsg`/`recvmsg`, and epoll-driven HTTP I/O are boot-tested; retransmission, server/datagram calls, and the full Node build remain |
+| Node/V8 | V8 JIT permissions, libuv event loop, Node filesystem/network/process APIs | The exact Node 24.17.0 libuv 1.52.1 source is pinned and its unmodified public API compiles against MortOS-owned POSIX headers; JIT memory, pthread/timers/event-loop foundation, bidirectional Ethernet, ARP, DHCP, POSIX `getaddrinfo`, IPv4 connect/naming/options/shutdown, vectored `sendmsg`/`recvmsg`, and epoll-driven HTTP I/O are boot-tested; libuv implementation sources, retransmission, server/datagram calls, and the full Node build remain |
 | Chromium | Sandbox, renderer/GPU processes, Skia, fonts, image/media codecs, TLS/PKI, accessibility | Planned |
 | Electron | `x86_64-mortos` host integration, windows/views, sessions, IPC, clipboard, dialogs, downloads | Planned |
 | Canonical Vex | Build and run the upstream application tree, then pass its tests and UI comparisons | Planned |

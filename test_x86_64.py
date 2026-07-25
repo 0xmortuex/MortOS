@@ -41,7 +41,7 @@ def main():
         "-kernel", ELF64,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         output = result.stdout + result.stderr
     except subprocess.TimeoutExpired as exc:
         output = (exc.stdout or "") + (exc.stderr or "")

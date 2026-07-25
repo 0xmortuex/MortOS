@@ -12,6 +12,12 @@ struct sockaddr {
     char sa_data[14];
 };
 
+struct sockaddr_storage {
+    sa_family_t ss_family;
+    char __data[118];
+    unsigned long __align;
+};
+
 struct msghdr {
     void *msg_name;
     socklen_t msg_namelen;
@@ -23,10 +29,18 @@ struct msghdr {
 };
 
 #define AF_UNSPEC 0
+#define AF_UNIX 1
 #define AF_INET 2
+#define AF_INET6 10
+#define PF_UNSPEC AF_UNSPEC
+#define PF_UNIX AF_UNIX
 #define PF_INET AF_INET
+#define PF_INET6 AF_INET6
 
 #define SOCK_STREAM 1
+#define SOCK_DGRAM 2
+#define SOCK_RAW 3
+#define SOCK_SEQPACKET 5
 #define SOCK_NONBLOCK 0x800
 #define SOCK_CLOEXEC 0x80000
 
@@ -37,6 +51,9 @@ struct msghdr {
 #define SO_SNDBUF 7
 #define SO_RCVBUF 8
 #define SO_KEEPALIVE 9
+#define SO_BROADCAST 6
+#define SO_LINGER 13
+#define SO_ACCEPTCONN 30
 
 #define MSG_DONTWAIT 0x40
 #define MSG_NOSIGNAL 0x4000
@@ -52,9 +69,22 @@ extern "C" {
 int socket(int domain, int type, int protocol);
 int connect(
     int descriptor, const struct sockaddr *address, socklen_t length);
+int bind(
+    int descriptor, const struct sockaddr *address, socklen_t length);
+int listen(int descriptor, int backlog);
+int accept(
+    int descriptor, struct sockaddr *address, socklen_t *length);
+int accept4(
+    int descriptor, struct sockaddr *address, socklen_t *length, int flags);
 ssize_t send(
     int descriptor, const void *buffer, size_t length, int flags);
 ssize_t recv(int descriptor, void *buffer, size_t length, int flags);
+ssize_t sendto(
+    int descriptor, const void *buffer, size_t length, int flags,
+    const struct sockaddr *address, socklen_t address_length);
+ssize_t recvfrom(
+    int descriptor, void *buffer, size_t length, int flags,
+    struct sockaddr *address, socklen_t *address_length);
 ssize_t sendmsg(
     int descriptor, const struct msghdr *message, int flags);
 ssize_t recvmsg(int descriptor, struct msghdr *message, int flags);
@@ -69,6 +99,7 @@ int setsockopt(
 int getsockopt(
     int descriptor, int level, int option,
     void *value, socklen_t *length);
+int socketpair(int domain, int type, int protocol, int descriptors[2]);
 
 #ifdef __cplusplus
 }
