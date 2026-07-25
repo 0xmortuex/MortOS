@@ -46,6 +46,12 @@ struct EventWorkerArguments {
     unsigned long value;
 };
 
+struct ThreadSyncArguments {
+    pthread_mutex_t *mutex;
+    pthread_cond_t *condition;
+    unsigned int *ready;
+};
+
 extern "C" void *thread_worker(void *opaque) {
     if (mortos_getpid() != 5 || mortos_gettid() == 5) {
         return reinterpret_cast<void *>(30UL);
@@ -57,9 +63,13 @@ extern "C" void *thread_worker(void *opaque) {
     if (mortos_yield() != 0) {
         return reinterpret_cast<void *>(30UL);
     }
-    auto *ready = static_cast<unsigned int *>(opaque);
-    __atomic_store_n(ready, 1U, __ATOMIC_RELEASE);
-    if (mortos_futex(ready, 1, 1) != 1) {
+    auto *arguments = static_cast<ThreadSyncArguments *>(opaque);
+    if (pthread_mutex_lock(arguments->mutex) != 0) {
+        return reinterpret_cast<void *>(30UL);
+    }
+    __atomic_store_n(arguments->ready, 1U, __ATOMIC_RELEASE);
+    if (pthread_cond_signal(arguments->condition) != 0
+        || pthread_mutex_unlock(arguments->mutex) != 0) {
         return reinterpret_cast<void *>(30UL);
     }
     return reinterpret_cast<void *>(31UL);
@@ -274,17 +284,27 @@ extern "C" int main(int argc, char **argv, char **envp) {
         return 9;
     }
     unsigned int thread_ready = 0;
+    pthread_mutex_t thread_mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t thread_condition = PTHREAD_COND_INITIALIZER;
+    ThreadSyncArguments thread_arguments = {
+        &thread_mutex, &thread_condition, &thread_ready};
     pthread_t thread_id = 0;
-    if (pthread_create(
-            &thread_id, nullptr, thread_worker, &thread_ready) != 0
+    if (pthread_mutex_lock(&thread_mutex) != 0
+        || pthread_mutex_trylock(&thread_mutex) != EBUSY
+        || pthread_create(
+            &thread_id, nullptr, thread_worker, &thread_arguments) != 0
         || thread_id <= 5) {
         return 9;
     }
-    unsigned long futex_result = mortos_futex(&thread_ready, 0, 0);
-    if (futex_result != 0 && futex_result != ~10UL) {
-        return 9;
+    while (__atomic_load_n(&thread_ready, __ATOMIC_ACQUIRE) == 0) {
+        if (pthread_cond_wait(&thread_condition, &thread_mutex) != 0) {
+            return 9;
+        }
     }
-    if (__atomic_load_n(&thread_ready, __ATOMIC_ACQUIRE) != 1) {
+    if (pthread_mutex_unlock(&thread_mutex) != 0
+        || pthread_mutex_destroy(&thread_mutex) != 0
+        || pthread_cond_broadcast(&thread_condition) != 0
+        || pthread_cond_destroy(&thread_condition) != 0) {
         return 9;
     }
     if (mortos_fs_load(8) != 0x544C5356414C5545UL

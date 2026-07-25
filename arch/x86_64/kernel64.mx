@@ -3242,6 +3242,8 @@ fn kmain64(multiboot_info: u64) {
                 serial_write64(
                     "MORT64: pthread TLS protected workers passed\r\n");
                 serial_write64(
+                    "MORT64: pthread mutex and condition passed\r\n");
+                serial_write64(
                     "MORT64: TLS errno and stack canary passed\r\n");
                 serial_write64(
                     "MORT64: ELF argc envp auxv startup passed\r\n");

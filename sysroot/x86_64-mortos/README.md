@@ -9,7 +9,8 @@ It is deliberately named a bootstrap sysroot rather than a complete libc.
 CRT startup establishes main-thread TLS, thread-local `errno`, and a stack
 canary; the first `unistd` and memory-mapping wrappers translate raw kernel
 results to POSIX conventions. `pthread_create` supplies protected workers with
-private stacks and TLS, while join and prompt thread-resource reclamation are
+private stacks and TLS; mutexes and condition variables use kernel scheduler
+futexes. Join and prompt thread-resource reclamation are
 still pending. The canonical Vex port still requires the rest
 of libc/libc++, dynamic loading, networking, and
 device/window APIs. Raw calls stay available under `<mortos/syscall.h>`.

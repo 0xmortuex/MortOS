@@ -210,3 +210,131 @@ extern "C" int pthread_create(
 extern "C" pthread_t pthread_self() {
     return static_cast<pthread_t>(mortos_gettid());
 }
+
+extern "C" int pthread_equal(pthread_t left, pthread_t right) {
+    return left == right;
+}
+
+static int pthread_futex_error(unsigned long result) {
+    if (result < ERROR_LIMIT) {
+        return 0;
+    }
+    return static_cast<int>((~result) + 1);
+}
+
+extern "C" int pthread_mutex_init(
+    pthread_mutex_t *mutex,
+    const void *attributes
+) {
+    if (!mutex || attributes) {
+        return EINVAL;
+    }
+    __atomic_store_n(&mutex->__state, 0U, __ATOMIC_RELAXED);
+    return 0;
+}
+
+extern "C" int pthread_mutex_destroy(pthread_mutex_t *mutex) {
+    if (!mutex) {
+        return EINVAL;
+    }
+    return __atomic_load_n(&mutex->__state, __ATOMIC_ACQUIRE) == 0
+        ? 0 : EBUSY;
+}
+
+extern "C" int pthread_mutex_trylock(pthread_mutex_t *mutex) {
+    if (!mutex) {
+        return EINVAL;
+    }
+    unsigned int expected = 0;
+    return __atomic_compare_exchange_n(
+        &mutex->__state, &expected, 1U, false,
+        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED) ? 0 : EBUSY;
+}
+
+extern "C" int pthread_mutex_lock(pthread_mutex_t *mutex) {
+    if (!mutex) {
+        return EINVAL;
+    }
+    for (;;) {
+        unsigned int expected = 0;
+        if (__atomic_compare_exchange_n(
+                &mutex->__state, &expected, 1U, false,
+                __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            return 0;
+        }
+        int error = pthread_futex_error(mortos_futex(
+            const_cast<unsigned int *>(&mutex->__state), 0, 1));
+        if (error != 0 && error != EAGAIN) {
+            return error;
+        }
+    }
+}
+
+extern "C" int pthread_mutex_unlock(pthread_mutex_t *mutex) {
+    if (!mutex) {
+        return EINVAL;
+    }
+    unsigned int expected = 1;
+    if (!__atomic_compare_exchange_n(
+            &mutex->__state, &expected, 0U, false,
+            __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+        return EPERM;
+    }
+    return pthread_futex_error(mortos_futex(
+        const_cast<unsigned int *>(&mutex->__state), 1, 1));
+}
+
+extern "C" int pthread_cond_init(
+    pthread_cond_t *condition,
+    const void *attributes
+) {
+    if (!condition || attributes) {
+        return EINVAL;
+    }
+    __atomic_store_n(&condition->__sequence, 0U, __ATOMIC_RELAXED);
+    return 0;
+}
+
+extern "C" int pthread_cond_destroy(pthread_cond_t *condition) {
+    return condition ? 0 : EINVAL;
+}
+
+extern "C" int pthread_cond_wait(
+    pthread_cond_t *condition,
+    pthread_mutex_t *mutex
+) {
+    if (!condition || !mutex) {
+        return EINVAL;
+    }
+    unsigned int sequence = __atomic_load_n(
+        &condition->__sequence, __ATOMIC_ACQUIRE);
+    int unlock_error = pthread_mutex_unlock(mutex);
+    if (unlock_error != 0) {
+        return unlock_error;
+    }
+    int wait_error = pthread_futex_error(mortos_futex(
+        const_cast<unsigned int *>(&condition->__sequence), 0, sequence));
+    int lock_error = pthread_mutex_lock(mutex);
+    if (lock_error != 0) {
+        return lock_error;
+    }
+    return wait_error == EAGAIN ? 0 : wait_error;
+}
+
+extern "C" int pthread_cond_signal(pthread_cond_t *condition) {
+    if (!condition) {
+        return EINVAL;
+    }
+    __atomic_add_fetch(&condition->__sequence, 1U, __ATOMIC_RELEASE);
+    return pthread_futex_error(mortos_futex(
+        const_cast<unsigned int *>(&condition->__sequence), 1, 1));
+}
+
+extern "C" int pthread_cond_broadcast(pthread_cond_t *condition) {
+    if (!condition) {
+        return EINVAL;
+    }
+    __atomic_add_fetch(&condition->__sequence, 1U, __ATOMIC_RELEASE);
+    return pthread_futex_error(mortos_futex(
+        const_cast<unsigned int *>(&condition->__sequence), 1, 8));
+}

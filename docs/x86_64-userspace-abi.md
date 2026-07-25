@@ -29,7 +29,8 @@ FS self pointer, thread-local `errno`, and an `AT_RANDOM`-derived stack canary.
 The probe is compiled with full stack protection and verifies POSIX `read`
 error translation to `EBADF`. `pthread_create` provisions a private 64 KiB
 stack and TLS page, copies the process canary, and runs fully protected worker
-entrypoints with independent errno state. Join and prompt per-thread mapping
+entrypoints with independent errno state. Futex-backed pthread mutexes and
+condition variables provide the first POSIX synchronization surface. Join and prompt per-thread mapping
 reclamation remain part of the next pthread lifecycle slice. Raw calls remain available under
 `<mortos/syscall.h>` while the rest of the POSIX libc surface is implemented.
 
