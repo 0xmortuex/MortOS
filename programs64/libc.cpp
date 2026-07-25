@@ -113,6 +113,65 @@ extern "C" int connect(
         static_cast<unsigned long>(descriptor), address, length)));
 }
 
+extern "C" ssize_t send(
+    int descriptor,
+    const void *buffer,
+    size_t length,
+    int flags
+) {
+    return static_cast<ssize_t>(posix_result(mortos_sendto(
+        static_cast<unsigned long>(descriptor), buffer, length,
+        static_cast<unsigned long>(flags), nullptr, 0)));
+}
+
+extern "C" ssize_t recv(
+    int descriptor,
+    void *buffer,
+    size_t length,
+    int flags
+) {
+    return static_cast<ssize_t>(posix_result(mortos_recvfrom(
+        static_cast<unsigned long>(descriptor), buffer, length,
+        static_cast<unsigned long>(flags), nullptr, nullptr)));
+}
+
+extern "C" int shutdown(int descriptor, int how) {
+    return static_cast<int>(posix_result(mortos_shutdown(
+        static_cast<unsigned long>(descriptor),
+        static_cast<unsigned long>(how))));
+}
+
+extern "C" int getsockname(
+    int descriptor,
+    struct sockaddr *address,
+    socklen_t *length
+) {
+    return static_cast<int>(posix_result(mortos_getsockname(
+        static_cast<unsigned long>(descriptor), address, length)));
+}
+
+extern "C" int getpeername(
+    int descriptor,
+    struct sockaddr *address,
+    socklen_t *length
+) {
+    return static_cast<int>(posix_result(mortos_getpeername(
+        static_cast<unsigned long>(descriptor), address, length)));
+}
+
+extern "C" int setsockopt(
+    int descriptor,
+    int level,
+    int option,
+    const void *value,
+    socklen_t length
+) {
+    return static_cast<int>(posix_result(mortos_setsockopt(
+        static_cast<unsigned long>(descriptor),
+        static_cast<unsigned long>(level),
+        static_cast<unsigned long>(option), value, length)));
+}
+
 extern "C" unsigned short htons(unsigned short value) {
     return static_cast<unsigned short>((value << 8) | (value >> 8));
 }

@@ -15,6 +15,22 @@ unsigned long mortos_socket(
     unsigned long domain, unsigned long type, unsigned long protocol);
 unsigned long mortos_connect(
     unsigned long descriptor, const void *address, unsigned long length);
+unsigned long mortos_sendto(
+    unsigned long descriptor, const void *buffer, unsigned long length,
+    unsigned long flags, const void *destination,
+    unsigned long destination_length);
+unsigned long mortos_recvfrom(
+    unsigned long descriptor, void *buffer, unsigned long length,
+    unsigned long flags, void *address, void *address_length);
+unsigned long mortos_shutdown(
+    unsigned long descriptor, unsigned long how);
+unsigned long mortos_getsockname(
+    unsigned long descriptor, void *address, void *length);
+unsigned long mortos_getpeername(
+    unsigned long descriptor, void *address, void *length);
+unsigned long mortos_setsockopt(
+    unsigned long descriptor, unsigned long level, unsigned long option,
+    const void *value, unsigned long length);
 unsigned long mortos_getsockopt(
     unsigned long descriptor, unsigned long level, unsigned long option,
     void *value, void *length);

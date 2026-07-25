@@ -41,6 +41,12 @@ test resolves `example.com` in ring 3 and connects to the returned address.
 Post-boot frames use a checked rotating RTL8139 transmit descriptor so repeated
 DNS, ARP, payload, ACK, and FIN operations cannot skip the NIC's queue order.
 
+Connected sockets additionally expose `send`, `recv`, `getsockname`,
+`getpeername`, `setsockopt`, and `shutdown` on their Linux syscall numbers.
+The tested option set includes reuse, send/receive buffer, keepalive, and
+TCP_NODELAY controls. Half-close emits one FIN, suppresses a duplicate FIN at
+descriptor cleanup, and returns `EPIPE` for later writes.
+
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,
 `malloc`, `calloc`, `realloc`, `free`, C++ `new`/`delete`, compiler atomics,

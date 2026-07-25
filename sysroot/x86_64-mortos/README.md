@@ -20,7 +20,8 @@ IPv4 stream sockets also provide descriptor creation, standard `sockaddr_in`
 connect, flags, `SO_TYPE`, `SO_ERROR`, readiness, buffered `read`/`write`,
 FIN/RST state, and cleanup. TCP receive also drives `poll`/`epoll`, including
 opaque epoll user data. `getaddrinfo`/`freeaddrinfo` resolve IPv4 literals or
-perform live A-record queries and parse numeric services. Retransmission and
-richer socket calls remain in progress. Dynamic loading and device/window APIs
-remain incomplete.
+perform live A-record queries and parse numeric services. Connected streams
+also expose send/receive, local/peer naming, common socket/TCP options, and
+half-close. Retransmission, vectored/message I/O, and server/datagram calls
+remain in progress. Dynamic loading and device/window APIs remain incomplete.
 Raw calls stay available under `<mortos/syscall.h>`.

@@ -101,6 +101,7 @@ def main():
         "MORT64: POSIX TCP HTTP stream transfer passed",
         "MORT64: POSIX TCP epoll readiness passed",
         "MORT64: POSIX getaddrinfo DNS resolution passed",
+        "MORT64: POSIX TCP socket controls passed",
         "MORT64: canonical Vex asset filesystem passed",
         "MORT64: canonical Vex hierarchy stat passed",
         "MORT64: canonical Vex directory enumeration passed",

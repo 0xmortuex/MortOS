@@ -1,0 +1,6 @@
+#ifndef MORTOS_NETINET_TCP_H
+#define MORTOS_NETINET_TCP_H
+
+#define TCP_NODELAY 1
+
+#endif

@@ -4,6 +4,7 @@
 #include <mortos/syscall.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -803,12 +804,43 @@ extern "C" int main(int argc, char **argv, char **envp) {
         resolved->ai_protocol);
     struct pollfd connected_readiness = {
         connected_socket, POLLOUT, 0};
+    int enabled_socket_option = 1;
+    static struct sockaddr_in local_socket_address = {};
+    static struct sockaddr_in peer_socket_address = {};
+    socklen_t local_socket_length = sizeof(local_socket_address);
+    socklen_t peer_socket_length = sizeof(peer_socket_address);
     socket_error = -1;
     socket_option_length = sizeof(socket_error);
     if (connected_socket < 0
         || connect(
             connected_socket,
             resolved->ai_addr, resolved->ai_addrlen) != 0
+        || setsockopt(
+            connected_socket, SOL_SOCKET, SO_KEEPALIVE,
+            &enabled_socket_option, sizeof(enabled_socket_option)) != 0
+        || setsockopt(
+            connected_socket, IPPROTO_TCP, TCP_NODELAY,
+            &enabled_socket_option, sizeof(enabled_socket_option)) != 0
+        || getsockname(
+            connected_socket,
+            reinterpret_cast<struct sockaddr *>(&local_socket_address),
+            &local_socket_length) != 0
+        || getpeername(
+            connected_socket,
+            reinterpret_cast<struct sockaddr *>(&peer_socket_address),
+            &peer_socket_length) != 0
+        || local_socket_length != sizeof(local_socket_address)
+        || peer_socket_length != sizeof(peer_socket_address)
+        || local_socket_address.sin_family != AF_INET
+        || local_socket_address.sin_addr.s_addr == 0
+        || local_socket_address.sin_port == 0
+        || peer_socket_address.sin_family != AF_INET
+        || peer_socket_address.sin_port
+            != reinterpret_cast<struct sockaddr_in *>(
+                resolved->ai_addr)->sin_port
+        || peer_socket_address.sin_addr.s_addr
+            != reinterpret_cast<struct sockaddr_in *>(
+                resolved->ai_addr)->sin_addr.s_addr
         || poll(&connected_readiness, 1, 0) != 1
         || (connected_readiness.revents & POLLOUT) == 0
         || getsockopt(
@@ -826,9 +858,10 @@ extern "C" int main(int argc, char **argv, char **envp) {
         "Connection: close\r\n\r\n";
     static char http_response[1024] = {};
     ssize_t http_bytes = 0;
-    if (write(
+    if (send(
             connected_socket, http_request,
-            sizeof(http_request) - 1) != sizeof(http_request) - 1) {
+            sizeof(http_request) - 1,
+            MSG_NOSIGNAL) != sizeof(http_request) - 1) {
         return 19;
     }
     int network_epoll = epoll_create1(EPOLL_CLOEXEC);
@@ -845,12 +878,17 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || (network_readiness.events & EPOLLIN) == 0
         || network_readiness.data.u64 != 0x5443504854545055UL
         || close(network_epoll) != 0
-        || (http_bytes = read(
+        || (http_bytes = recv(
                 connected_socket, http_response,
-                sizeof(http_response))) <= 0
+                sizeof(http_response), 0)) <= 0
         || !contains_text(
             http_response, static_cast<unsigned long>(http_bytes),
             "HTTP/", 5)
+        || shutdown(connected_socket, SHUT_WR) != 0
+        || send(
+            connected_socket, http_request, 1,
+            MSG_NOSIGNAL) != -1
+        || errno != EPIPE
         || close(connected_socket) != 0) {
         return 19;
     }

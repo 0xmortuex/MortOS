@@ -154,6 +154,57 @@ mortos_connect:
     ret
 .size mortos_connect, . - mortos_connect
 
+.global mortos_sendto
+.type mortos_sendto, @function
+mortos_sendto:
+    mov %rcx, %r10
+    mov $44, %rax                  /* SYS_sendto */
+    syscall
+    ret
+.size mortos_sendto, . - mortos_sendto
+
+.global mortos_recvfrom
+.type mortos_recvfrom, @function
+mortos_recvfrom:
+    mov %rcx, %r10
+    mov $45, %rax                  /* SYS_recvfrom */
+    syscall
+    ret
+.size mortos_recvfrom, . - mortos_recvfrom
+
+.global mortos_shutdown
+.type mortos_shutdown, @function
+mortos_shutdown:
+    mov $48, %rax                  /* SYS_shutdown */
+    syscall
+    ret
+.size mortos_shutdown, . - mortos_shutdown
+
+.global mortos_getsockname
+.type mortos_getsockname, @function
+mortos_getsockname:
+    mov $51, %rax                  /* SYS_getsockname */
+    syscall
+    ret
+.size mortos_getsockname, . - mortos_getsockname
+
+.global mortos_getpeername
+.type mortos_getpeername, @function
+mortos_getpeername:
+    mov $52, %rax                  /* SYS_getpeername */
+    syscall
+    ret
+.size mortos_getpeername, . - mortos_getpeername
+
+.global mortos_setsockopt
+.type mortos_setsockopt, @function
+mortos_setsockopt:
+    mov %rcx, %r10
+    mov $54, %rax                  /* SYS_setsockopt */
+    syscall
+    ret
+.size mortos_setsockopt, . - mortos_setsockopt
+
 .global mortos_getsockopt
 .type mortos_getsockopt, @function
 mortos_getsockopt:
