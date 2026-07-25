@@ -6,6 +6,8 @@
 
 #include <errno.h>
 #include <mortos/syscall.h>
+#include <pthread.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -131,4 +133,80 @@ extern "C" int mprotect(void *address, size_t length, int protection) {
 extern "C" int munmap(void *address, size_t length) {
     return static_cast<int>(posix_result(mortos_munmap(
         reinterpret_cast<unsigned long>(address), length)));
+}
+
+struct PthreadStartContext {
+    void *(*start)(void *);
+    void *argument;
+    unsigned long tls;
+};
+
+extern "C" __attribute__((no_stack_protector))
+unsigned long mortos_pthread_start(void *opaque) {
+    auto *context = static_cast<PthreadStartContext *>(opaque);
+    auto start = context->start;
+    void *argument = context->argument;
+    unsigned long tls = context->tls;
+    if (mortos_arch_prctl(0x1002, tls) != 0) {
+        return 126;
+    }
+    free(context);
+    return reinterpret_cast<unsigned long>(start(argument));
+}
+
+extern "C" int pthread_create(
+    pthread_t *thread,
+    const void *attributes,
+    void *(*start)(void *),
+    void *argument
+) {
+    if (!thread || !start || attributes) {
+        return EINVAL;
+    }
+    unsigned long stack = mortos_mmap(
+        0, 65536, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, ~0UL, 0);
+    unsigned long tls = mortos_mmap(
+        0, 4096, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, ~0UL, 0);
+    if (stack >= ERROR_LIMIT || tls >= ERROR_LIMIT) {
+        if (stack < ERROR_LIMIT) {
+            mortos_munmap(stack, 65536);
+        }
+        if (tls < ERROR_LIMIT) {
+            mortos_munmap(tls, 4096);
+        }
+        return EAGAIN;
+    }
+    unsigned long parent_tls = mortos_fs_load(0);
+    *reinterpret_cast<unsigned long *>(tls) = tls;
+    *reinterpret_cast<int *>(tls + 8) = 0;
+    *reinterpret_cast<unsigned long *>(tls + 40) =
+        *reinterpret_cast<unsigned long *>(parent_tls + 40);
+    auto *context = static_cast<PthreadStartContext *>(
+        malloc(sizeof(PthreadStartContext)));
+    if (!context) {
+        mortos_munmap(stack, 65536);
+        mortos_munmap(tls, 4096);
+        return EAGAIN;
+    }
+    context->start = start;
+    context->argument = argument;
+    context->tls = tls;
+    unsigned long result = mortos_thread_create(
+        reinterpret_cast<unsigned long>(&mortos_pthread_start),
+        stack + 65536,
+        reinterpret_cast<unsigned long>(context));
+    if (result >= ERROR_LIMIT) {
+        free(context);
+        mortos_munmap(stack, 65536);
+        mortos_munmap(tls, 4096);
+        return static_cast<int>((~result) + 1);
+    }
+    *thread = result;
+    return 0;
+}
+
+extern "C" pthread_t pthread_self() {
+    return static_cast<pthread_t>(mortos_gettid());
 }

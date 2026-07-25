@@ -3,6 +3,7 @@
 
 #include <mortos/syscall.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -45,50 +46,51 @@ struct EventWorkerArguments {
     unsigned long value;
 };
 
-extern "C" __attribute__((no_stack_protector))
-unsigned long thread_worker(void *opaque) {
+extern "C" void *thread_worker(void *opaque) {
     if (mortos_getpid() != 5 || mortos_gettid() == 5) {
-        return 30;
+        return reinterpret_cast<void *>(30UL);
+    }
+    errno = EAGAIN;
+    if (errno != EAGAIN || pthread_self() == 5) {
+        return reinterpret_cast<void *>(30UL);
     }
     if (mortos_yield() != 0) {
-        return 30;
+        return reinterpret_cast<void *>(30UL);
     }
     auto *ready = static_cast<unsigned int *>(opaque);
     __atomic_store_n(ready, 1U, __ATOMIC_RELEASE);
     if (mortos_futex(ready, 1, 1) != 1) {
-        return 30;
+        return reinterpret_cast<void *>(30UL);
     }
-    return 31;
+    return reinterpret_cast<void *>(31UL);
 }
 
-extern "C" __attribute__((no_stack_protector))
-unsigned long pipe_worker(void *opaque) {
+extern "C" void *pipe_worker(void *opaque) {
     if (mortos_yield() != 0) {
-        return 40;
+        return reinterpret_cast<void *>(40UL);
     }
     auto *arguments = static_cast<PipeWorkerArguments *>(opaque);
     if (mortos_fd_write(
             arguments->write_descriptor,
             pipe_message,
             sizeof(pipe_message) - 1) != sizeof(pipe_message) - 1) {
-        return 40;
+        return reinterpret_cast<void *>(40UL);
     }
-    return 32;
+    return reinterpret_cast<void *>(32UL);
 }
 
-extern "C" __attribute__((no_stack_protector))
-unsigned long event_worker(void *opaque) {
+extern "C" void *event_worker(void *opaque) {
     if (mortos_yield() != 0) {
-        return 41;
+        return reinterpret_cast<void *>(41UL);
     }
     auto *arguments = static_cast<EventWorkerArguments *>(opaque);
     if (mortos_fd_write(
             arguments->descriptor,
             &arguments->value,
             sizeof(arguments->value)) != sizeof(arguments->value)) {
-        return 41;
+        return reinterpret_cast<void *>(41UL);
     }
-    return 33;
+    return reinterpret_cast<void *>(33UL);
 }
 
 static bool contains_text(
@@ -259,6 +261,7 @@ extern "C" int main(int argc, char **argv, char **envp) {
     if (tls >= ~4095UL) {
         return 8;
     }
+    *reinterpret_cast<unsigned long *>(tls) = tls;
     *reinterpret_cast<unsigned long *>(tls + 40) =
         *reinterpret_cast<unsigned long *>(runtime_tls + 40);
     if (mortos_arch_prctl(0x1002, tls) != 0) {
@@ -270,17 +273,11 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || atomic_value != 17) {
         return 9;
     }
-    unsigned long thread_stack = mortos_mmap(
-        0, 8192, 3, 0x22, ~0UL, 0);
-    if (thread_stack >= ~4095UL) {
-        return 9;
-    }
     unsigned int thread_ready = 0;
-    unsigned long thread_id = mortos_thread_create(
-        reinterpret_cast<unsigned long>(&thread_worker),
-        thread_stack + 8192,
-        reinterpret_cast<unsigned long>(&thread_ready));
-    if (thread_id <= 5) {
+    pthread_t thread_id = 0;
+    if (pthread_create(
+            &thread_id, nullptr, thread_worker, &thread_ready) != 0
+        || thread_id <= 5) {
         return 9;
     }
     unsigned long futex_result = mortos_futex(&thread_ready, 0, 0);
@@ -295,9 +292,6 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || *reinterpret_cast<unsigned long *>(tls + 16) != tls) {
         return 9;
     }
-    if (mortos_munmap(thread_stack, 8192) != 0) {
-        return 9;
-    }
     if (mortos_arch_prctl(0x1002, runtime_tls) != 0
         || mortos_munmap(tls, 4096) != 0
         || errno != EBADF) {
@@ -309,17 +303,11 @@ extern "C" int main(int argc, char **argv, char **envp) {
     if (mortos_pipe2(pipe_descriptors, 0) != 0) {
         return 11;
     }
-    unsigned long pipe_stack = mortos_mmap(
-        0, 8192, 3, 0x22, ~0UL, 0);
-    if (pipe_stack >= ~4095UL) {
-        return 11;
-    }
     PipeWorkerArguments pipe_arguments = {pipe_descriptors[1]};
-    unsigned long pipe_thread = mortos_thread_create(
-        reinterpret_cast<unsigned long>(&pipe_worker),
-        pipe_stack + 8192,
-        reinterpret_cast<unsigned long>(&pipe_arguments));
-    if (pipe_thread <= thread_id) {
+    pthread_t pipe_thread = 0;
+    if (pthread_create(
+            &pipe_thread, nullptr, pipe_worker, &pipe_arguments) != 0
+        || pipe_thread <= thread_id) {
         return 11;
     }
     PollDescriptor readiness[1] = {
@@ -343,18 +331,14 @@ extern "C" int main(int argc, char **argv, char **envp) {
         return 11;
     }
     if (mortos_close(pipe_descriptors[0]) != 0
-        || mortos_close(pipe_descriptors[1]) != 0
-        || mortos_munmap(pipe_stack, 8192) != 0) {
+        || mortos_close(pipe_descriptors[1]) != 0) {
         return 11;
     }
 
     unsigned long event_descriptor = mortos_eventfd2(0, 0x80800);
     unsigned long epoll_descriptor = mortos_epoll_create1(0x80000);
-    unsigned long event_stack = mortos_mmap(
-        0, 8192, 3, 0x22, ~0UL, 0);
     if (event_descriptor >= ~4095UL
-        || epoll_descriptor >= ~4095UL
-        || event_stack >= ~4095UL) {
+        || epoll_descriptor >= ~4095UL) {
         return 18;
     }
     EpollEvent event_interest = {1U, 0x45504F4C4C564558UL};
@@ -371,10 +355,12 @@ extern "C" int main(int argc, char **argv, char **envp) {
     }
     EventWorkerArguments event_arguments = {
         static_cast<unsigned int>(event_descriptor), 7UL};
-    unsigned long event_thread = mortos_thread_create(
-        reinterpret_cast<unsigned long>(&event_worker),
-        event_stack + 8192,
-        reinterpret_cast<unsigned long>(&event_arguments));
+    pthread_t event_thread = 0;
+    if (pthread_create(
+            &event_thread, nullptr, event_worker,
+            &event_arguments) != 0) {
+        return 18;
+    }
     EpollEvent event_readiness = {};
     unsigned long event_value = 0;
     if (event_thread <= pipe_thread
@@ -392,8 +378,7 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || mortos_epoll_ctl(
             epoll_descriptor, 2, event_descriptor, nullptr) != 0
         || mortos_close(epoll_descriptor) != 0
-        || mortos_close(event_descriptor) != 0
-        || mortos_munmap(event_stack, 8192) != 0) {
+        || mortos_close(event_descriptor) != 0) {
         return 18;
     }
 
