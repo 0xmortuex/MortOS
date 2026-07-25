@@ -17,9 +17,10 @@ behavior, add a backlog item describing it and stop.
 ## Documentation
 - [ ] `docs/architecture.md` — the boot chain (multiboot/Limine → 32-bit entry → long mode), the memory map, and the major subsystems (framebuffer, RTL8139 network stack, VexFS, scheduler, shell). Ground every claim in source with `file:line` citations.
 - [ ] `docs/memory-map.md` — a single table of every fixed address the kernel uses (payload load address, the user ELF window at `0x01000000`, heap base/cap, stack pages, the mmap arena), each row citing the source line that defines it.
-- [ ] `docs/shell.md` — a reference table of the built-in shell commands (read them out of `kmain.mx`), one line of behavior each.
+- [x] `docs/shell.md` — a reference table of the built-in shell commands (read them out of `kmain.mx`), one line of behavior each. Done 2026-07-25: every command in `run_command_impl` (`kmain.mx:2100`-`2602`), cited by line, plus `$VAR` expansion and command history.
 - [ ] `docs/networking.md` — the mortnet layers (RTL8139 → ARP → IPv4 → UDP → DHCP → DNS → TCP → HTTP) and which `net/*.mx` file implements each.
 - [ ] README: a "build and boot it yourself" quickstart — the real `build.py` subcommands and QEMU invocation, with the expected first lines of serial output. Verify command names against the actual `build.py`.
 
 ## Doc quality
 - [ ] Audit `README.md` and `docs/` for claims that have drifted from the current source (feature list vs. what is actually implemented) and correct them, citing the source for each fix.
+- [ ] `power`, `lock`, and `sleep` shell commands silently no-op in VGA text mode — `open_power_menu` (`kmain.mx:3145`), `open_lock` (`kmain.mx:3199`), and `open_sleep` (`kmain.mx:3229`) all `return` immediately `if !g_gfx`. Worth a doc note (or, as a code change for a human with a local QEMU boot test, a `no display` message instead of silent no-op).
