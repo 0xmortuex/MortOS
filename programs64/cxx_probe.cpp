@@ -4,6 +4,7 @@
 #include <mortos/syscall.h>
 #include <errno.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -69,6 +70,11 @@ struct ThreadSyncArguments {
 
 struct RwlockWorkerArguments {
     pthread_rwlock_t *lock;
+    unsigned long *value;
+};
+
+struct SemaphoreWorkerArguments {
+    sem_t *semaphore;
     unsigned long *value;
 };
 
@@ -146,6 +152,15 @@ extern "C" void *rwlock_worker(void *opaque) {
         return reinterpret_cast<void *>(43UL);
     }
     return reinterpret_cast<void *>(35UL);
+}
+
+extern "C" void *semaphore_worker(void *opaque) {
+    auto *arguments = static_cast<SemaphoreWorkerArguments *>(opaque);
+    if (sem_wait(arguments->semaphore) != 0) {
+        return reinterpret_cast<void *>(44UL);
+    }
+    *arguments->value = 0x53454D4150484F52UL;
+    return reinterpret_cast<void *>(36UL);
 }
 
 static bool contains_text(
@@ -396,6 +411,28 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || pthread_rwlock_tryrdlock(&rwlock) != 0
         || pthread_rwlock_unlock(&rwlock) != 0
         || pthread_rwlock_destroy(&rwlock) != 0) {
+        return 9;
+    }
+    sem_t semaphore = {};
+    unsigned long semaphore_value = 0;
+    int semaphore_count = -1;
+    SemaphoreWorkerArguments semaphore_arguments = {
+        &semaphore, &semaphore_value};
+    pthread_t semaphore_thread = 0;
+    if (sem_init(&semaphore, 0, 1) != 0
+        || sem_trywait(&semaphore) != 0
+        || pthread_create(
+            &semaphore_thread, nullptr, semaphore_worker,
+            &semaphore_arguments) != 0
+        || mortos_yield() != 0
+        || semaphore_value != 0
+        || sem_getvalue(&semaphore, &semaphore_count) != 0
+        || semaphore_count != 0
+        || sem_post(&semaphore) != 0
+        || pthread_join(semaphore_thread, &thread_result) != 0
+        || thread_result != reinterpret_cast<void *>(36UL)
+        || semaphore_value != 0x53454D4150484F52UL
+        || sem_destroy(&semaphore) != 0) {
         return 9;
     }
     if (mortos_fs_load(8) != 0x544C5356414C5545UL

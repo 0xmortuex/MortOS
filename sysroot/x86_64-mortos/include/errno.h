@@ -22,5 +22,6 @@ int *__errno_location(void);
 #define ENOSYS 38
 #define EPERM 1
 #define ESRCH 3
+#define EOVERFLOW 75
 
 #endif

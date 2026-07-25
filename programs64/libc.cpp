@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <mortos/syscall.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -647,4 +648,103 @@ extern "C" int pthread_rwlock_unlock(pthread_rwlock_t *lock) {
             return 0;
         }
     }
+}
+
+extern "C" int sem_init(
+    sem_t *semaphore,
+    int process_shared,
+    unsigned int value
+) {
+    if (!semaphore || process_shared != 0 || value > SEM_VALUE_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    __atomic_store_n(&semaphore->__value, value, __ATOMIC_RELAXED);
+    return 0;
+}
+
+extern "C" int sem_destroy(sem_t *semaphore) {
+    if (!semaphore) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+extern "C" int sem_trywait(sem_t *semaphore) {
+    if (!semaphore) {
+        errno = EINVAL;
+        return -1;
+    }
+    unsigned int value = __atomic_load_n(
+        &semaphore->__value, __ATOMIC_RELAXED);
+    while (value != 0) {
+        if (__atomic_compare_exchange_n(
+                &semaphore->__value, &value, value - 1U, true,
+                __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            return 0;
+        }
+    }
+    errno = EAGAIN;
+    return -1;
+}
+
+extern "C" int sem_wait(sem_t *semaphore) {
+    if (!semaphore) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (;;) {
+        unsigned int value = __atomic_load_n(
+            &semaphore->__value, __ATOMIC_RELAXED);
+        while (value != 0) {
+            if (__atomic_compare_exchange_n(
+                    &semaphore->__value, &value, value - 1U, true,
+                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                return 0;
+            }
+        }
+        int error = pthread_futex_error(mortos_futex(
+            const_cast<unsigned int *>(&semaphore->__value), 0, 0));
+        if (error != 0 && error != EAGAIN) {
+            errno = error;
+            return -1;
+        }
+    }
+}
+
+extern "C" int sem_post(sem_t *semaphore) {
+    if (!semaphore) {
+        errno = EINVAL;
+        return -1;
+    }
+    unsigned int value = __atomic_load_n(
+        &semaphore->__value, __ATOMIC_RELAXED);
+    for (;;) {
+        if (value >= SEM_VALUE_MAX) {
+            errno = EOVERFLOW;
+            return -1;
+        }
+        if (__atomic_compare_exchange_n(
+                &semaphore->__value, &value, value + 1U, true,
+                __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+            int error = pthread_futex_error(mortos_futex(
+                const_cast<unsigned int *>(&semaphore->__value), 1, 1));
+            if (error != 0) {
+                errno = error;
+                return -1;
+            }
+            return 0;
+        }
+    }
+}
+
+extern "C" int sem_getvalue(sem_t *semaphore, int *value) {
+    if (!semaphore || !value) {
+        errno = EINVAL;
+        return -1;
+    }
+    *value = static_cast<int>(__atomic_load_n(
+        &semaphore->__value, __ATOMIC_ACQUIRE));
+    return 0;
 }

@@ -9,8 +9,8 @@ It is deliberately named a bootstrap sysroot rather than a complete libc.
 CRT startup establishes main-thread TLS, thread-local `errno`, and a stack
 canary; the first `unistd` and memory-mapping wrappers translate raw kernel
 results to POSIX conventions. `pthread_create` supplies protected workers with
-private stacks and TLS; mutexes, condition variables, and read/write locks use
-kernel scheduler futexes, and blocking join promptly reclaims each worker's scheduler slot,
+private stacks and TLS; mutexes, condition variables, read/write locks, and
+process-local POSIX semaphores use kernel scheduler futexes, and blocking join promptly reclaims each worker's scheduler slot,
 stack, and TLS. One-time initialization and 64 per-thread keys with exit
 destructors cover additional Node/V8 runtime requirements. The canonical Vex port still requires the rest
 of libc/libc++, dynamic loading, networking, and

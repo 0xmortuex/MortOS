@@ -30,7 +30,7 @@ The probe is compiled with full stack protection and verifies POSIX `read`
 error translation to `EBADF`. `pthread_create` provisions a private 64 KiB
 stack and TLS page, copies the process canary, and runs fully protected worker
 entrypoints with independent errno state. Futex-backed pthread mutexes,
-condition variables, and read/write locks provide the first POSIX
+condition variables, read/write locks, and process-local POSIX semaphores provide the first POSIX
 synchronization surface. Blocking
 `pthread_join` returns worker results and promptly reclaims the kernel task
 slot, stack mapping, and TLS mapping. `pthread_once` provides process-wide
