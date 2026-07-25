@@ -11,6 +11,8 @@ unsigned long mortos_fd_write(
 unsigned long mortos_read(
     unsigned long descriptor, void *buffer, unsigned long length);
 unsigned long mortos_close(unsigned long descriptor);
+unsigned long mortos_fcntl(
+    unsigned long descriptor, unsigned long command, unsigned long argument);
 unsigned long mortos_getpid(void);
 unsigned long mortos_gettid(void);
 unsigned long mortos_yield(void);

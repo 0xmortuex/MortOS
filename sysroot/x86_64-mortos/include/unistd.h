@@ -13,6 +13,8 @@ int close(int descriptor);
 pid_t getpid(void);
 pid_t gettid(void);
 off_t lseek(int descriptor, off_t offset, int origin);
+int pipe(int descriptors[2]);
+int pipe2(int descriptors[2], int flags);
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
 

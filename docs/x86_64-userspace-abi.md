@@ -101,6 +101,7 @@ The initial numeric assignments are:
 | 24 | `yield()` | Implemented with per-process saved context and round-robin resumption |
 | 39 | `getpid()` | Implemented for scheduled processes |
 | 60 | `exit(status)` | Implemented for the current process |
+| 72 | `fcntl(fd, command, argument)` | Implements `F_GETFD`/`F_SETFD` and `F_GETFL`/`F_SETFL` for cloexec, access-mode, and nonblocking descriptor state |
 | 79 | `getcwd(buffer, size)` | Returns the calling process's normalized VexFS working directory |
 | 80 | `chdir(path)` | Changes the shared process working directory after read-only VexFS directory validation |
 | 158 | `arch_prctl(code, address)` | Implements bounded `ARCH_SET_FS`/`ARCH_GET_FS`; FS base is restored per task |
@@ -121,7 +122,7 @@ The initial numeric assignments are:
 
 The remaining implementation order is:
 
-1. `dup`, `fcntl`, descriptor flags, and signal interruption.
+1. `dup`, transferable descriptor references, and signal interruption.
 2. File-backed mappings, shared memory, and page-fault reporting.
 3. `pwrite`, `fsync`, persistent writable storage, and shared file mapping.
 4. `spawn`, `execve`, `wait`, process groups, thread join/cancellation, timed futex waits, and robust lists.

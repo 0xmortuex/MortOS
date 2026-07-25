@@ -49,6 +49,7 @@ let g_process_thread_seen64: [u8; 8] = [0; 8];
 let g_process_join_seen64: [u8; 8] = [0; 8];
 let g_process_handle_owner64: [u32; 8] = [0; 8];
 let g_process_pipe_seen64: [u8; 8] = [0; 8];
+let g_process_fcntl_seen64: [u8; 8] = [0; 8];
 let g_process_futex_seen64: [u8; 8] = [0; 8];
 let g_process_futex_timeout_seen64: [u8; 8] = [0; 8];
 let g_process_poll_seen64: [u8; 8] = [0; 8];
@@ -762,6 +763,7 @@ fn process_create64(
             g_process_join_seen64[slot] = 0;
             g_process_handle_owner64[slot] = slot;
             g_process_pipe_seen64[slot] = 0;
+            g_process_fcntl_seen64[slot] = 0;
             g_process_futex_seen64[slot] = 0;
             g_process_futex_timeout_seen64[slot] = 0;
             g_process_poll_seen64[slot] = 0;
@@ -2012,7 +2014,7 @@ fn process_openat64(
     mode: u64
 ) -> u64 {
     if g_current_process64 >= 8 || !g_vexfs_ready64
-        || (flags & ~(0x90000 as u64)) != 0 {
+        || (flags & ~(0x90800 as u64)) != 0 {
         return ~(21 as u64);                    // -EINVAL
     }
     let length: u64 = user_cstring_length64(path);
@@ -2059,6 +2061,7 @@ fn process_openat64(
                 *((destination + resolved_length) as *u8) = 0;
             }
             g_handle_position64[handle] = 0;
+            g_handle_flags64[handle] = flags as u32;
             g_process_vexfs_seen64[owner] = 1;
             return descriptor as u64;
         }
@@ -2480,6 +2483,78 @@ fn process_close64(descriptor: u64) -> u64 {
     return result;
 }
 
+fn process_fcntl64(
+    descriptor: u64,
+    command: u64,
+    argument: u64
+) -> u64 {
+    if g_current_process64 >= 8 || descriptor >= 8 {
+        return ~(8 as u64);                     // -EBADF
+    }
+    if descriptor == 1 {
+        if command == 1 {                       // F_GETFD
+            return 0;
+        }
+        if command == 2 {                       // F_SETFD
+            return 0;
+        }
+        if command == 3 {                       // F_GETFL
+            return 1;                           // O_WRONLY
+        }
+        if command == 4 {                       // F_SETFL
+            return 0;
+        }
+        return ~(21 as u64);                    // -EINVAL
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let handle: u32 = (owner * 8) + (descriptor as u32);
+    let kind: u8 = g_handle_type64[handle];
+    if kind == 0 {
+        return ~(8 as u64);
+    }
+    if command == 1 {                           // F_GETFD
+        if (g_handle_flags64[handle] & 0x80000) != 0 {
+            return 1;                           // FD_CLOEXEC
+        }
+        return 0;
+    }
+    if command == 2 {                           // F_SETFD
+        if (argument & 1) != 0 {
+            g_handle_flags64[handle] =
+                g_handle_flags64[handle] | 0x80000;
+        } else {
+            g_handle_flags64[handle] =
+                g_handle_flags64[handle] & ~(0x80000 as u32);
+        }
+        g_process_fcntl_seen64[owner] = 1;
+        return 0;
+    }
+    if command == 3 {                           // F_GETFL
+        let result: u64 = 0;
+        if kind == 3 {
+            result = 1;                         // O_WRONLY
+        } else if kind == 6 || kind == 7 {
+            result = 2;                         // O_RDWR
+        }
+        if (g_handle_flags64[handle] & 0x800) != 0 {
+            result = result | 0x800;            // O_NONBLOCK
+        }
+        return result;
+    }
+    if command == 4 {                           // F_SETFL
+        if (argument & 0x800) != 0 {
+            g_handle_flags64[handle] =
+                g_handle_flags64[handle] | 0x800;
+        } else {
+            g_handle_flags64[handle] =
+                g_handle_flags64[handle] & ~(0x800 as u32);
+        }
+        g_process_fcntl_seen64[owner] = 1;
+        return 0;
+    }
+    return ~(21 as u64);                        // -EINVAL
+}
+
 fn process_eventfd2_64(initial: u64, flags: u64) -> u64 {
     if g_current_process64 >= 8 || initial > 0xFFFFFFFF
         || (flags & ~(0x80801 as u64)) != 0 {
@@ -2504,7 +2579,8 @@ fn process_eventfd2_64(initial: u64, flags: u64) -> u64 {
 }
 
 fn process_pipe2_64(descriptors: u64, flags: u64) -> u64 {
-    if g_current_process64 >= 8 || flags != 0 {
+    if g_current_process64 >= 8
+        || (flags & ~(0x80800 as u64)) != 0 {
         return ~(21 as u64);                    // -EINVAL
     }
     if !user_range_writable64(descriptors, 8) {
@@ -2545,6 +2621,8 @@ fn process_pipe2_64(descriptors: u64, flags: u64) -> u64 {
     g_handle_object64[(owner * 8) + read_fd] = pipe;
     g_handle_type64[(owner * 8) + write_fd] = 3;
     g_handle_object64[(owner * 8) + write_fd] = pipe;
+    g_handle_flags64[(owner * 8) + read_fd] = flags as u32;
+    g_handle_flags64[(owner * 8) + write_fd] = flags as u32;
     *(descriptors as *u32) = read_fd;
     *((descriptors + 4) as *u32) = write_fd;
     g_process_pipe_seen64[owner] = 1;
@@ -3197,6 +3275,9 @@ fn syscall_dispatch64(
     if number == 3 {
         return process_close64(argument0);
     }
+    if number == 72 {
+        return process_fcntl64(argument0, argument1, argument2);
+    }
     if number == 5 {
         return process_fstat64(argument0, argument1);
     }
@@ -3513,6 +3594,7 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_tls_seen64[cxx_slot] != 0
                 && g_process_thread_seen64[cxx_slot] != 0
                 && g_process_pipe_seen64[cxx_slot] != 0
+                && g_process_fcntl_seen64[cxx_slot] != 0
                 && g_process_futex_seen64[cxx_slot] != 0
                 && g_process_poll_seen64[cxx_slot] != 0
                 && g_process_poll_block_seen64[cxx_slot] != 0
@@ -3547,6 +3629,8 @@ fn kmain64(multiboot_info: u64) {
                     "MORT64: timed futex deadline passed\r\n");
                 serial_write64(
                     "MORT64: timed pthread and semaphore passed\r\n");
+                serial_write64(
+                    "MORT64: POSIX fcntl descriptor flags passed\r\n");
                 serial_write64(
                     "MORT64: TLS errno and stack canary passed\r\n");
                 serial_write64(

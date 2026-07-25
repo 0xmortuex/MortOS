@@ -5,6 +5,7 @@
 // protector canary sourced from the kernel-provided AT_RANDOM bytes.
 
 #include <errno.h>
+#include <fcntl.h>
 #include <mortos/syscall.h>
 #include <pthread.h>
 #include <semaphore.h>
@@ -88,6 +89,45 @@ extern "C" ssize_t write(
 extern "C" int close(int descriptor) {
     return static_cast<int>(posix_result(
         mortos_close(static_cast<unsigned long>(descriptor))));
+}
+
+extern "C" int fcntl(int descriptor, int command, ...) {
+    unsigned long argument = 0;
+    if (command == F_SETFD || command == F_SETFL) {
+        __builtin_va_list arguments;
+        __builtin_va_start(arguments, command);
+        argument = static_cast<unsigned long>(
+            __builtin_va_arg(arguments, int));
+        __builtin_va_end(arguments);
+    }
+    return static_cast<int>(posix_result(mortos_fcntl(
+        static_cast<unsigned long>(descriptor),
+        static_cast<unsigned long>(command), argument)));
+}
+
+extern "C" int openat(
+    int directory,
+    const char *path,
+    int flags,
+    ...
+) {
+    return static_cast<int>(posix_result(mortos_openat(
+        static_cast<unsigned long>(directory), path,
+        static_cast<unsigned long>(flags), 0)));
+}
+
+extern "C" int open(const char *path, int flags, ...) {
+    return openat(AT_FDCWD, path, flags, 0);
+}
+
+extern "C" int pipe2(int descriptors[2], int flags) {
+    return static_cast<int>(posix_result(mortos_pipe2(
+        reinterpret_cast<unsigned int *>(descriptors),
+        static_cast<unsigned long>(flags))));
+}
+
+extern "C" int pipe(int descriptors[2]) {
+    return pipe2(descriptors, 0);
 }
 
 extern "C" pid_t getpid() {

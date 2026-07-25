@@ -3,6 +3,7 @@
 
 #include <mortos/syscall.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
@@ -531,7 +532,18 @@ extern "C" int main(int argc, char **argv, char **envp) {
 
     unsigned int pipe_descriptors[2] = {};
     char pipe_result[sizeof(pipe_message)] = {};
-    if (mortos_pipe2(pipe_descriptors, 0) != 0) {
+    int flag_pipe[2] = {};
+    if (pipe2(flag_pipe, O_NONBLOCK | O_CLOEXEC) != 0
+        || fcntl(flag_pipe[0], F_GETFD) != FD_CLOEXEC
+        || fcntl(flag_pipe[1], F_GETFD) != FD_CLOEXEC
+        || fcntl(flag_pipe[0], F_GETFL) != O_NONBLOCK
+        || fcntl(flag_pipe[1], F_GETFL) != (O_WRONLY | O_NONBLOCK)
+        || fcntl(flag_pipe[0], F_SETFD, 0) != 0
+        || fcntl(flag_pipe[0], F_SETFL, 0) != 0
+        || fcntl(flag_pipe[0], F_GETFD) != 0
+        || fcntl(flag_pipe[0], F_GETFL) != O_RDONLY
+        || close(flag_pipe[0]) != 0 || close(flag_pipe[1]) != 0
+        || mortos_pipe2(pipe_descriptors, 0) != 0) {
         return 11;
     }
     PipeWorkerArguments pipe_arguments = {pipe_descriptors[1]};

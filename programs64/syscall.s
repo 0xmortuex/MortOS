@@ -138,6 +138,14 @@ mortos_close:
     ret
 .size mortos_close, . - mortos_close
 
+.global mortos_fcntl
+.type mortos_fcntl, @function
+mortos_fcntl:
+    mov $72, %rax                  /* SYS_fcntl */
+    syscall
+    ret
+.size mortos_fcntl, . - mortos_fcntl
+
 .global mortos_pipe2
 .type mortos_pipe2, @function
 mortos_pipe2:
