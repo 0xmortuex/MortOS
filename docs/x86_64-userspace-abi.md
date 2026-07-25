@@ -16,8 +16,11 @@ gateway are boot-tested. A native Ethernet/IPv4/UDP DHCP Discover/Offer then
 records the leased address, router, DNS server, and subnet mask. This proves
 hardware and dynamic IPv4 configuration. The kernel then ARP-resolves that DNS
 server, sends an A-record query, validates its transaction and flags, and
-walks bounded compressed names to extract the answer. The POSIX socket layer
-and TCP remain the next networking stages.
+walks bounded compressed names to extract the answer. It then ARP-resolves the
+leased default gateway, sends a checksummed TCP SYN to that resolved host,
+strictly validates the returned SYN-ACK, and sends the final ACK. This proves
+the native TCP packet path; a stateful stream engine and POSIX socket ABI
+remain the next networking stages.
 
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,

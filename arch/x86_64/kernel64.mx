@@ -118,6 +118,7 @@ let g_dhcp_dns64: [u8; 4] = [0; 4];
 let g_dhcp_mask64: [u8; 4] = [0; 4];
 let g_dns_mac64: [u8; 6] = [0; 6];
 let g_dns_answer64: [u8; 4] = [0; 4];
+let g_gateway_mac64: [u8; 6] = [0; 6];
 let g_thread_exit_seen64: bool = false;
 let g_vexfs_image64: u64 = 0;
 let g_vexfs_size64: u64 = 0;
@@ -718,8 +719,12 @@ fn rtl8139_dhcp_probe64() -> bool {
 
 fn rtl8139_arp_resolve64(
     target_ip: u64,
-    output_mac: u64
+    output_mac: u64,
+    descriptor: u32
 ) -> bool {
+    if descriptor >= 4 {
+        return false;
+    }
     let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
         & ~(3 as u64);
     let index: u32 = 0;
@@ -751,8 +756,12 @@ fn rtl8139_arp_resolve64(
             *((target_ip + (index as u64)) as *u8);
         index = index + 1;
     }
-    outl(g_rtl8139_io64 + 0x2C, frame as u32); // fresh descriptor 3
-    outl(g_rtl8139_io64 + 0x1C, 60);
+    outl(
+        g_rtl8139_io64 + (0x20 as u16) + ((descriptor * 4) as u16),
+        frame as u32);
+    outl(
+        g_rtl8139_io64 + (0x10 as u16) + ((descriptor * 4) as u16),
+        60);
     let guard: u32 = 0;
     while guard < 2000000 {
         let length: u32 = rtl8139_poll_receive64(
@@ -872,7 +881,7 @@ fn dns_extract_a64(message: u64, length: u32) -> bool {
 
 fn rtl8139_dns_probe64() -> bool {
     if !rtl8139_arp_resolve64(
-            &g_dhcp_dns64 as u64, &g_dns_mac64 as u64) {
+            &g_dhcp_dns64 as u64, &g_dns_mac64 as u64, 3) {
         return false;
     }
     let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
@@ -975,6 +984,177 @@ fn rtl8139_dns_probe64() -> bool {
                         && dns_extract_a64(message, udp_length - 8) {
                         return true;
                     }
+                }
+            }
+        }
+        guard = guard + 1;
+    }
+    return false;
+}
+
+fn network_read16_64(address: u64) -> u16 {
+    return (((*(address as *u8)) as u16) << 8)
+        | ((*((address + 1) as *u8)) as u16);
+}
+
+fn network_read32_64(address: u64) -> u32 {
+    return (((*(address as *u8)) as u32) << 24)
+        | (((*((address + 1) as *u8)) as u32) << 16)
+        | (((*((address + 2) as *u8)) as u32) << 8)
+        | ((*((address + 3) as *u8)) as u32);
+}
+
+fn network_write16_64(address: u64, value: u16) {
+    *(address as *u8) = (value >> 8) as u8;
+    *((address + 1) as *u8) = value as u8;
+}
+
+fn network_write32_64(address: u64, value: u32) {
+    *(address as *u8) = (value >> 24) as u8;
+    *((address + 1) as *u8) = (value >> 16) as u8;
+    *((address + 2) as *u8) = (value >> 8) as u8;
+    *((address + 3) as *u8) = value as u8;
+}
+
+fn tcp_checksum64(ip: u64, tcp: u64, tcp_length: u32) -> u16 {
+    let sum: u32 = 0;
+    let offset: u32 = 12;
+    while offset < 20 {
+        sum = sum + (network_read16_64(ip + (offset as u64)) as u32);
+        offset = offset + 2;
+    }
+    sum = sum + 6 + tcp_length;                 // protocol + TCP length
+    offset = 0;
+    while offset + 1 < tcp_length {
+        sum = sum + (network_read16_64(
+            tcp + (offset as u64)) as u32);
+        offset = offset + 2;
+    }
+    if offset < tcp_length {
+        sum = sum
+            + (((*((tcp + (offset as u64)) as *u8)) as u32) << 8);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return (~sum) as u16;
+}
+
+fn rtl8139_tcp_control64(
+    flags: u8,
+    sequence: u32,
+    acknowledgement: u32,
+    descriptor: u32
+) -> bool {
+    if descriptor >= 4 {
+        return false;
+    }
+    let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
+        & ~(3 as u64);
+    let frame_length: u32 = 14 + 20 + 20;
+    let index: u32 = 0;
+    while index < 60 {
+        *((frame + (index as u64)) as *u8) = 0;
+        index = index + 1;
+    }
+    index = 0;
+    while index < 6 {
+        *((frame + (index as u64)) as *u8) = g_gateway_mac64[index];
+        *((frame + 6 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
+        index = index + 1;
+    }
+    *((frame + 12) as *u8) = 0x08;
+    *((frame + 13) as *u8) = 0;
+    let ip: u64 = frame + 14;
+    *((ip + 0) as *u8) = 0x45;
+    network_write16_64(ip + 2, 40);
+    network_write16_64(ip + 4, 0x4D54);
+    network_write16_64(ip + 6, 0x4000);
+    *((ip + 8) as *u8) = 64;
+    *((ip + 9) as *u8) = 6;
+    index = 0;
+    while index < 4 {
+        *((ip + 12 + (index as u64)) as *u8) = g_dhcp_address64[index];
+        *((ip + 16 + (index as u64)) as *u8) = g_dns_answer64[index];
+        index = index + 1;
+    }
+    let ip_checksum: u16 = ipv4_checksum64(ip, 20);
+    network_write16_64(ip + 10, ip_checksum);
+    let tcp: u64 = ip + 20;
+    network_write16_64(tcp + 0, 40000);
+    network_write16_64(tcp + 2, 80);
+    network_write32_64(tcp + 4, sequence);
+    network_write32_64(tcp + 8, acknowledgement);
+    *((tcp + 12) as *u8) = 0x50;
+    *((tcp + 13) as *u8) = flags;
+    network_write16_64(tcp + 14, 64240);
+    network_write16_64(tcp + 16, 0);
+    network_write16_64(tcp + 16, tcp_checksum64(ip, tcp, 20));
+    outl(
+        g_rtl8139_io64 + (0x20 as u16) + ((descriptor * 4) as u16),
+        frame as u32);
+    outl(
+        g_rtl8139_io64 + (0x10 as u16) + ((descriptor * 4) as u16),
+        frame_length);
+    return true;
+}
+
+fn rtl8139_tcp_probe64() -> bool {
+    if !rtl8139_arp_resolve64(
+            &g_dhcp_gateway64 as u64,
+            &g_gateway_mac64 as u64,
+            1) {
+        return false;
+    }
+    let initial_sequence: u32 = 0x4D4F5254;
+    if !rtl8139_tcp_control64(0x02, initial_sequence, 0, 2) {
+        return false;
+    }
+    let guard: u32 = 0;
+    while guard < 8000000 {
+        let length: u32 = rtl8139_poll_receive64(
+            &g_rtl8139_rx_probe64 as u64, 1536);
+        if length >= 14 + 20 + 20 {
+            let packet: u64 = &g_rtl8139_rx_probe64 as u64;
+            let ip: u64 = packet + 14;
+            let ip_header: u32 = (((*(ip as *u8)) & 0x0F) as u32) * 4;
+            let total_length: u32 = network_read16_64(ip + 2) as u32;
+            if *((packet + 12) as *u8) == 0x08
+                && *((packet + 13) as *u8) == 0
+                && ip_header >= 20 && total_length >= ip_header + 20
+                && total_length <= length - 14
+                && *((ip + 9) as *u8) == 6
+                && ipv4_checksum64(ip, ip_header) == 0 {
+                let matches: bool = true;
+                let index: u32 = 0;
+                while matches && index < 4 {
+                    if *((ip + 12 + (index as u64)) as *u8)
+                            != g_dns_answer64[index]
+                        || *((ip + 16 + (index as u64)) as *u8)
+                            != g_dhcp_address64[index] {
+                        matches = false;
+                    }
+                    index = index + 1;
+                }
+                let tcp: u64 = ip + (ip_header as u64);
+                let tcp_length: u32 = total_length - ip_header;
+                let tcp_header: u32 =
+                    ((*((tcp + 12) as *u8) >> 4) as u32) * 4;
+                if matches
+                    && network_read16_64(tcp) == 80
+                    && network_read16_64(tcp + 2) == 40000
+                    && (network_read16_64(ip + 6) & 0x3FFF) == 0
+                    && tcp_header >= 20 && tcp_header <= tcp_length
+                    && (*((tcp + 13) as *u8) & 0x12) == 0x12
+                    && (*((tcp + 13) as *u8) & 0x04) == 0
+                    && network_read32_64(tcp + 8) == initial_sequence + 1
+                    && tcp_checksum64(ip, tcp, tcp_length) == 0 {
+                    let remote_sequence: u32 = network_read32_64(tcp + 4);
+                    return rtl8139_tcp_control64(
+                        0x10,
+                        initial_sequence + 1,
+                        remote_sequence + 1,
+                        3);
                 }
             }
         }
@@ -4263,6 +4443,13 @@ fn kmain64(multiboot_info: u64) {
         } else {
             serial_write64(
                 "MORT64 ERROR: UDP DNS lookup failed\r\n");
+        }
+        if rtl8139_tcp_probe64() {
+            serial_write64(
+                "MORT64: TCP SYN handshake passed\r\n");
+        } else {
+            serial_write64(
+                "MORT64 ERROR: TCP handshake failed\r\n");
         }
         asm("sti");
         serial_write64("MORT64: PIT timer interrupts active\r\n");
