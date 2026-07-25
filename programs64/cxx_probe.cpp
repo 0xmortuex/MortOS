@@ -807,7 +807,23 @@ extern "C" int main(int argc, char **argv, char **envp) {
     ssize_t http_bytes = 0;
     if (write(
             connected_socket, http_request,
-            sizeof(http_request) - 1) != sizeof(http_request) - 1
+            sizeof(http_request) - 1) != sizeof(http_request) - 1) {
+        return 19;
+    }
+    int network_epoll = epoll_create1(EPOLL_CLOEXEC);
+    static struct epoll_event network_interest = {};
+    static struct epoll_event network_readiness = {};
+    network_interest.events = EPOLLIN;
+    network_interest.data.u64 = 0x5443504854545055UL;
+    if (network_epoll < 0
+        || epoll_ctl(
+            network_epoll, EPOLL_CTL_ADD, connected_socket,
+            &network_interest) != 0
+        || epoll_wait(
+            network_epoll, &network_readiness, 1, 1000) != 1
+        || (network_readiness.events & EPOLLIN) == 0
+        || network_readiness.data.u64 != 0x5443504854545055UL
+        || close(network_epoll) != 0
         || (http_bytes = read(
                 connected_socket, http_response,
                 sizeof(http_response))) <= 0

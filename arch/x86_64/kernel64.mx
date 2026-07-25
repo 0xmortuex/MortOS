@@ -146,6 +146,7 @@ let g_socket_rx_read64: [u32; 4] = [0; 4];
 let g_socket_rx_count64: [u32; 4] = [0; 4];
 let g_socket_rx_storage64: [u8; 32768] = [0; 32768];
 let g_process_socket_transfer_seen64: [u8; 8] = [0; 8];
+let g_process_socket_wait_seen64: [u8; 8] = [0; 8];
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
@@ -1753,6 +1754,7 @@ fn process_create64(
             g_process_socket_seen64[slot] = 0;
             g_process_connect_seen64[slot] = 0;
             g_process_socket_transfer_seen64[slot] = 0;
+            g_process_socket_wait_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_join_status64[slot] = 0;
@@ -3915,7 +3917,6 @@ fn socket_pump_receive64(socket: u32) -> bool {
     if (flags & 0x04) != 0 {
         g_socket_error64[socket] = 104;          // ECONNRESET
         g_socket_state64[socket] = 4;
-        wake_poll_waiters64();
         return true;
     }
     let received_sequence: u32 = network_read32_64(tcp + 4);
@@ -3969,9 +3970,6 @@ fn socket_pump_receive64(socket: u32) -> bool {
             g_socket_send_sequence64[socket],
             g_socket_receive_sequence64[socket],
             0, 0, 0);
-    }
-    if changed {
-        wake_poll_waiters64();
     }
     return changed;
 }
@@ -4275,6 +4273,11 @@ fn descriptor_revents64(
             returned = returned | 4;
         }
     } else if kind == 8 && object < 4 {
+        g_process_socket_wait_seen64[owner] = 1;
+        if g_socket_state64[object] == 2
+            && g_socket_rx_count64[object] == 0 {
+            socket_pump_receive64(object);
+        }
         if (events & 1) != 0
             && (g_socket_rx_count64[object] != 0
                 || g_socket_state64[object] == 3) {
@@ -4359,6 +4362,11 @@ fn process_poll64(pollfds: u64, count: u64, timeout: u64) -> u64 {
                         returned = returned | 4;// eventfd POLLOUT
                     }
                 } else if kind == 8 {
+                    if pipe < 4
+                        && g_socket_state64[pipe] == 2
+                        && g_socket_rx_count64[pipe] == 0 {
+                        socket_pump_receive64(pipe);
+                    }
                     if pipe < 4 && (events & 1) != 0
                         && (g_socket_rx_count64[pipe] != 0
                             || g_socket_state64[pipe] == 3) {
@@ -4558,6 +4566,50 @@ fn task_wait_return64(slot: u32, result: u64) {
     g_process_state64[slot] = 1;
 }
 
+fn poll_watches_socket64(pollfds: u64, count: u64) -> bool {
+    if g_current_process64 >= 8 || count > 8
+        || (count != 0
+            && !user_range_readable64(pollfds, count * 8)) {
+        return false;
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let item: u64 = 0;
+    while item < count {
+        let descriptor: i32 = *((pollfds + (item * 8)) as *i32);
+        if descriptor >= 0 && descriptor < 8
+            && g_handle_type64[
+                (owner * 8) + (descriptor as u32)] == 8 {
+            return true;
+        }
+        item = item + 1;
+    }
+    return false;
+}
+
+fn epoll_watches_socket64(descriptor: u64) -> bool {
+    if g_current_process64 >= 8 || descriptor >= 8 {
+        return false;
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let epoll_handle: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[epoll_handle] != 7 {
+        return false;
+    }
+    let watch: u32 = 0;
+    while watch < 8 {
+        let index: u32 = (epoll_handle * 8) + watch;
+        if g_epoll_used64[index] != 0 {
+            let target: u32 =
+                (owner * 8) + g_epoll_descriptor64[index];
+            if target < 64 && g_handle_type64[target] == 8 {
+                return true;
+            }
+        }
+        watch = watch + 1;
+    }
+    return false;
+}
+
 fn on_poll_wait64(pollfds: u64, count: u64, timeout: u64) -> u64 {
     let direct_bit: u64 = (1 as u64) << 63;
     let error_bit: u64 = (1 as u64) << 62;
@@ -4568,6 +4620,18 @@ fn on_poll_wait64(pollfds: u64, count: u64, timeout: u64) -> u64 {
     }
     if result != 0 {
         return direct_bit | result;
+    }
+    if poll_watches_socket64(pollfds, count) {
+        let guard: u32 = 0;
+        while guard < 8000000 {
+            let network_result: u64 =
+                process_poll64(pollfds, count, 0);
+            if network_result != 0 {
+                return direct_bit | network_result;
+            }
+            guard = guard + 1;
+        }
+        return direct_bit;
     }
     if timeout != ~(0 as u64)
         && timeout > 0x7FFFFFFFFFFFFFFF {
@@ -4614,6 +4678,18 @@ fn on_epoll_wait64(
     }
     if result != 0 {
         return direct_bit | result;
+    }
+    if epoll_watches_socket64(epoll_descriptor) {
+        let guard: u32 = 0;
+        while guard < 8000000 {
+            let network_result: u64 = process_epoll_wait64(
+                epoll_descriptor, events, maxevents, 0);
+            if network_result != 0 {
+                return direct_bit | network_result;
+            }
+            guard = guard + 1;
+        }
+        return direct_bit;
     }
     if timeout != ~(0 as u64)
         && timeout > 0x7FFFFFFFFFFFFFFF {
@@ -5148,6 +5224,7 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_socket_seen64[cxx_slot] != 0
                 && g_process_connect_seen64[cxx_slot] != 0
                 && g_process_socket_transfer_seen64[cxx_slot] != 0
+                && g_process_socket_wait_seen64[cxx_slot] != 0
                 && g_process_join_seen64[cxx_slot] != 0
                 && g_process_futex_timeout_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
@@ -5179,6 +5256,8 @@ fn kmain64(multiboot_info: u64) {
                     "MORT64: POSIX TCP connect handshake passed\r\n");
                 serial_write64(
                     "MORT64: POSIX TCP HTTP stream transfer passed\r\n");
+                serial_write64(
+                    "MORT64: POSIX TCP epoll readiness passed\r\n");
                 serial_write64(
                     "MORT64: TLS errno and stack canary passed\r\n");
                 serial_write64(

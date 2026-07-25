@@ -18,6 +18,7 @@ of libc/libc++, although descriptor creation/flag control, CMOS-anchored realtim
 scheduler-backed sleep plus POSIX poll/epoll/eventfd wrappers are now present.
 IPv4 stream sockets also provide descriptor creation, standard `sockaddr_in`
 connect, flags, `SO_TYPE`, `SO_ERROR`, readiness, buffered `read`/`write`,
-FIN/RST state, and cleanup. Retransmission and richer socket calls remain in
+FIN/RST state, and cleanup. TCP receive also drives `poll`/`epoll`, including
+opaque epoll user data. Retransmission and richer socket calls remain in
 progress. Dynamic loading and device/window APIs remain incomplete.
 Raw calls stay available under `<mortos/syscall.h>`.
