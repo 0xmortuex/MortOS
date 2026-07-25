@@ -39,6 +39,8 @@ extern "C" unsigned long mortos_getdents64(
     unsigned long, void *, unsigned long);
 extern "C" unsigned long mortos_getcwd(void *, unsigned long);
 extern "C" unsigned long mortos_chdir(const char *);
+extern "C" unsigned long mortos_getrandom(
+    void *, unsigned long, unsigned long);
 extern "C" unsigned long mortos_lseek(
     unsigned long, unsigned long, unsigned long);
 extern "C" unsigned long mortos_pread(
@@ -161,6 +163,27 @@ extern "C" int main() {
         return 6;
     }
     delete widget;
+
+    unsigned char random_first[32] = {};
+    unsigned char random_second[32] = {};
+    if (mortos_getrandom(random_first, sizeof(random_first), 0)
+            != sizeof(random_first)
+        || mortos_getrandom(random_second, sizeof(random_second), 1)
+            != sizeof(random_second)) {
+        return 17;
+    }
+    unsigned char random_any = 0;
+    bool random_differs = false;
+    for (unsigned long index = 0; index < sizeof(random_first); ++index) {
+        random_any = static_cast<unsigned char>(
+            random_any | random_first[index] | random_second[index]);
+        if (random_first[index] != random_second[index]) {
+            random_differs = true;
+        }
+    }
+    if (random_any == 0 || !random_differs) {
+        return 17;
+    }
 
     unsigned long high_mapping = reinterpret_cast<unsigned long>(
         mortos_mmap(

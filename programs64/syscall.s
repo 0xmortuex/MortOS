@@ -212,6 +212,14 @@ mortos_chdir:
     ret
 .size mortos_chdir, . - mortos_chdir
 
+.global mortos_getrandom
+.type mortos_getrandom, @function
+mortos_getrandom:
+    mov $318, %rax                 /* SYS_getrandom */
+    syscall
+    ret
+.size mortos_getrandom, . - mortos_getrandom
+
 .global mortos_lseek
 .type mortos_lseek, @function
 mortos_lseek:

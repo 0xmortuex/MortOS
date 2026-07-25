@@ -90,6 +90,8 @@ let g_vexfs_image64: u64 = 0;
 let g_vexfs_size64: u64 = 0;
 let g_vexfs_count64: u32 = 0;
 let g_vexfs_ready64: bool = false;
+let g_entropy_ready64: bool = false;
+let g_process_entropy_seen64: [u8; 8] = [0; 8];
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
@@ -107,6 +109,8 @@ extern fn mort64_enter_user(entry: u64, stack_top: u64, page_root: u64);
 extern fn mort64_resume_user(context: u64, page_root: u64);
 extern fn mort64_flush_tlb();
 extern fn mort64_set_user_fs(address: u64);
+extern fn mort64_rdrand_supported() -> u64;
+extern fn mort64_rdrand_store(output: u64) -> u64;
 extern fn mort64_vexfs_image() -> u64;
 extern fn mort64_vexfs_image_size() -> u64;
 
@@ -525,6 +529,7 @@ fn process_create64(image: u64, image_size: u64) -> u32 {
             g_process_cwd64[(slot * 257) + 1] = 0;
             g_process_path_length64[slot] = 0;
             g_process_path_error64[slot] = 0;
+            g_process_entropy_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_pollfds64[slot] = 0;
@@ -2357,6 +2362,47 @@ fn wake_poll_timeouts64() {
     }
 }
 
+fn process_getrandom64(
+    buffer: u64,
+    length: u64,
+    flags: u64
+) -> u64 {
+    if g_current_process64 >= 8 || (flags & ~(3 as u64)) != 0 {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if !g_entropy_ready64 {
+        return ~(4 as u64);                     // -EIO, fail closed
+    }
+    if length > 0x00200000
+        || !user_range_writable64(buffer, length) {
+        return ~(13 as u64);                    // -EFAULT
+    }
+    let written: u64 = 0;
+    while written < length {
+        let word: u64 = 0;
+        if mort64_rdrand_store(&word as u64) == 0 {
+            if written != 0 {
+                return written;
+            }
+            return ~(10 as u64);                // -EAGAIN
+        }
+        let count: u64 = length - written;
+        if count > 8 {
+            count = 8;
+        }
+        let byte: u64 = 0;
+        while byte < count {
+            *((buffer + written + byte) as *u8) =
+                ((word >> ((byte as u32) * 8)) & 0xFF) as u8;
+            byte = byte + 1;
+        }
+        written = written + count;
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    g_process_entropy_seen64[owner] = 1;
+    return written;
+}
+
 fn syscall_dispatch64(
     number: u64,
     argument0: u64,
@@ -2421,6 +2467,9 @@ fn syscall_dispatch64(
     }
     if number == 217 {
         return process_getdents64(argument0, argument1, argument2);
+    }
+    if number == 318 {
+        return process_getrandom64(argument0, argument1, argument2);
     }
     if number == 1 {
         if argument0 != 1 {
@@ -2549,6 +2598,14 @@ fn kmain64(multiboot_info: u64) {
 
     if mort64_cpu_init() != 0 {
         serial_write64("MORT64: GDT TSS IDT and SYSCALL active\r\n");
+        g_entropy_ready64 = mort64_rdrand_supported() != 0;
+        if g_entropy_ready64 {
+            serial_write64(
+                "MORT64: hardware entropy source active\r\n");
+        } else {
+            serial_write64(
+                "MORT64 ERROR: hardware entropy unavailable\r\n");
+        }
         mort64_idt_self_test();
         if g_breakpoint_seen64 {
             serial_write64("MORT64: IDT breakpoint self-test passed\r\n");
@@ -2663,7 +2720,10 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_vexmmap_seen64[cxx_slot] != 0
                 && g_process_wide_mmap_seen64[cxx_slot] != 0
                 && g_process_cwd_seen64[cxx_slot] != 0
+                && g_process_entropy_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
+                serial_write64(
+                    "MORT64: getrandom entropy ABI passed\r\n");
                 serial_write64(
                     "MORT64: relative VexFS path resolution passed\r\n");
                 serial_write64(

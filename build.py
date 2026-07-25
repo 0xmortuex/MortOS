@@ -829,7 +829,8 @@ def run64():
     print("Booting the MORT OS x86-64 migration kernel. "
           "Serial boot status is printed in this terminal; Ctrl+C stops QEMU.")
     subprocess.run([
-        qemu, "-machine", "q35", "-m", "256M", "-display", "none",
+        qemu, "-machine", "q35", "-cpu", "max", "-m", "256M",
+        "-display", "none",
         "-serial", "stdio", "-monitor", "none", "-kernel", ELF64,
     ])
 

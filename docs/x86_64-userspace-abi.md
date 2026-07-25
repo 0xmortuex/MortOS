@@ -85,6 +85,7 @@ The initial numeric assignments are:
 | 257 | `openat(directory, path, flags, mode)` | Implements normalized absolute, `AT_FDCWD`, and directory-relative file/directory lookup in canonical VexFS |
 | 262 | `newfstatat(directory, path, status, flags)` | Reports regular-file or inferred-directory metadata for normalized absolute and relative VexFS paths |
 | 293 | `pipe2(descriptors, flags)` | Implements a bounded in-kernel pipe and two per-process descriptors |
+| 318 | `getrandom(buffer, length, flags)` | Fills validated user buffers from x86 RDRAND with bounded retries and fails closed when hardware entropy is unavailable |
 | 400 | `thread_create(entry, stack_top, argument, return_trampoline)` | MortOS-native validated thread primitive; shares the process address space and schedules a full independent context |
 
 The remaining implementation order is:
@@ -93,7 +94,7 @@ The remaining implementation order is:
 2. File-backed mappings, shared memory, and page-fault reporting.
 3. `pwrite`, `fsync`, persistent writable storage, and shared file mapping.
 4. `spawn`, `execve`, `wait`, process groups, thread join/cancellation, timed futex waits, and robust lists.
-5. `poll`, transferable local IPC, sockets, DNS-facing service IPC, and entropy.
+5. Transferable local IPC, sockets, DNS-facing service IPC, and additional entropy providers such as virtio-rng.
 6. Window surfaces, shared pixel buffers, input queues, clipboard, audio
    streams, device permissions, and GPU command submission.
 

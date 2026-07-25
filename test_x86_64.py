@@ -30,6 +30,7 @@ def main():
     cmd = [
         qemu,
         "-machine", "q35",
+        "-cpu", "max",
         "-m", "64M",
         "-display", "none",
         "-serial", "stdio",
@@ -53,6 +54,7 @@ def main():
         "MORT64: physical frame allocator passed",
         "MORT64: canonical VexFS image validated",
         "MORT64: GDT TSS IDT and SYSCALL active",
+        "MORT64: hardware entropy source active",
         "MORT64: IDT breakpoint self-test passed",
         "MORT64: PIT timer interrupts active",
         "MORT64: ELF64 loader mapped five isolated processes",
@@ -79,6 +81,7 @@ def main():
         "MORT64: private VexFS file mapping passed",
         "MORT64: lazy 1 GiB mmap arena passed",
         "MORT64: relative VexFS path resolution passed",
+        "MORT64: getrandom entropy ABI passed",
         "MORT64: futex wait and wake passed",
         "MORT64: blocking poll timeout passed",
         "MORT64: blocking poll event wake passed",

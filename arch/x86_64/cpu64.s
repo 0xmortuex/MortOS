@@ -232,6 +232,35 @@ mort64_set_user_fs:
     ret
 .size mort64_set_user_fs, . - mort64_set_user_fs
 
+.global mort64_rdrand_supported
+.type mort64_rdrand_supported, @function
+mort64_rdrand_supported:
+    push %rbx
+    mov $1, %eax
+    cpuid
+    bt $30, %ecx
+    setc %al
+    movzbl %al, %eax
+    pop %rbx
+    ret
+.size mort64_rdrand_supported, . - mort64_rdrand_supported
+
+.global mort64_rdrand_store
+.type mort64_rdrand_store, @function
+mort64_rdrand_store:
+    mov $10, %ecx
+.Lrdrand_retry:
+    rdrand %rax
+    jc .Lrdrand_ready
+    loop .Lrdrand_retry
+    xor %eax, %eax
+    ret
+.Lrdrand_ready:
+    mov %rax, (%rdi)
+    mov $1, %eax
+    ret
+.size mort64_rdrand_store, . - mort64_rdrand_store
+
 .type mort64_syscall_entry, @function
 mort64_syscall_entry:
     cmp $7, %rax                    /* blocking poll returns to scheduler */
