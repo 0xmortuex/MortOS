@@ -6,7 +6,8 @@ and archives the syscall, allocator/C++ ABI, and freestanding runtime objects
 as `lib/libmortos.a`.
 
 It is deliberately named a bootstrap sysroot rather than a complete libc.
-The canonical Vex port still requires full C/POSIX headers, thread-local
-`errno`, libc/libc++, dynamic loading, networking, and device/window APIs.
-Every exported bootstrap call returns the raw MortOS syscall result so callers
-can distinguish the complete `-errno` range without hidden global state.
+CRT startup establishes main-thread TLS, thread-local `errno`, and a stack
+canary; the first `unistd` and memory-mapping wrappers translate raw kernel
+results to POSIX conventions. The canonical Vex port still requires the rest
+of libc/libc++, pthread TLS lifecycle, dynamic loading, networking, and
+device/window APIs. Raw calls stay available under `<mortos/syscall.h>`.

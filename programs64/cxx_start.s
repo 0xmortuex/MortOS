@@ -7,6 +7,15 @@
 _user_start:
     mov %rsp, %r13
     and $-16, %rsp
+    mov %r13, %rdi
+    call mortos_runtime_start
+    test %rax, %rax
+    jnz .Lruntime_ready
+    mov $127, %edi
+    mov $60, %rax
+    syscall
+    ud2
+.Lruntime_ready:
     lea __init_array_start(%rip), %r12
     lea __init_array_end(%rip), %rbx
 .Lconstructor_loop:

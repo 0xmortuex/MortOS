@@ -49,6 +49,7 @@ controls, architecture, tests, and honest engine limits.
 - **Event-driven runtime foundation** — pipes and 64-bit `eventfd2` counters participate in blocking/timed `poll` and bounded `epoll`; ring-3 tests prove cross-thread wakeups, packed user tokens, interest modification/removal, and timeout delivery.
 - **System V process startup** — each ELF64 process enters on a guarded stack with `argc`, `argv`, `envp`, and a real auxiliary vector, including per-process hardware-randomized `AT_RANDOM` bytes used by libc stack-protector and runtime initialization.
 - **Reusable bootstrap SDK** — the x86-64 build installs platform headers, `crt1.o`, and `libmortos.a` under `build/x86_64/sysroot`; the boot-tested C++ process is compiled and linked through this sysroot rather than private one-off declarations.
+- **Real libc state** — CRT startup installs main-thread TLS, thread-local `errno`, and an `AT_RANDOM`-derived stack canary; the user probe runs with full stack protection and verifies raw kernel errors translate to POSIX `-1`/`EBADF`.
 - **A real Settings control center** — `F4` opens searchable system settings for personalization, display, clock, storage, Ethernet, apps, privacy, power, detected hardware, accessibility, diagnostics, and maintenance. Preferences persist per user in MortFS. See [the Settings guide](docs/settings.md).
 
 ![MORT OS Files app](docs/app-files.png)

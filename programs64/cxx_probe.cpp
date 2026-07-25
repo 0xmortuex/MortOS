@@ -2,7 +2,9 @@
 // startup, C allocation, C++ new/delete, and syscall linkage at ring 3.
 
 #include <mortos/syscall.h>
+#include <errno.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 using size_type = unsigned long;
 
@@ -43,7 +45,8 @@ struct EventWorkerArguments {
     unsigned long value;
 };
 
-extern "C" unsigned long thread_worker(void *opaque) {
+extern "C" __attribute__((no_stack_protector))
+unsigned long thread_worker(void *opaque) {
     if (mortos_getpid() != 5 || mortos_gettid() == 5) {
         return 30;
     }
@@ -58,7 +61,8 @@ extern "C" unsigned long thread_worker(void *opaque) {
     return 31;
 }
 
-extern "C" unsigned long pipe_worker(void *opaque) {
+extern "C" __attribute__((no_stack_protector))
+unsigned long pipe_worker(void *opaque) {
     if (mortos_yield() != 0) {
         return 40;
     }
@@ -72,7 +76,8 @@ extern "C" unsigned long pipe_worker(void *opaque) {
     return 32;
 }
 
-extern "C" unsigned long event_worker(void *opaque) {
+extern "C" __attribute__((no_stack_protector))
+unsigned long event_worker(void *opaque) {
     if (mortos_yield() != 0) {
         return 41;
     }
@@ -173,6 +178,12 @@ extern "C" int main(int argc, char **argv, char **envp) {
     if (!pagesize_found || !random_found || !exec_found || !auxiliary_end) {
         return 1;
     }
+    char invalid_read = 0;
+    errno = 0;
+    if (read(99, &invalid_read, 1) != -1
+        || errno != EBADF || getpid() != 5) {
+        return 19;
+    }
 
     auto *bytes = static_cast<unsigned char *>(malloc(32));
     if (!bytes) {
@@ -238,9 +249,19 @@ extern "C" int main(int argc, char **argv, char **envp) {
         return 15;
     }
 
+    unsigned long runtime_tls = 0;
+    if (mortos_arch_prctl(
+            0x1003, reinterpret_cast<unsigned long>(&runtime_tls)) != 0
+        || runtime_tls == 0) {
+        return 10;
+    }
     unsigned long tls = mortos_mmap(0, 4096, 3, 0x22, ~0UL, 0);
-    if (tls >= ~4095UL
-        || mortos_arch_prctl(0x1002, tls) != 0) {
+    if (tls >= ~4095UL) {
+        return 8;
+    }
+    *reinterpret_cast<unsigned long *>(tls + 40) =
+        *reinterpret_cast<unsigned long *>(runtime_tls + 40);
+    if (mortos_arch_prctl(0x1002, tls) != 0) {
         return 8;
     }
     mortos_fs_store(8, 0x544C5356414C5545UL);
@@ -277,8 +298,9 @@ extern "C" int main(int argc, char **argv, char **envp) {
     if (mortos_munmap(thread_stack, 8192) != 0) {
         return 9;
     }
-    if (mortos_arch_prctl(0x1002, 0) != 0
-        || mortos_munmap(tls, 4096) != 0) {
+    if (mortos_arch_prctl(0x1002, runtime_tls) != 0
+        || mortos_munmap(tls, 4096) != 0
+        || errno != EBADF) {
         return 10;
     }
 

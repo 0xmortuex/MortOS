@@ -5,7 +5,10 @@
 extern "C" {
 #endif
 
+#ifndef __MORTOS_SIZE_T_DEFINED
+#define __MORTOS_SIZE_T_DEFINED
 typedef unsigned long size_t;
+#endif
 
 void *malloc(size_t size);
 void free(void *pointer);

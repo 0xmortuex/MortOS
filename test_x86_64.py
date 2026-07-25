@@ -76,6 +76,7 @@ def main():
         "MORT64: timer preemption context switch passed",
         "MORT64 CXX RUNTIME OK",
         "MORT64: ELF argc envp auxv startup passed",
+        "MORT64: TLS errno and stack canary passed",
         "MORT64: canonical Vex asset filesystem passed",
         "MORT64: canonical Vex hierarchy stat passed",
         "MORT64: canonical Vex directory enumeration passed",

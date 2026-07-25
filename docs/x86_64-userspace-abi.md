@@ -24,9 +24,11 @@ Chromium.
 `build/x86_64/sysroot`: installed headers, `lib/crt1.o`, and
 `lib/libmortos.a`. The C++ conformance process is compiled against those
 installed headers and linked through that archive, so the sysroot itself is
-covered by the boot test. Its raw-call API intentionally remains under
-`<mortos/syscall.h>` until thread-local `errno` and the full POSIX libc surface
-are implemented.
+covered by the boot test. CRT startup installs a main-thread TLS page with an
+FS self pointer, thread-local `errno`, and an `AT_RANDOM`-derived stack canary.
+The probe is compiled with full stack protection and verifies POSIX `read`
+error translation to `EBADF`. Raw calls remain available under
+`<mortos/syscall.h>` while the rest of the POSIX libc surface is implemented.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
 Mort 0.39's hosted `net_*` intrinsic detection collides with MortOS's own

@@ -339,6 +339,7 @@ def build64():
     ]
     cxx_start_o = os.path.join(BUILD64, "user_cxx_start.o")
     cxx_runtime_o = os.path.join(BUILD64, "user_cxx_runtime.o")
+    libc_o = os.path.join(BUILD64, "user_libc.o")
     cxx_probe_o = os.path.join(BUILD64, "user_cxx_probe.o")
     subprocess.run([*cc, *asm_flags, "-c",
                     os.path.join(PROGRAMS64, "cxx_start.s"),
@@ -347,6 +348,10 @@ def build64():
                     os.path.join(PROGRAMS64, "cxx_runtime.cpp"),
                     "-o", cxx_runtime_o], check=True)
     subprocess.run([*cxx, *cxx_flags, "-c",
+                    os.path.join(PROGRAMS64, "libc.cpp"),
+                    "-o", libc_o], check=True)
+    probe_flags = [*cxx_flags, "-fstack-protector-all"]
+    subprocess.run([*cxx, *probe_flags, "-c",
                     os.path.join(PROGRAMS64, "cxx_probe.cpp"),
                     "-o", cxx_probe_o], check=True)
     crt1 = os.path.join(sysroot_lib, "crt1.o")
@@ -355,7 +360,7 @@ def build64():
     ar = cc[:-1] + ["ar"]
     subprocess.run([
         *ar, "rcs", libmortos,
-        user_syscall_o, cxx_runtime_o, user_runtime_o,
+        user_syscall_o, cxx_runtime_o, libc_o, user_runtime_o,
     ], check=True)
     subprocess.run([
         *cc, "-target", TARGET64, "-nostdlib", "-static", "-no-pie",

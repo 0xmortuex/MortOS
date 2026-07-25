@@ -3240,6 +3240,8 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_epoll_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
                 serial_write64(
+                    "MORT64: TLS errno and stack canary passed\r\n");
+                serial_write64(
                     "MORT64: ELF argc envp auxv startup passed\r\n");
                 serial_write64(
                     "MORT64: blocking epoll event loop passed\r\n");
