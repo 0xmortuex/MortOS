@@ -32,7 +32,9 @@ stack and TLS page, copies the process canary, and runs fully protected worker
 entrypoints with independent errno state. Futex-backed pthread mutexes and
 condition variables provide the first POSIX synchronization surface. Blocking
 `pthread_join` returns worker results and promptly reclaims the kernel task
-slot, stack mapping, and TLS mapping. Raw calls remain available under
+slot, stack mapping, and TLS mapping. `pthread_once` provides process-wide
+one-time initialization, while 64 thread-specific keys occupy independent TLS
+slots and run registered destructors before worker exit. Raw calls remain available under
 `<mortos/syscall.h>` while the rest of the POSIX libc surface is implemented.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
@@ -47,7 +49,9 @@ An explicit `MORT_HOME` can be used to test a corrected compiler.
   relocations and ASLR are available.
 - Application function calls: System V AMD64 ABI.
 - Stack: 16-byte aligned at call boundaries, grows downward, with a guard page.
-- Thread-local storage: `FS.base`; the kernel owns `GS.base`.
+- Thread-local storage: `FS.base`; the kernel owns `GS.base`. The bootstrap
+  TLS page stores its self pointer at `FS:0`, `errno` at `FS:8`, the stack
+  canary at `FS:40`, and 64 pthread key values beginning at `FS:64`.
 - Initial process stack: implemented as `argc`, `argv`, `envp`, then a
   16-byte-aligned ELF auxiliary vector carrying page size, clock tick,
   identity/security values, entry address, platform, executable name, and

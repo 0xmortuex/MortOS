@@ -36,6 +36,20 @@ struct __attribute__((packed)) EpollEvent {
 };
 
 static const char pipe_message[] = "descriptor-ipc";
+static pthread_once_t runtime_once = PTHREAD_ONCE_INIT;
+static unsigned int runtime_once_count;
+static unsigned long key_destructor_seen;
+
+static void initialize_runtime_once() {
+    __atomic_add_fetch(&runtime_once_count, 1U, __ATOMIC_RELEASE);
+}
+
+static void record_key_destructor(void *value) {
+    __atomic_store_n(
+        &key_destructor_seen,
+        reinterpret_cast<unsigned long>(value),
+        __ATOMIC_RELEASE);
+}
 
 struct PipeWorkerArguments {
     unsigned int write_descriptor;
@@ -50,6 +64,7 @@ struct ThreadSyncArguments {
     pthread_mutex_t *mutex;
     pthread_cond_t *condition;
     unsigned int *ready;
+    pthread_key_t key;
 };
 
 extern "C" void *thread_worker(void *opaque) {
@@ -64,6 +79,12 @@ extern "C" void *thread_worker(void *opaque) {
         return reinterpret_cast<void *>(30UL);
     }
     auto *arguments = static_cast<ThreadSyncArguments *>(opaque);
+    void *key_value = reinterpret_cast<void *>(0x99UL);
+    if (pthread_once(&runtime_once, initialize_runtime_once) != 0
+        || pthread_setspecific(arguments->key, key_value) != 0
+        || pthread_getspecific(arguments->key) != key_value) {
+        return reinterpret_cast<void *>(30UL);
+    }
     if (pthread_mutex_lock(arguments->mutex) != 0) {
         return reinterpret_cast<void *>(30UL);
     }
@@ -291,10 +312,18 @@ extern "C" int main(int argc, char **argv, char **envp) {
         return 9;
     }
     unsigned int thread_ready = 0;
+    pthread_key_t worker_key = 0;
+    void *main_key_value = reinterpret_cast<void *>(0x55UL);
+    if (pthread_key_create(&worker_key, record_key_destructor) != 0
+        || pthread_setspecific(worker_key, main_key_value) != 0
+        || pthread_getspecific(worker_key) != main_key_value
+        || pthread_once(&runtime_once, initialize_runtime_once) != 0) {
+        return 9;
+    }
     pthread_mutex_t thread_mutex = PTHREAD_MUTEX_INITIALIZER;
     pthread_cond_t thread_condition = PTHREAD_COND_INITIALIZER;
     ThreadSyncArguments thread_arguments = {
-        &thread_mutex, &thread_condition, &thread_ready};
+        &thread_mutex, &thread_condition, &thread_ready, worker_key};
     pthread_t thread_id = 0;
     if (pthread_mutex_lock(&thread_mutex) != 0
         || pthread_mutex_trylock(&thread_mutex) != EBUSY
@@ -316,7 +345,12 @@ extern "C" int main(int argc, char **argv, char **envp) {
     }
     void *thread_result = nullptr;
     if (pthread_join(thread_id, &thread_result) != 0
-        || thread_result != reinterpret_cast<void *>(31UL)) {
+        || thread_result != reinterpret_cast<void *>(31UL)
+        || __atomic_load_n(&runtime_once_count, __ATOMIC_ACQUIRE) != 1
+        || __atomic_load_n(&key_destructor_seen, __ATOMIC_ACQUIRE) != 0x99
+        || pthread_getspecific(worker_key) != main_key_value
+        || pthread_key_delete(worker_key) != 0
+        || pthread_setspecific(worker_key, nullptr) != EINVAL) {
         return 9;
     }
     pthread_t joined_thread = 0;

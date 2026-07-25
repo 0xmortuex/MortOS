@@ -149,6 +149,44 @@ struct PthreadRecord {
 };
 
 static PthreadRecord pthread_records[8] = {};
+static volatile unsigned long pthread_key_bitmap = 0;
+static volatile unsigned long pthread_key_ever_bitmap = 0;
+static void (*pthread_key_destructors[PTHREAD_KEYS_MAX])(void *) = {};
+
+static int pthread_futex_error(unsigned long result);
+
+static bool pthread_key_valid(pthread_key_t key) {
+    if (key >= PTHREAD_KEYS_MAX) {
+        return false;
+    }
+    unsigned long bitmap = __atomic_load_n(
+        &pthread_key_bitmap, __ATOMIC_ACQUIRE);
+    return (bitmap & (1UL << key)) != 0;
+}
+
+static void pthread_run_key_destructors() {
+    for (unsigned int pass = 0;
+         pass < PTHREAD_DESTRUCTOR_ITERATIONS;
+         ++pass) {
+        bool invoked = false;
+        for (pthread_key_t key = 0; key < PTHREAD_KEYS_MAX; ++key) {
+            if (!pthread_key_valid(key)) {
+                continue;
+            }
+            unsigned long offset = 64UL + (key * sizeof(unsigned long));
+            void *value = reinterpret_cast<void *>(mortos_fs_load(offset));
+            auto destructor = pthread_key_destructors[key];
+            if (value && destructor) {
+                mortos_fs_store(offset, 0);
+                destructor(value);
+                invoked = true;
+            }
+        }
+        if (!invoked) {
+            return;
+        }
+    }
+}
 
 extern "C" __attribute__((no_stack_protector))
 unsigned long mortos_pthread_start(void *opaque) {
@@ -160,7 +198,9 @@ unsigned long mortos_pthread_start(void *opaque) {
         return 126;
     }
     free(context);
-    return reinterpret_cast<unsigned long>(start(argument));
+    unsigned long result = reinterpret_cast<unsigned long>(start(argument));
+    pthread_run_key_destructors();
+    return result;
 }
 
 extern "C" int pthread_create(
@@ -277,6 +317,102 @@ extern "C" pthread_t pthread_self() {
 
 extern "C" int pthread_equal(pthread_t left, pthread_t right) {
     return left == right;
+}
+
+extern "C" int pthread_once(
+    pthread_once_t *once,
+    void (*initialize)()
+) {
+    if (!once || !initialize) {
+        return EINVAL;
+    }
+    for (;;) {
+        unsigned int state = __atomic_load_n(
+            &once->__state, __ATOMIC_ACQUIRE);
+        if (state == 2) {
+            return 0;
+        }
+        if (state == 0) {
+            unsigned int expected = 0;
+            if (__atomic_compare_exchange_n(
+                    &once->__state, &expected, 1U, false,
+                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                initialize();
+                __atomic_store_n(&once->__state, 2U, __ATOMIC_RELEASE);
+                int error = pthread_futex_error(mortos_futex(
+                    const_cast<unsigned int *>(&once->__state), 1, 8));
+                return error;
+            }
+            continue;
+        }
+        if (state != 1) {
+            return EINVAL;
+        }
+        int error = pthread_futex_error(mortos_futex(
+            const_cast<unsigned int *>(&once->__state), 0, 1));
+        if (error != 0 && error != EAGAIN) {
+            return error;
+        }
+    }
+}
+
+extern "C" int pthread_key_create(
+    pthread_key_t *key,
+    void (*destructor)(void *)
+) {
+    if (!key) {
+        return EINVAL;
+    }
+    for (pthread_key_t candidate = 0;
+         candidate < PTHREAD_KEYS_MAX;
+         ++candidate) {
+        unsigned long bit = 1UL << candidate;
+        unsigned long bitmap = __atomic_load_n(
+            &pthread_key_ever_bitmap, __ATOMIC_RELAXED);
+        while ((bitmap & bit) == 0) {
+            if (__atomic_compare_exchange_n(
+                    &pthread_key_ever_bitmap, &bitmap, bitmap | bit, true,
+                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                pthread_key_destructors[candidate] = destructor;
+                __atomic_fetch_or(
+                    &pthread_key_bitmap, bit, __ATOMIC_RELEASE);
+                *key = candidate;
+                return 0;
+            }
+        }
+    }
+    return EAGAIN;
+}
+
+extern "C" int pthread_key_delete(pthread_key_t key) {
+    if (!pthread_key_valid(key)) {
+        return EINVAL;
+    }
+    pthread_key_destructors[key] = nullptr;
+    __atomic_fetch_and(
+        &pthread_key_bitmap, ~(1UL << key), __ATOMIC_RELEASE);
+    return 0;
+}
+
+extern "C" void *pthread_getspecific(pthread_key_t key) {
+    if (!pthread_key_valid(key)) {
+        return nullptr;
+    }
+    return reinterpret_cast<void *>(
+        mortos_fs_load(64UL + (key * sizeof(unsigned long))));
+}
+
+extern "C" int pthread_setspecific(
+    pthread_key_t key,
+    const void *value
+) {
+    if (!pthread_key_valid(key)) {
+        return EINVAL;
+    }
+    mortos_fs_store(
+        64UL + (key * sizeof(unsigned long)),
+        reinterpret_cast<unsigned long>(value));
+    return 0;
 }
 
 static int pthread_futex_error(unsigned long result) {

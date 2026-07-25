@@ -2,6 +2,11 @@
 #define MORTOS_PTHREAD_H
 
 typedef unsigned long pthread_t;
+typedef unsigned int pthread_key_t;
+
+typedef struct {
+    volatile unsigned int __state;
+} pthread_once_t;
 
 typedef struct {
     volatile unsigned int __state;
@@ -13,6 +18,9 @@ typedef struct {
 
 #define PTHREAD_MUTEX_INITIALIZER {0}
 #define PTHREAD_COND_INITIALIZER {0}
+#define PTHREAD_ONCE_INIT {0}
+#define PTHREAD_KEYS_MAX 64
+#define PTHREAD_DESTRUCTOR_ITERATIONS 4
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,6 +34,11 @@ int pthread_create(
 int pthread_join(pthread_t thread, void **result);
 pthread_t pthread_self(void);
 int pthread_equal(pthread_t left, pthread_t right);
+int pthread_once(pthread_once_t *once, void (*initialize)(void));
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
+int pthread_key_delete(pthread_key_t key);
+void *pthread_getspecific(pthread_key_t key);
+int pthread_setspecific(pthread_key_t key, const void *value);
 
 int pthread_mutex_init(pthread_mutex_t *mutex, const void *attributes);
 int pthread_mutex_destroy(pthread_mutex_t *mutex);
