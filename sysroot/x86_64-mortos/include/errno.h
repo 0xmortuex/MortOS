@@ -20,6 +20,7 @@ int *__errno_location(void);
 #define EDEADLK 35
 #define EINVAL 22
 #define ENOSYS 38
+#define ENOTCONN 107
 #define EPERM 1
 #define ESRCH 3
 #define EOVERFLOW 75

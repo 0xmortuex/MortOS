@@ -19,8 +19,10 @@ server, sends an A-record query, validates its transaction and flags, and
 walks bounded compressed names to extract the answer. It then ARP-resolves the
 leased default gateway, sends a checksummed TCP SYN to that resolved host,
 strictly validates the returned SYN-ACK, and sends the final ACK. This proves
-the native TCP packet path; a stateful stream engine and POSIX socket ABI
-remain the next networking stages.
+the native TCP packet path. Linux-numbered `socket` and `getsockopt` syscalls
+now provide IPv4 stream descriptors with `SO_TYPE`, `SO_ERROR`,
+nonblocking/cloexec control, poll/epoll semantics, and deterministic cleanup.
+Connection state and stream transfer remain the next networking stages.
 
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,

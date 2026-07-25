@@ -138,6 +138,23 @@ mortos_close:
     ret
 .size mortos_close, . - mortos_close
 
+.global mortos_socket
+.type mortos_socket, @function
+mortos_socket:
+    mov $41, %rax                  /* SYS_socket */
+    syscall
+    ret
+.size mortos_socket, . - mortos_socket
+
+.global mortos_getsockopt
+.type mortos_getsockopt, @function
+mortos_getsockopt:
+    mov %rcx, %r10
+    mov $55, %rax                  /* SYS_getsockopt */
+    syscall
+    ret
+.size mortos_getsockopt, . - mortos_getsockopt
+
 .global mortos_fcntl
 .type mortos_fcntl, @function
 mortos_fcntl:

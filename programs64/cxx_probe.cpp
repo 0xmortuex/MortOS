@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -745,6 +746,33 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || mortos_close(relative_renderer) != 0
         || mortos_chdir(root_path) != 0) {
         return 16;
+    }
+
+    int stream_socket = socket(
+        AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    int socket_type = 0;
+    int socket_error = -1;
+    socklen_t socket_option_length = sizeof(socket_type);
+    struct pollfd socket_readiness = {stream_socket, POLLOUT, 0};
+    char socket_byte = 0;
+    if (stream_socket < 0
+        || fcntl(stream_socket, F_GETFD) != FD_CLOEXEC
+        || fcntl(stream_socket, F_GETFL) != (O_RDWR | O_NONBLOCK)
+        || getsockopt(
+            stream_socket, SOL_SOCKET, SO_TYPE,
+            &socket_type, &socket_option_length) != 0
+        || socket_type != SOCK_STREAM
+        || socket_option_length != sizeof(socket_type)
+        || getsockopt(
+            stream_socket, SOL_SOCKET, SO_ERROR,
+            &socket_error, &socket_option_length) != 0
+        || socket_error != 0
+        || poll(&socket_readiness, 1, 0) != 0
+        || socket_readiness.revents != 0
+        || read(stream_socket, &socket_byte, 1) != -1
+        || errno != ENOTCONN
+        || close(stream_socket) != 0) {
+        return 19;
     }
 
     static const char message[] = "MORT64 CXX RUNTIME OK\r\n";

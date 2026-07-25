@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -92,6 +93,26 @@ extern "C" ssize_t write(
 extern "C" int close(int descriptor) {
     return static_cast<int>(posix_result(
         mortos_close(static_cast<unsigned long>(descriptor))));
+}
+
+extern "C" int socket(int domain, int type, int protocol) {
+    return static_cast<int>(posix_result(mortos_socket(
+        static_cast<unsigned long>(domain),
+        static_cast<unsigned long>(type),
+        static_cast<unsigned long>(protocol))));
+}
+
+extern "C" int getsockopt(
+    int descriptor,
+    int level,
+    int option,
+    void *value,
+    socklen_t *length
+) {
+    return static_cast<int>(posix_result(mortos_getsockopt(
+        static_cast<unsigned long>(descriptor),
+        static_cast<unsigned long>(level),
+        static_cast<unsigned long>(option), value, length)));
 }
 
 extern "C" int fcntl(int descriptor, int command, ...) {
