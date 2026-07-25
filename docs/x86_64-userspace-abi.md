@@ -14,8 +14,10 @@ bus-master enablement, aligned TX/RX DMA buffers, MAC discovery, transmit
 completion, receive-ring ownership, and a validated ARP exchange with QEMU's
 gateway are boot-tested. A native Ethernet/IPv4/UDP DHCP Discover/Offer then
 records the leased address, router, DNS server, and subnet mask. This proves
-hardware and dynamic IPv4 configuration; the POSIX socket layer, DNS, and TCP
-remain the next networking stages.
+hardware and dynamic IPv4 configuration. The kernel then ARP-resolves that DNS
+server, sends an A-record query, validates its transaction and flags, and
+walks bounded compressed names to extract the answer. The POSIX socket layer
+and TCP remain the next networking stages.
 
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,

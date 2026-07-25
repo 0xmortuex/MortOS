@@ -63,6 +63,7 @@ def main():
         "MORT64: RTL8139 Ethernet DMA transmit passed",
         "MORT64: RTL8139 Ethernet ARP receive passed",
         "MORT64: IPv4 UDP DHCP lease passed",
+        "MORT64: UDP DNS A lookup passed",
         "MORT64: ELF64 loader mapped five isolated processes",
         "MORT64: syscall rejected supervisor pointer",
         "MORT64 USERSPACE OK",

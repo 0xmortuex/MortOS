@@ -116,6 +116,8 @@ let g_dhcp_address64: [u8; 4] = [0; 4];
 let g_dhcp_gateway64: [u8; 4] = [0; 4];
 let g_dhcp_dns64: [u8; 4] = [0; 4];
 let g_dhcp_mask64: [u8; 4] = [0; 4];
+let g_dns_mac64: [u8; 6] = [0; 6];
+let g_dns_answer64: [u8; 4] = [0; 4];
 let g_thread_exit_seen64: bool = false;
 let g_vexfs_image64: u64 = 0;
 let g_vexfs_size64: u64 = 0;
@@ -705,6 +707,273 @@ fn rtl8139_dhcp_probe64() -> bool {
                         && g_dhcp_address64[0] != 0 {
                         return true;
                     }
+                    }
+                }
+            }
+        }
+        guard = guard + 1;
+    }
+    return false;
+}
+
+fn rtl8139_arp_resolve64(
+    target_ip: u64,
+    output_mac: u64
+) -> bool {
+    let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
+        & ~(3 as u64);
+    let index: u32 = 0;
+    while index < 60 {
+        *((frame + (index as u64)) as *u8) = 0;
+        index = index + 1;
+    }
+    index = 0;
+    while index < 6 {
+        *((frame + (index as u64)) as *u8) = 0xFF;
+        *((frame + 6 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
+        *((frame + 22 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
+        index = index + 1;
+    }
+    *((frame + 12) as *u8) = 0x08;
+    *((frame + 13) as *u8) = 0x06;
+    *((frame + 14) as *u8) = 0;
+    *((frame + 15) as *u8) = 1;
+    *((frame + 16) as *u8) = 0x08;
+    *((frame + 17) as *u8) = 0;
+    *((frame + 18) as *u8) = 6;
+    *((frame + 19) as *u8) = 4;
+    *((frame + 20) as *u8) = 0;
+    *((frame + 21) as *u8) = 1;
+    index = 0;
+    while index < 4 {
+        *((frame + 28 + (index as u64)) as *u8) = g_dhcp_address64[index];
+        *((frame + 38 + (index as u64)) as *u8) =
+            *((target_ip + (index as u64)) as *u8);
+        index = index + 1;
+    }
+    outl(g_rtl8139_io64 + 0x2C, frame as u32); // fresh descriptor 3
+    outl(g_rtl8139_io64 + 0x1C, 60);
+    let guard: u32 = 0;
+    while guard < 2000000 {
+        let length: u32 = rtl8139_poll_receive64(
+            &g_rtl8139_rx_probe64 as u64, 1536);
+        if length >= 42 {
+            let packet: u64 = &g_rtl8139_rx_probe64 as u64;
+            let matches: bool = *((packet + 12) as *u8) == 0x08
+                && *((packet + 13) as *u8) == 0x06
+                && *((packet + 20) as *u8) == 0
+                && *((packet + 21) as *u8) == 2;
+            index = 0;
+            while matches && index < 4 {
+                if *((packet + 28 + (index as u64)) as *u8)
+                        != *((target_ip + (index as u64)) as *u8)
+                    || *((packet + 38 + (index as u64)) as *u8)
+                        != g_dhcp_address64[index] {
+                    matches = false;
+                }
+                index = index + 1;
+            }
+            if matches {
+                index = 0;
+                while index < 6 {
+                    *((output_mac + (index as u64)) as *u8) =
+                        *((packet + 22 + (index as u64)) as *u8);
+                    index = index + 1;
+                }
+                return true;
+            }
+        }
+        guard = guard + 1;
+    }
+    return false;
+}
+
+fn dns_skip_name64(message: u64, length: u32, cursor: u32) -> u32 {
+    let position: u32 = cursor;
+    let labels: u32 = 0;
+    while position < length && labels < 128 {
+        let size: u8 = *((message + (position as u64)) as *u8);
+        if (size & 0xC0) == 0xC0 {
+            if position + 2 > length {
+                return length + 1;
+            }
+            return position + 2;
+        }
+        if size == 0 {
+            return position + 1;
+        }
+        if size > 63 || position + 1 + (size as u32) > length {
+            return length + 1;
+        }
+        position = position + 1 + (size as u32);
+        labels = labels + 1;
+    }
+    return length + 1;
+}
+
+fn dns_extract_a64(message: u64, length: u32) -> bool {
+    if length < 12
+        || (*((message + 2) as *u8) & 0x80) == 0
+        || (*((message + 3) as *u8) & 0x0F) != 0 {
+        return false;
+    }
+    let questions: u32 =
+        (((*((message + 4) as *u8)) as u32) << 8)
+        | ((*((message + 5) as *u8)) as u32);
+    let answers: u32 =
+        (((*((message + 6) as *u8)) as u32) << 8)
+        | ((*((message + 7) as *u8)) as u32);
+    if questions > 16 || answers == 0 || answers > 64 {
+        return false;
+    }
+    let cursor: u32 = 12;
+    let question: u32 = 0;
+    while question < questions {
+        cursor = dns_skip_name64(message, length, cursor);
+        if cursor > length || cursor + 4 > length {
+            return false;
+        }
+        cursor = cursor + 4;
+        question = question + 1;
+    }
+    let answer: u32 = 0;
+    while answer < answers {
+        cursor = dns_skip_name64(message, length, cursor);
+        if cursor > length || cursor + 10 > length {
+            return false;
+        }
+        let record_type: u16 =
+            (((*((message + (cursor as u64)) as *u8)) as u16) << 8)
+            | ((*((message + ((cursor + 1) as u64)) as *u8)) as u16);
+        let record_class: u16 =
+            (((*((message + ((cursor + 2) as u64)) as *u8)) as u16) << 8)
+            | ((*((message + ((cursor + 3) as u64)) as *u8)) as u16);
+        let data_length: u32 =
+            (((*((message + ((cursor + 8) as u64)) as *u8)) as u32) << 8)
+            | ((*((message + ((cursor + 9) as u64)) as *u8)) as u32);
+        cursor = cursor + 10;
+        if cursor + data_length > length {
+            return false;
+        }
+        if record_type == 1 && record_class == 1 && data_length == 4 {
+            let index: u32 = 0;
+            while index < 4 {
+                g_dns_answer64[index] =
+                    *((message + (cursor as u64) + (index as u64)) as *u8);
+                index = index + 1;
+            }
+            return true;
+        }
+        cursor = cursor + data_length;
+        answer = answer + 1;
+    }
+    return false;
+}
+
+fn rtl8139_dns_probe64() -> bool {
+    if !rtl8139_arp_resolve64(
+            &g_dhcp_dns64 as u64, &g_dns_mac64 as u64) {
+        return false;
+    }
+    let frame: u64 = ((&g_rtl8139_tx_storage64 as u64) + 3)
+        & ~(3 as u64);
+    let frame_length: u32 = 14 + 20 + 8 + 29;
+    let index: u32 = 0;
+    while index < frame_length {
+        *((frame + (index as u64)) as *u8) = 0;
+        index = index + 1;
+    }
+    index = 0;
+    while index < 6 {
+        *((frame + (index as u64)) as *u8) = g_dns_mac64[index];
+        *((frame + 6 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
+        index = index + 1;
+    }
+    *((frame + 12) as *u8) = 0x08;
+    *((frame + 13) as *u8) = 0x00;
+    let ip: u64 = frame + 14;
+    *((ip + 0) as *u8) = 0x45;
+    *((ip + 2) as *u8) = 0;
+    *((ip + 3) as *u8) = 57;
+    *((ip + 4) as *u8) = 0x4D;
+    *((ip + 5) as *u8) = 0x44;
+    *((ip + 6) as *u8) = 0x40;
+    *((ip + 8) as *u8) = 64;
+    *((ip + 9) as *u8) = 17;
+    index = 0;
+    while index < 4 {
+        *((ip + 12 + (index as u64)) as *u8) = g_dhcp_address64[index];
+        *((ip + 16 + (index as u64)) as *u8) = g_dhcp_dns64[index];
+        index = index + 1;
+    }
+    let checksum: u16 = ipv4_checksum64(ip, 20);
+    *((ip + 10) as *u8) = (checksum >> 8) as u8;
+    *((ip + 11) as *u8) = checksum as u8;
+    let udp: u64 = ip + 20;
+    *((udp + 0) as *u8) = 0xCF;                // source port 53000
+    *((udp + 1) as *u8) = 0x08;
+    *((udp + 2) as *u8) = 0;
+    *((udp + 3) as *u8) = 53;
+    *((udp + 4) as *u8) = 0;
+    *((udp + 5) as *u8) = 37;
+    let dns: u64 = udp + 8;
+    *((dns + 0) as *u8) = 0x4D;
+    *((dns + 1) as *u8) = 0x44;
+    *((dns + 2) as *u8) = 0x01;                // recursion desired
+    *((dns + 5) as *u8) = 1;                   // one question
+    *((dns + 12) as *u8) = 7;
+    let example: *u8 = "example";
+    index = 0;
+    while index < 7 {
+        *((dns + 13 + (index as u64)) as *u8) =
+            *((example as u64 + (index as u64)) as *u8);
+        index = index + 1;
+    }
+    *((dns + 20) as *u8) = 3;
+    let com: *u8 = "com";
+    index = 0;
+    while index < 3 {
+        *((dns + 21 + (index as u64)) as *u8) =
+            *((com as u64 + (index as u64)) as *u8);
+        index = index + 1;
+    }
+    *((dns + 24) as *u8) = 0;
+    *((dns + 25) as *u8) = 0;
+    *((dns + 26) as *u8) = 1;                  // A
+    *((dns + 27) as *u8) = 0;
+    *((dns + 28) as *u8) = 1;                  // IN
+    outl(g_rtl8139_io64 + 0x20, frame as u32); // reuse completed TSAD0
+    outl(g_rtl8139_io64 + 0x10, frame_length); // TSD0
+
+    let guard: u32 = 0;
+    while guard < 6000000 {
+        let length: u32 = rtl8139_poll_receive64(
+            &g_rtl8139_rx_probe64 as u64, 1536);
+        if length >= 14 + 20 + 8 + 12 {
+            let packet: u64 = &g_rtl8139_rx_probe64 as u64;
+            let received_ip: u64 = packet + 14;
+            let ip_header: u32 =
+                (((*(received_ip as *u8)) & 0x0F) as u32) * 4;
+            if *((packet + 12) as *u8) == 0x08
+                && *((packet + 13) as *u8) == 0x00
+                && ip_header >= 20
+                && 14 + ip_header + 8 + 12 <= length
+                && *((received_ip + 9) as *u8) == 17 {
+                let received_udp: u64 = received_ip + (ip_header as u64);
+                let udp_length: u32 =
+                    (((*((received_udp + 4) as *u8)) as u32) << 8)
+                    | ((*((received_udp + 5) as *u8)) as u32);
+                if *((received_udp + 0) as *u8) == 0
+                    && *((received_udp + 1) as *u8) == 53
+                    && *((received_udp + 2) as *u8) == 0xCF
+                    && *((received_udp + 3) as *u8) == 0x08
+                    && udp_length >= 20
+                    && udp_length <= length - 14 - ip_header {
+                    let message: u64 = received_udp + 8;
+                    if *(message as *u8) == 0x4D
+                        && *((message + 1) as *u8) == 0x44
+                        && dns_extract_a64(message, udp_length - 8) {
+                        return true;
                     }
                 }
             }
@@ -3987,6 +4256,13 @@ fn kmain64(multiboot_info: u64) {
         } else {
             serial_write64(
                 "MORT64 ERROR: IPv4 UDP DHCP failed\r\n");
+        }
+        if rtl8139_dns_probe64() {
+            serial_write64(
+                "MORT64: UDP DNS A lookup passed\r\n");
+        } else {
+            serial_write64(
+                "MORT64 ERROR: UDP DNS lookup failed\r\n");
         }
         asm("sti");
         serial_write64("MORT64: PIT timer interrupts active\r\n");
