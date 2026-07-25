@@ -36,8 +36,8 @@ synchronization surface. Blocking
 slot, stack mapping, and TLS mapping. `pthread_once` provides process-wide
 one-time initialization, while 64 thread-specific keys occupy independent TLS
 slots and run registered destructors before worker exit. The time layer wraps
-the 100 Hz monotonic clock and implements interruptible scheduler-backed sleep
-without a userspace spin loop. Raw calls remain available under
+the 100 Hz monotonic clock and a CMOS-RTC-anchored Unix realtime clock, and
+implements interruptible scheduler-backed sleep without a userspace spin loop. Raw calls remain available under
 `<mortos/syscall.h>` while the rest of the POSIX libc surface is implemented.
 
 The kernel build currently pins Mort 0.18.0, the proven freestanding compiler.
@@ -106,7 +106,7 @@ The initial numeric assignments are:
 | 186 | `gettid()` | Returns the current schedulable task ID |
 | 202 | `futex(address, operation, value, timeout_ms)` | Implements atomic `FUTEX_WAIT`, optional PIT-driven relative deadlines with `ETIMEDOUT`, and same-address-space `FUTEX_WAKE` |
 | 217 | `getdents64(fd, buffer, length)` | Enumerates unique immediate children of canonical VexFS directories using Linux-compatible directory records |
-| 228 | `clock_gettime(clock_id, timespec)` | Implemented for `CLOCK_MONOTONIC` from the 100 Hz kernel tick |
+| 228 | `clock_gettime(clock_id, timespec)` | Implements `CLOCK_MONOTONIC` from the 100 Hz kernel tick and `CLOCK_REALTIME` from a coherent CMOS RTC snapshot advanced by those ticks |
 | 232 | `epoll_wait(epfd, events, maxevents, timeout)` | Implements level-triggered immediate, infinite, and PIT-deadline waits with scheduler blocking |
 | 233 | `epoll_ctl(epfd, operation, fd, event)` | Implements bounded `ADD`, `MOD`, and `DEL` interest management with packed 64-bit user data |
 | 257 | `openat(directory, path, flags, mode)` | Implements normalized absolute, `AT_FDCWD`, and directory-relative file/directory lookup in canonical VexFS |

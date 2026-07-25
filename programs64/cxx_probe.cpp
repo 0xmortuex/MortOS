@@ -467,6 +467,13 @@ extern "C" int main(int argc, char **argv, char **envp) {
     if (sleep_after_ns < sleep_before_ns + 10000000UL) {
         return 20;
     }
+    struct timespec realtime = {};
+    if (clock_gettime(CLOCK_REALTIME, &realtime) != 0
+        || realtime.tv_sec < 1577836800L
+        || realtime.tv_nsec < 0
+        || realtime.tv_nsec >= 1000000000L) {
+        return 20;
+    }
     unsigned int timed_futex = 0;
     if (clock_gettime(CLOCK_MONOTONIC, &sleep_before) != 0
         || mortos_futex_timed(&timed_futex, 0, 0, 20) != ~109UL

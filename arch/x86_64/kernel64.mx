@@ -100,6 +100,9 @@ let g_pipe_writers64: [u32; 4] = [0; 4];
 let g_current_process64: u32 = 8;
 let g_next_pid64: u64 = 1;
 let g_timer_ticks64: u64 = 0;
+let g_realtime_ready64: bool = false;
+let g_realtime_boot_seconds64: u64 = 0;
+let g_realtime_boot_ticks64: u64 = 0;
 let g_thread_exit_seen64: bool = false;
 let g_vexfs_image64: u64 = 0;
 let g_vexfs_size64: u64 = 0;
@@ -180,6 +183,120 @@ fn timer_init64() {
     outb(0x43, 0x36);
     outb(0x40, 0x9B);
     outb(0x40, 0x2E);
+}
+
+fn cmos_read64(register: u8) -> u8 {
+    // Keep legacy NMI delivery disabled only for the indexed CMOS access.
+    outb(0x70, register | 0x80);
+    let value: u8 = inb(0x71);
+    outb(0x70, 0x00);
+    return value;
+}
+
+fn rtc_bcd64(value: u8) -> u32 {
+    return ((((value >> 4) as u32) * 10)
+        + ((value & 0x0F) as u32));
+}
+
+fn rtc_leap64(year: u32) -> bool {
+    return (year % 4) == 0
+        && ((year % 100) != 0 || (year % 400) == 0);
+}
+
+fn rtc_month_days64(month: u32, year: u32) -> u32 {
+    if month == 2 {
+        if rtc_leap64(year) {
+            return 29;
+        }
+        return 28;
+    }
+    if month == 4 || month == 6 || month == 9 || month == 11 {
+        return 30;
+    }
+    return 31;
+}
+
+fn rtc_init64() -> bool {
+    // Obtain one coherent RTC snapshot. QEMU and PC hardware expose the UIP
+    // flag while the second is being updated; the repeated-second check also
+    // closes the edge immediately after UIP falls.
+    let attempt: u32 = 0;
+    while attempt < 100000 {
+        if (cmos_read64(0x0A) & 0x80) == 0 {
+            let second_raw: u8 = cmos_read64(0x00);
+            let minute_raw: u8 = cmos_read64(0x02);
+            let hour_raw: u8 = cmos_read64(0x04);
+            let day_raw: u8 = cmos_read64(0x07);
+            let month_raw: u8 = cmos_read64(0x08);
+            let year_raw: u8 = cmos_read64(0x09);
+            let century_raw: u8 = cmos_read64(0x32);
+            let status_b: u8 = cmos_read64(0x0B);
+            if second_raw == cmos_read64(0x00) {
+                let second: u32 = second_raw as u32;
+                let minute: u32 = minute_raw as u32;
+                let hour: u32 = (hour_raw & 0x7F) as u32;
+                let day: u32 = day_raw as u32;
+                let month: u32 = month_raw as u32;
+                let year_low: u32 = year_raw as u32;
+                let century: u32 = century_raw as u32;
+                if (status_b & 0x04) == 0 {     // packed BCD mode
+                    second = rtc_bcd64(second_raw);
+                    minute = rtc_bcd64(minute_raw);
+                    hour = rtc_bcd64(hour_raw & 0x7F);
+                    day = rtc_bcd64(day_raw);
+                    month = rtc_bcd64(month_raw);
+                    year_low = rtc_bcd64(year_raw);
+                    century = rtc_bcd64(century_raw);
+                }
+                if (status_b & 0x02) == 0 {     // 12-hour mode
+                    let is_pm: bool = (hour_raw & 0x80) != 0;
+                    if is_pm && hour < 12 {
+                        hour = hour + 12;
+                    } else if !is_pm && hour == 12 {
+                        hour = 0;
+                    }
+                }
+                let year: u32 = 0;
+                if century >= 19 && century <= 99 {
+                    year = (century * 100) + year_low;
+                } else if year_low >= 70 {
+                    year = 1900 + year_low;
+                } else {
+                    year = 2000 + year_low;
+                }
+                if year < 1970 || month < 1 || month > 12
+                    || day < 1 || day > rtc_month_days64(month, year)
+                    || hour > 23 || minute > 59 || second > 59 {
+                    return false;
+                }
+                let days: u64 = 0;
+                let cursor_year: u32 = 1970;
+                while cursor_year < year {
+                    days = days + 365;
+                    if rtc_leap64(cursor_year) {
+                        days = days + 1;
+                    }
+                    cursor_year = cursor_year + 1;
+                }
+                let cursor_month: u32 = 1;
+                while cursor_month < month {
+                    days = days
+                        + (rtc_month_days64(cursor_month, year) as u64);
+                    cursor_month = cursor_month + 1;
+                }
+                days = days + ((day - 1) as u64);
+                g_realtime_boot_seconds64 = (days * 86400)
+                    + ((hour as u64) * 3600)
+                    + ((minute as u64) * 60)
+                    + (second as u64);
+                g_realtime_boot_ticks64 = g_timer_ticks64;
+                g_realtime_ready64 = true;
+                return true;
+            }
+        }
+        attempt = attempt + 1;
+    }
+    return false;
 }
 
 fn frame_byte64(index: u32) -> *u8 {
@@ -3177,16 +3294,24 @@ fn syscall_dispatch64(
         return process_brk64(argument0);
     }
     if number == 228 {
-        if argument0 != 1 {
+        if argument0 != 0 && argument0 != 1 {
             return ~(21 as u64);                // -EINVAL
+        }
+        if argument0 == 0 && !g_realtime_ready64 {
+            return ~(4 as u64);                 // -EIO
         }
         if !user_range_writable64(argument1, 16) {
             return ~(13 as u64);                // -EFAULT
         }
         let ticks: u64 = g_timer_ticks64;
-        *((argument1 + 0) as *u64) = ticks / 100;
-        *((argument1 + 8) as *u64) =
-            (ticks % 100) * 10000000;
+        let elapsed: u64 = ticks;
+        let seconds: u64 = 0;
+        if argument0 == 0 {
+            elapsed = ticks - g_realtime_boot_ticks64;
+            seconds = g_realtime_boot_seconds64;
+        }
+        *((argument1 + 0) as *u64) = seconds + (elapsed / 100);
+        *((argument1 + 8) as *u64) = (elapsed % 100) * 10000000;
         if g_current_process64 < 8 {
             g_process_clock_seen64[g_current_process64] = 1;
         }
@@ -3281,6 +3406,11 @@ fn kmain64(multiboot_info: u64) {
             serial_write64("MORT64 ERROR: IDT breakpoint was not handled\r\n");
         }
         timer_init64();
+        if rtc_init64() {
+            serial_write64("MORT64: CMOS realtime clock active\r\n");
+        } else {
+            serial_write64("MORT64 ERROR: CMOS realtime unavailable\r\n");
+        }
         asm("sti");
         serial_write64("MORT64: PIT timer interrupts active\r\n");
 

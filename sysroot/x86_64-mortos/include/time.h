@@ -9,6 +9,7 @@ struct timespec {
     long tv_nsec;
 };
 
+#define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1
 #define TIMER_ABSTIME 1
 

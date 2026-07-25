@@ -153,7 +153,7 @@ extern "C" int clock_getres(
     clockid_t clock,
     struct timespec *resolution
 ) {
-    if (clock != CLOCK_MONOTONIC) {
+    if (clock != CLOCK_REALTIME && clock != CLOCK_MONOTONIC) {
         errno = EINVAL;
         return -1;
     }
