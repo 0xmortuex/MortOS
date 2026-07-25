@@ -67,6 +67,11 @@ struct ThreadSyncArguments {
     pthread_key_t key;
 };
 
+struct RwlockWorkerArguments {
+    pthread_rwlock_t *lock;
+    unsigned long *value;
+};
+
 extern "C" void *thread_worker(void *opaque) {
     if (mortos_getpid() != 5 || mortos_gettid() == 5) {
         return reinterpret_cast<void *>(30UL);
@@ -129,6 +134,18 @@ extern "C" void *join_worker(void *) {
         return reinterpret_cast<void *>(42UL);
     }
     return reinterpret_cast<void *>(34UL);
+}
+
+extern "C" void *rwlock_worker(void *opaque) {
+    auto *arguments = static_cast<RwlockWorkerArguments *>(opaque);
+    if (pthread_rwlock_wrlock(arguments->lock) != 0) {
+        return reinterpret_cast<void *>(43UL);
+    }
+    *arguments->value = 0x52574C4F434B5645UL;
+    if (pthread_rwlock_unlock(arguments->lock) != 0) {
+        return reinterpret_cast<void *>(43UL);
+    }
+    return reinterpret_cast<void *>(35UL);
 }
 
 static bool contains_text(
@@ -359,6 +376,26 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || pthread_join(joined_thread, &thread_result) != 0
         || thread_result != reinterpret_cast<void *>(34UL)
         || pthread_join(joined_thread, nullptr) != ESRCH) {
+        return 9;
+    }
+    pthread_rwlock_t rwlock = PTHREAD_RWLOCK_INITIALIZER;
+    unsigned long rwlock_value = 0;
+    RwlockWorkerArguments rwlock_arguments = {&rwlock, &rwlock_value};
+    pthread_t rwlock_thread = 0;
+    if (pthread_rwlock_rdlock(&rwlock) != 0
+        || pthread_rwlock_trywrlock(&rwlock) != EBUSY
+        || pthread_create(
+            &rwlock_thread, nullptr, rwlock_worker,
+            &rwlock_arguments) != 0
+        || mortos_yield() != 0
+        || rwlock_value != 0
+        || pthread_rwlock_unlock(&rwlock) != 0
+        || pthread_join(rwlock_thread, &thread_result) != 0
+        || thread_result != reinterpret_cast<void *>(35UL)
+        || rwlock_value != 0x52574C4F434B5645UL
+        || pthread_rwlock_tryrdlock(&rwlock) != 0
+        || pthread_rwlock_unlock(&rwlock) != 0
+        || pthread_rwlock_destroy(&rwlock) != 0) {
         return 9;
     }
     if (mortos_fs_load(8) != 0x544C5356414C5545UL

@@ -538,3 +538,113 @@ extern "C" int pthread_cond_broadcast(pthread_cond_t *condition) {
     return pthread_futex_error(mortos_futex(
         const_cast<unsigned int *>(&condition->__sequence), 1, 8));
 }
+
+static constexpr unsigned int PTHREAD_RWLOCK_WRITER = ~0U;
+
+extern "C" int pthread_rwlock_init(
+    pthread_rwlock_t *lock,
+    const void *attributes
+) {
+    if (!lock || attributes) {
+        return EINVAL;
+    }
+    __atomic_store_n(&lock->__state, 0U, __ATOMIC_RELAXED);
+    return 0;
+}
+
+extern "C" int pthread_rwlock_destroy(pthread_rwlock_t *lock) {
+    if (!lock) {
+        return EINVAL;
+    }
+    return __atomic_load_n(&lock->__state, __ATOMIC_ACQUIRE) == 0
+        ? 0 : EBUSY;
+}
+
+extern "C" int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock) {
+    if (!lock) {
+        return EINVAL;
+    }
+    unsigned int state = __atomic_load_n(
+        &lock->__state, __ATOMIC_RELAXED);
+    while (state != PTHREAD_RWLOCK_WRITER
+           && state != PTHREAD_RWLOCK_WRITER - 1U) {
+        if (__atomic_compare_exchange_n(
+                &lock->__state, &state, state + 1U, true,
+                __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            return 0;
+        }
+    }
+    return EBUSY;
+}
+
+extern "C" int pthread_rwlock_rdlock(pthread_rwlock_t *lock) {
+    if (!lock) {
+        return EINVAL;
+    }
+    for (;;) {
+        int result = pthread_rwlock_tryrdlock(lock);
+        if (result == 0) {
+            return 0;
+        }
+        unsigned int state = __atomic_load_n(
+            &lock->__state, __ATOMIC_ACQUIRE);
+        int error = pthread_futex_error(mortos_futex(
+            const_cast<unsigned int *>(&lock->__state), 0, state));
+        if (error != 0 && error != EAGAIN) {
+            return error;
+        }
+    }
+}
+
+extern "C" int pthread_rwlock_trywrlock(pthread_rwlock_t *lock) {
+    if (!lock) {
+        return EINVAL;
+    }
+    unsigned int expected = 0;
+    return __atomic_compare_exchange_n(
+        &lock->__state, &expected, PTHREAD_RWLOCK_WRITER, false,
+        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED) ? 0 : EBUSY;
+}
+
+extern "C" int pthread_rwlock_wrlock(pthread_rwlock_t *lock) {
+    if (!lock) {
+        return EINVAL;
+    }
+    for (;;) {
+        int result = pthread_rwlock_trywrlock(lock);
+        if (result == 0) {
+            return 0;
+        }
+        unsigned int state = __atomic_load_n(
+            &lock->__state, __ATOMIC_ACQUIRE);
+        int error = pthread_futex_error(mortos_futex(
+            const_cast<unsigned int *>(&lock->__state), 0, state));
+        if (error != 0 && error != EAGAIN) {
+            return error;
+        }
+    }
+}
+
+extern "C" int pthread_rwlock_unlock(pthread_rwlock_t *lock) {
+    if (!lock) {
+        return EINVAL;
+    }
+    for (;;) {
+        unsigned int state = __atomic_load_n(
+            &lock->__state, __ATOMIC_RELAXED);
+        if (state == 0) {
+            return EPERM;
+        }
+        unsigned int next = state == PTHREAD_RWLOCK_WRITER
+            ? 0U : state - 1U;
+        if (__atomic_compare_exchange_n(
+                &lock->__state, &state, next, true,
+                __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+            if (next == 0) {
+                return pthread_futex_error(mortos_futex(
+                    const_cast<unsigned int *>(&lock->__state), 1, 8));
+            }
+            return 0;
+        }
+    }
+}

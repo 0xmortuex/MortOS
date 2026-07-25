@@ -81,6 +81,7 @@ def main():
         "MORT64: pthread mutex and condition passed",
         "MORT64: pthread join lifecycle passed",
         "MORT64: pthread once and TLS keys passed",
+        "MORT64: pthread read-write lock passed",
         "MORT64: canonical Vex asset filesystem passed",
         "MORT64: canonical Vex hierarchy stat passed",
         "MORT64: canonical Vex directory enumeration passed",

@@ -16,8 +16,13 @@ typedef struct {
     volatile unsigned int __sequence;
 } pthread_cond_t;
 
+typedef struct {
+    volatile unsigned int __state;
+} pthread_rwlock_t;
+
 #define PTHREAD_MUTEX_INITIALIZER {0}
 #define PTHREAD_COND_INITIALIZER {0}
+#define PTHREAD_RWLOCK_INITIALIZER {0}
 #define PTHREAD_ONCE_INIT {0}
 #define PTHREAD_KEYS_MAX 64
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
@@ -51,6 +56,14 @@ int pthread_cond_destroy(pthread_cond_t *condition);
 int pthread_cond_wait(pthread_cond_t *condition, pthread_mutex_t *mutex);
 int pthread_cond_signal(pthread_cond_t *condition);
 int pthread_cond_broadcast(pthread_cond_t *condition);
+
+int pthread_rwlock_init(pthread_rwlock_t *lock, const void *attributes);
+int pthread_rwlock_destroy(pthread_rwlock_t *lock);
+int pthread_rwlock_rdlock(pthread_rwlock_t *lock);
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock);
+int pthread_rwlock_wrlock(pthread_rwlock_t *lock);
+int pthread_rwlock_trywrlock(pthread_rwlock_t *lock);
+int pthread_rwlock_unlock(pthread_rwlock_t *lock);
 
 #ifdef __cplusplus
 }
