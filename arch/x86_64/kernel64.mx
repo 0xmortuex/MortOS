@@ -129,12 +129,19 @@ let g_process_entropy_seen64: [u8; 8] = [0; 8];
 let g_process_eventfd_seen64: [u8; 8] = [0; 8];
 let g_process_epoll_seen64: [u8; 8] = [0; 8];
 let g_process_socket_seen64: [u8; 8] = [0; 8];
+let g_process_connect_seen64: [u8; 8] = [0; 8];
 // IPv4 stream sockets. Descriptor kind 8 refers to one of these objects.
 // State: 0 unused, 1 created, 2 connected, 3 peer-closed, 4 failed.
 let g_socket_used64: [u8; 4] = [0; 4];
 let g_socket_state64: [u8; 4] = [0; 4];
 let g_socket_type64: [u32; 4] = [0; 4];
 let g_socket_error64: [u32; 4] = [0; 4];
+let g_socket_local_port64: [u16; 4] = [0; 4];
+let g_socket_remote_port64: [u16; 4] = [0; 4];
+let g_socket_remote_ip64: [u8; 16] = [0; 16];
+let g_socket_remote_mac64: [u8; 24] = [0; 24];
+let g_socket_send_sequence64: [u32; 4] = [0; 4];
+let g_socket_receive_sequence64: [u32; 4] = [0; 4];
 
 extern fn mort64_cpu_init() -> u64;
 extern fn mort64_idt_self_test();
@@ -1048,6 +1055,10 @@ fn tcp_checksum64(ip: u64, tcp: u64, tcp_length: u32) -> u16 {
 }
 
 fn rtl8139_tcp_control64(
+    destination_ip: u64,
+    destination_mac: u64,
+    source_port: u16,
+    destination_port: u16,
     flags: u8,
     sequence: u32,
     acknowledgement: u32,
@@ -1066,7 +1077,8 @@ fn rtl8139_tcp_control64(
     }
     index = 0;
     while index < 6 {
-        *((frame + (index as u64)) as *u8) = g_gateway_mac64[index];
+        *((frame + (index as u64)) as *u8) =
+            *((destination_mac + (index as u64)) as *u8);
         *((frame + 6 + (index as u64)) as *u8) = g_rtl8139_mac64[index];
         index = index + 1;
     }
@@ -1082,14 +1094,15 @@ fn rtl8139_tcp_control64(
     index = 0;
     while index < 4 {
         *((ip + 12 + (index as u64)) as *u8) = g_dhcp_address64[index];
-        *((ip + 16 + (index as u64)) as *u8) = g_dns_answer64[index];
+        *((ip + 16 + (index as u64)) as *u8) =
+            *((destination_ip + (index as u64)) as *u8);
         index = index + 1;
     }
     let ip_checksum: u16 = ipv4_checksum64(ip, 20);
     network_write16_64(ip + 10, ip_checksum);
     let tcp: u64 = ip + 20;
-    network_write16_64(tcp + 0, 40000);
-    network_write16_64(tcp + 2, 80);
+    network_write16_64(tcp + 0, source_port);
+    network_write16_64(tcp + 2, destination_port);
     network_write32_64(tcp + 4, sequence);
     network_write32_64(tcp + 8, acknowledgement);
     *((tcp + 12) as *u8) = 0x50;
@@ -1114,7 +1127,10 @@ fn rtl8139_tcp_probe64() -> bool {
         return false;
     }
     let initial_sequence: u32 = 0x4D4F5254;
-    if !rtl8139_tcp_control64(0x02, initial_sequence, 0, 2) {
+    if !rtl8139_tcp_control64(
+            &g_dns_answer64 as u64,
+            &g_gateway_mac64 as u64,
+            40000, 80, 0x02, initial_sequence, 0, 2) {
         return false;
     }
     let guard: u32 = 0;
@@ -1158,7 +1174,9 @@ fn rtl8139_tcp_probe64() -> bool {
                     && tcp_checksum64(ip, tcp, tcp_length) == 0 {
                     let remote_sequence: u32 = network_read32_64(tcp + 4);
                     return rtl8139_tcp_control64(
-                        0x10,
+                        &g_dns_answer64 as u64,
+                        &g_gateway_mac64 as u64,
+                        40000, 80, 0x10,
                         initial_sequence + 1,
                         remote_sequence + 1,
                         3);
@@ -1715,6 +1733,7 @@ fn process_create64(
             g_process_eventfd_seen64[slot] = 0;
             g_process_epoll_seen64[slot] = 0;
             g_process_socket_seen64[slot] = 0;
+            g_process_connect_seen64[slot] = 0;
             g_process_wait_address64[slot] = 0;
             g_process_wait_kind64[slot] = 0;
             g_process_join_status64[slot] = 0;
@@ -3378,6 +3397,10 @@ fn handle_close_owner64(owner: u32, descriptor: u32) -> u64 {
         g_socket_state64[pipe] = 0;
         g_socket_type64[pipe] = 0;
         g_socket_error64[pipe] = 0;
+        g_socket_local_port64[pipe] = 0;
+        g_socket_remote_port64[pipe] = 0;
+        g_socket_send_sequence64[pipe] = 0;
+        g_socket_receive_sequence64[pipe] = 0;
     }
     let epoll_descriptor: u32 = 3;
     while epoll_descriptor < 8 {
@@ -3550,6 +3573,20 @@ fn process_socket64(domain: u64, socket_type: u64, protocol: u64) -> u64 {
     g_socket_state64[socket] = 1;
     g_socket_type64[socket] = base_type as u32;
     g_socket_error64[socket] = 0;
+    g_socket_local_port64[socket] = (40001 + socket) as u16;
+    g_socket_remote_port64[socket] = 0;
+    let byte: u32 = 0;
+    while byte < 4 {
+        g_socket_remote_ip64[(socket * 4) + byte] = 0;
+        byte = byte + 1;
+    }
+    byte = 0;
+    while byte < 6 {
+        g_socket_remote_mac64[(socket * 6) + byte] = 0;
+        byte = byte + 1;
+    }
+    g_socket_send_sequence64[socket] = 0;
+    g_socket_receive_sequence64[socket] = 0;
     g_handle_type64[handle] = 8;
     g_handle_object64[handle] = socket;
     g_handle_position64[handle] = 0;
@@ -3557,6 +3594,155 @@ fn process_socket64(domain: u64, socket_type: u64, protocol: u64) -> u64 {
     g_handle_value64[handle] = 0;
     g_process_socket_seen64[owner] = 1;
     return descriptor as u64;
+}
+
+fn process_connect64(
+    descriptor: u64,
+    address: u64,
+    address_length: u64
+) -> u64 {
+    if g_current_process64 >= 8 || descriptor >= 8 {
+        return ~(8 as u64);                     // -EBADF
+    }
+    let owner: u32 = g_process_handle_owner64[g_current_process64];
+    let handle: u32 = (owner * 8) + (descriptor as u32);
+    if g_handle_type64[handle] != 8 {
+        return ~(87 as u64);                    // -ENOTSOCK
+    }
+    let socket: u32 = g_handle_object64[handle];
+    if socket >= 4 || g_socket_used64[socket] == 0 {
+        return ~(8 as u64);
+    }
+    if g_socket_state64[socket] == 2 {
+        return ~(105 as u64);                   // -EISCONN
+    }
+    if address_length < 16 || !user_range_readable64(address, 16) {
+        return ~(21 as u64);                    // -EINVAL
+    }
+    if *(address as *u16) != 2 {
+        return ~(96 as u64);                    // -EAFNOSUPPORT
+    }
+    let remote_port: u16 = network_read16_64(address + 2);
+    if remote_port == 0 {
+        return ~(21 as u64);
+    }
+    let remote_ip: u64 = (&g_socket_remote_ip64 as u64)
+        + ((socket as u64) * 4);
+    let remote_mac: u64 = (&g_socket_remote_mac64 as u64)
+        + ((socket as u64) * 6);
+    let index: u32 = 0;
+    let any_address: u8 = 0;
+    let same_subnet: bool = true;
+    while index < 4 {
+        let octet: u8 = *((address + 4 + (index as u64)) as *u8);
+        *((remote_ip + (index as u64)) as *u8) = octet;
+        any_address = any_address | octet;
+        if (octet & g_dhcp_mask64[index])
+                != (g_dhcp_address64[index] & g_dhcp_mask64[index]) {
+            same_subnet = false;
+        }
+        index = index + 1;
+    }
+    if any_address == 0 {
+        return ~(100 as u64);                   // -ENETDOWN
+    }
+    g_socket_remote_port64[socket] = remote_port;
+    let route_ip: u64 = &g_dhcp_gateway64 as u64;
+    if same_subnet {
+        route_ip = remote_ip;
+    }
+    if !rtl8139_arp_resolve64(route_ip, remote_mac, 0) {
+        g_socket_error64[socket] = 113;          // EHOSTUNREACH
+        g_socket_state64[socket] = 4;
+        return ~(112 as u64);
+    }
+    let initial_sequence: u32 =
+        0x4D530000 | (g_socket_local_port64[socket] as u32);
+    if !rtl8139_tcp_control64(
+            remote_ip, remote_mac,
+            g_socket_local_port64[socket],
+            remote_port, 0x02, initial_sequence, 0, 1) {
+        g_socket_error64[socket] = 5;            // EIO
+        g_socket_state64[socket] = 4;
+        return ~(4 as u64);
+    }
+    let guard: u32 = 0;
+    while guard < 8000000 {
+        let length: u32 = rtl8139_poll_receive64(
+            &g_rtl8139_rx_probe64 as u64, 1536);
+        if length >= 14 + 20 + 20 {
+            let packet: u64 = &g_rtl8139_rx_probe64 as u64;
+            let ip: u64 = packet + 14;
+            let ip_header: u32 =
+                (((*(ip as *u8)) & 0x0F) as u32) * 4;
+            let total_length: u32 = network_read16_64(ip + 2) as u32;
+            if *((packet + 12) as *u8) == 0x08
+                && *((packet + 13) as *u8) == 0
+                && ip_header >= 20
+                && total_length >= ip_header + 20
+                && total_length <= length - 14
+                && *((ip + 9) as *u8) == 6
+                && (network_read16_64(ip + 6) & 0x3FFF) == 0
+                && ipv4_checksum64(ip, ip_header) == 0 {
+                let matches: bool = true;
+                index = 0;
+                while matches && index < 4 {
+                    if *((ip + 12 + (index as u64)) as *u8)
+                            != *((remote_ip + (index as u64)) as *u8)
+                        || *((ip + 16 + (index as u64)) as *u8)
+                            != g_dhcp_address64[index] {
+                        matches = false;
+                    }
+                    index = index + 1;
+                }
+                let tcp: u64 = ip + (ip_header as u64);
+                let tcp_length: u32 = total_length - ip_header;
+                let tcp_header: u32 =
+                    ((*((tcp + 12) as *u8) >> 4) as u32) * 4;
+                if matches
+                    && network_read16_64(tcp) == remote_port
+                    && network_read16_64(tcp + 2)
+                        == g_socket_local_port64[socket]
+                    && tcp_header >= 20 && tcp_header <= tcp_length
+                    && network_read32_64(tcp + 8) == initial_sequence + 1
+                    && tcp_checksum64(ip, tcp, tcp_length) == 0 {
+                    let flags: u8 = *((tcp + 13) as *u8);
+                    if (flags & 0x04) != 0 {
+                        g_socket_error64[socket] = 111;
+                        g_socket_state64[socket] = 4;
+                        return ~(110 as u64);    // -ECONNREFUSED
+                    }
+                    if (flags & 0x12) == 0x12 {
+                        let received_sequence: u32 =
+                            network_read32_64(tcp + 4) + 1;
+                        if !rtl8139_tcp_control64(
+                                remote_ip, remote_mac,
+                                g_socket_local_port64[socket],
+                                remote_port, 0x10,
+                                initial_sequence + 1,
+                                received_sequence, 2) {
+                            g_socket_error64[socket] = 5;
+                            g_socket_state64[socket] = 4;
+                            return ~(4 as u64);
+                        }
+                        g_socket_send_sequence64[socket] =
+                            initial_sequence + 1;
+                        g_socket_receive_sequence64[socket] =
+                            received_sequence;
+                        g_socket_state64[socket] = 2;
+                        g_socket_error64[socket] = 0;
+                        g_process_connect_seen64[owner] = 1;
+                        wake_poll_waiters64();
+                        return 0;
+                    }
+                }
+            }
+        }
+        guard = guard + 1;
+    }
+    g_socket_error64[socket] = 110;
+    g_socket_state64[socket] = 4;
+    return ~(109 as u64);                       // -ETIMEDOUT
 }
 
 fn process_getsockopt64(
@@ -4328,6 +4514,9 @@ fn syscall_dispatch64(
     if number == 41 {
         return process_socket64(argument0, argument1, argument2);
     }
+    if number == 42 {
+        return process_connect64(argument0, argument1, argument2);
+    }
     if number == 55 {
         return process_getsockopt64(
             argument0, argument1, argument2, argument3, argument4);
@@ -4701,6 +4890,7 @@ fn kmain64(multiboot_info: u64) {
                 && g_process_eventfd_seen64[cxx_slot] != 0
                 && g_process_epoll_seen64[cxx_slot] != 0
                 && g_process_socket_seen64[cxx_slot] != 0
+                && g_process_connect_seen64[cxx_slot] != 0
                 && g_process_join_seen64[cxx_slot] != 0
                 && g_process_futex_timeout_seen64[cxx_slot] != 0
                 && g_thread_exit_seen64 {
@@ -4728,6 +4918,8 @@ fn kmain64(multiboot_info: u64) {
                     "MORT64: POSIX poll epoll eventfd surface passed\r\n");
                 serial_write64(
                     "MORT64: POSIX IPv4 stream socket lifecycle passed\r\n");
+                serial_write64(
+                    "MORT64: POSIX TCP connect handshake passed\r\n");
                 serial_write64(
                     "MORT64: TLS errno and stack canary passed\r\n");
                 serial_write64(

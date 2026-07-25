@@ -16,7 +16,7 @@ absolute realtime condition-variable and semaphore APIs. One-time initialization
 destructors cover additional Node/V8 runtime requirements. The canonical Vex port still requires the rest
 of libc/libc++, although descriptor creation/flag control, CMOS-anchored realtime, monotonic clock, and
 scheduler-backed sleep plus POSIX poll/epoll/eventfd wrappers are now present.
-IPv4 stream sockets also provide descriptor creation, flags, `SO_TYPE`,
-`SO_ERROR`, readiness, and cleanup; connection and transfer remain in
-progress. Dynamic loading and device/window APIs remain incomplete. Raw calls
-stay available under `<mortos/syscall.h>`.
+IPv4 stream sockets also provide descriptor creation, standard `sockaddr_in`
+connect, flags, `SO_TYPE`, `SO_ERROR`, readiness, and cleanup; stream transfer
+remains in progress. Dynamic loading and device/window APIs remain incomplete.
+Raw calls stay available under `<mortos/syscall.h>`.

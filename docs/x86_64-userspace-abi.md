@@ -22,7 +22,9 @@ strictly validates the returned SYN-ACK, and sends the final ACK. This proves
 the native TCP packet path. Linux-numbered `socket` and `getsockopt` syscalls
 now provide IPv4 stream descriptors with `SO_TYPE`, `SO_ERROR`,
 nonblocking/cloexec control, poll/epoll semantics, and deterministic cleanup.
-Connection state and stream transfer remain the next networking stages.
+A ring-3 `connect` call accepts a standard `sockaddr_in`, selects the on-link or
+gateway ARP target from the leased subnet, and stores the completed handshake's
+per-socket ports and sequence numbers. Stream payload transfer remains next.
 
 The build also links and boots a freestanding C++ executable using
 `programs64/cxx_start.s` and `programs64/cxx_runtime.cpp`. Static constructors,

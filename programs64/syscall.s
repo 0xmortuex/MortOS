@@ -146,6 +146,14 @@ mortos_socket:
     ret
 .size mortos_socket, . - mortos_socket
 
+.global mortos_connect
+.type mortos_connect, @function
+mortos_connect:
+    mov $42, %rax                  /* SYS_connect */
+    syscall
+    ret
+.size mortos_connect, . - mortos_connect
+
 .global mortos_getsockopt
 .type mortos_getsockopt, @function
 mortos_getsockopt:

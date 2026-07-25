@@ -2,6 +2,7 @@
 // startup, C allocation, C++ new/delete, and syscall linkage at ring 3.
 
 #include <mortos/syscall.h>
+#include <netinet/in.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -772,6 +773,31 @@ extern "C" int main(int argc, char **argv, char **envp) {
         || read(stream_socket, &socket_byte, 1) != -1
         || errno != ENOTCONN
         || close(stream_socket) != 0) {
+        return 19;
+    }
+
+    int connected_socket = socket(
+        AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    struct sockaddr_in cloudflare = {};
+    cloudflare.sin_family = AF_INET;
+    cloudflare.sin_port = htons(80);
+    cloudflare.sin_addr.s_addr = htonl(0x01010101U);
+    struct pollfd connected_readiness = {
+        connected_socket, POLLOUT, 0};
+    socket_error = -1;
+    socket_option_length = sizeof(socket_error);
+    if (connected_socket < 0
+        || connect(
+            connected_socket,
+            reinterpret_cast<const struct sockaddr *>(&cloudflare),
+            sizeof(cloudflare)) != 0
+        || poll(&connected_readiness, 1, 0) != 1
+        || (connected_readiness.revents & POLLOUT) == 0
+        || getsockopt(
+            connected_socket, SOL_SOCKET, SO_ERROR,
+            &socket_error, &socket_option_length) != 0
+        || socket_error != 0
+        || close(connected_socket) != 0) {
         return 19;
     }
 

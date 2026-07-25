@@ -97,6 +97,7 @@ def main():
         "MORT64: POSIX fcntl descriptor flags passed",
         "MORT64: POSIX poll epoll eventfd surface passed",
         "MORT64: POSIX IPv4 stream socket lifecycle passed",
+        "MORT64: POSIX TCP connect handshake passed",
         "MORT64: canonical Vex asset filesystem passed",
         "MORT64: canonical Vex hierarchy stat passed",
         "MORT64: canonical Vex directory enumeration passed",

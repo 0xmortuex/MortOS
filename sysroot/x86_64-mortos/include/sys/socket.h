@@ -28,6 +28,8 @@ extern "C" {
 #endif
 
 int socket(int domain, int type, int protocol);
+int connect(
+    int descriptor, const struct sockaddr *address, socklen_t length);
 int getsockopt(
     int descriptor, int level, int option,
     void *value, socklen_t *length);

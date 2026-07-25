@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <mortos/syscall.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
@@ -100,6 +101,34 @@ extern "C" int socket(int domain, int type, int protocol) {
         static_cast<unsigned long>(domain),
         static_cast<unsigned long>(type),
         static_cast<unsigned long>(protocol))));
+}
+
+extern "C" int connect(
+    int descriptor,
+    const struct sockaddr *address,
+    socklen_t length
+) {
+    return static_cast<int>(posix_result(mortos_connect(
+        static_cast<unsigned long>(descriptor), address, length)));
+}
+
+extern "C" unsigned short htons(unsigned short value) {
+    return static_cast<unsigned short>((value << 8) | (value >> 8));
+}
+
+extern "C" unsigned short ntohs(unsigned short value) {
+    return htons(value);
+}
+
+extern "C" unsigned int htonl(unsigned int value) {
+    return ((value & 0x000000FFU) << 24)
+        | ((value & 0x0000FF00U) << 8)
+        | ((value & 0x00FF0000U) >> 8)
+        | ((value & 0xFF000000U) >> 24);
+}
+
+extern "C" unsigned int ntohl(unsigned int value) {
+    return htonl(value);
 }
 
 extern "C" int getsockopt(

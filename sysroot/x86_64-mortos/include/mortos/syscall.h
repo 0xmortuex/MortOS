@@ -13,6 +13,8 @@ unsigned long mortos_read(
 unsigned long mortos_close(unsigned long descriptor);
 unsigned long mortos_socket(
     unsigned long domain, unsigned long type, unsigned long protocol);
+unsigned long mortos_connect(
+    unsigned long descriptor, const void *address, unsigned long length);
 unsigned long mortos_getsockopt(
     unsigned long descriptor, unsigned long level, unsigned long option,
     void *value, void *length);
