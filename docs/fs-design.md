@@ -1,15 +1,31 @@
 # MORT OS — Disk + Filesystem Design (MortFS v1)
 
-Design document. Nothing here is implemented yet; this is the spec to implement
-from. Scope: an ATA PIO disk driver, a brutally simple on-disk filesystem
-(MortFS v1), fixed kernel buffers, five shell commands, and a host-side
-`mkfs.py` tool with `build.py` integration.
+**Status: implemented.** This was the pre-implementation design document for
+MortFS v1, and everything scoped below has since been built and shipped: the
+ATA PIO driver (`ata_init`/`ata_read`/`ata_write`, `kmain.mx:1175`-`1241`),
+the on-disk format and filesystem core (`fs_init`, `kmain.mx:1296`;
+`fs_read_file`, `kmain.mx:1662`; `fs_create`, `kmain.mx:1587`; `fs_remove`,
+`kmain.mx:1732`), the five shell commands (`ls`/`cat`/`write`/`rm`/`run`,
+documented with line citations in [`docs/shell.md`](shell.md)), and the
+host-side `mkfs.py` (repo root, not `kernel/mkfs.py` as drafted below) with
+`build.py disk` integration. The `g_run_depth` nested-`run` guard from
+Section 4.5 is real too (`kmain.mx:40`, checked at `kmain.mx:895`).
+
+The sections below are kept as-is as a historical record of the design
+rationale and on-disk format — most of it (Sections 0-5) still accurately
+describes what got built. Section 6 ("Implementation order") is the plan
+that was executed, not a to-do list. Section 7's non-goals are current
+limitations, not aspirations. File paths inside the sections below (e.g.
+`kernel/mkfs.py`, `kernel/kmain.mx`) reflect the drafting-time repo layout
+and were not updated to match the current flat layout (`mkfs.py`, `kmain.mx`
+at repo root) — only this header was.
 
 Everything below was designed against the *actual* Mort compiler
-(`mort/typechecker.py`, `mort/codegen.py`) and the actual kernel
-(`kernel/kmain.mx`), verified by test-compiling probe code in freestanding
-mode. Section 0 records what was verified so the implementer does not have to
-re-derive it.
+(`typechecker.py`, `codegen.py` in the separate [Mort](https://github.com/0xmortuex/Mort)
+repo this kernel is written in) and the actual kernel (`kmain.mx`, at the
+repo root — drafted as `kernel/kmain.mx` below), verified by test-compiling
+probe code in freestanding mode. Section 0 records what was verified so the
+implementer does not have to re-derive it.
 
 ---
 
