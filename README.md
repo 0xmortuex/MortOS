@@ -14,7 +14,7 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 
 ## Networking — it serves a web page
 
-`net` brings up the RTL8139 NIC and leases an address over DHCP; `httpd` then serves an HTML page on port 80. This is the [mortnet](https://github.com/0xmortuex/mortnet) stack — NIC driver, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP, all written from scratch in Mort — vendored into `net/` and compiled into the kernel.
+`net` brings up the RTL8139 NIC and leases an address over DHCP; `httpd` then serves an HTML page on port 80. This is the [mortnet](https://github.com/0xmortuex/mortnet) stack — NIC driver, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP, all written from scratch in Mort — vendored into `net/` and compiled into the kernel. See [`docs/networking.md`](docs/networking.md) for which file implements each layer and how `net`/`httpd` actually drive it.
 
 ![MORT OS networking: net leases 10.0.2.15 over DHCP, httpd serves on port 80](docs/mortos-net.png)
 
