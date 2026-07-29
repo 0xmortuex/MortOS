@@ -45,6 +45,9 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 
 ## How it fits together
 
+See [`docs/architecture.md`](docs/architecture.md) for the full boot chain,
+execution model, and how the subsystems below connect, cited to source.
+
 ```
 kmain.mx    the kernel, in Mort        ─┐
             │  mortc --freestanding      │  Mort -> freestanding C -> 32-bit object
