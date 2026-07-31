@@ -71,6 +71,19 @@ python build.py check     # build + verify it's a valid 32-bit multiboot ELF
 python build.py run       # build, then boot it fullscreen in QEMU (with the disk)
 ```
 
+The first thing on screen is the boot banner, printed at `kmain.mx:3599`, then
+the shell prompt — nothing else runs automatically on this bare `-kernel`
+path, since `run_script(1)` (`kmain.mx:884`) finds no multiboot module without
+an ISO and returns immediately:
+
+```
+MORT OS -- interrupt-driven. type 'help', Enter
+~ $
+```
+
+(`~ $` is the auto-logged-in user's home-directory prompt, drawn by
+`draw_prompt`, `kmain.mx:709`-`727`.)
+
 `run` auto-creates `build/disk.img` (16 MiB, MortFS) and attaches it, so files
 you `write` in the OS survive reboots. `python mkfs.py build/disk.img` wipes it
 clean (add `--add host.txt:name.txt` to seed files). Try it:
@@ -116,6 +129,21 @@ above still work.
 ```bash
 python build.py iso       # -> build/mort.iso (BIOS + UEFI hybrid, Limine + xorriso)
 python build.py run-iso   # build the ISO, then boot it in QEMU
+```
+
+This path boots straight to the **home launcher** screen (`open_launcher`,
+`kmain.mx:3362`) instead of a bare prompt — press `Esc` to reveal the
+terminal underneath, where the banner and the startup script baked into the
+ISO (`STARTUP_TXT`, `build.py:88`-`90`, run via `run_script(1)` at
+`kmain.mx:3608`) have already executed:
+
+```
+MORT OS -- interrupt-driven. type 'help', Enter
+~ $ echo running startup script loaded from disk...
+running startup script loaded from disk...
+~ $ about
+MORT OS -- written in Mort, a language built from scratch
+~ $
 ```
 
 Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) and it boots on real hardware.
