@@ -1,14 +1,13 @@
-// glue/rtl8139.mx — a Realtek RTL8139 driver in Mort.
+// net/rtl8139.mx — a Realtek RTL8139 driver in Mort.
 //
-// This is the one part of mortnet that touches real hardware, so it lives in
-// glue/ rather than net/. It is not host-testable — it runs inside MORT OS and
-// is proven by booting QEMU with `-device rtl8139` and watching the frame it
-// sends land in a packet capture.
+// This is the one part of mortnet that touches real hardware. It is not
+// host-testable — it runs inside MORT OS and is proven by booting QEMU with
+// `-device rtl8139` and watching the frame it sends land in a packet capture.
 //
 // The RTL8139 is the classic "hello world" NIC: QEMU emulates it, it uses plain
 // port I/O (no memory-mapped registers needed for basic TX), and its transmit
-// path is four descriptors you fill and fire. M1 does transmit only — receive
-// arrives with ARP in M2.
+// path is four descriptors you fill and fire. Both transmit (`rtl_transmit`)
+// and receive (`rtl_poll_rx`, polled from `net/netapp.mx`) are implemented.
 //
 // Depends on net/endian.mx (byte order) and net/eth.mx (framing). In MORT OS
 // those are all one translation unit, so the functions are called directly.
