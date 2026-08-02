@@ -15,10 +15,16 @@ The sections below are kept as-is as a historical record of the design
 rationale and on-disk format — most of it (Sections 0-5) still accurately
 describes what got built. Section 6 ("Implementation order") is the plan
 that was executed, not a to-do list. Section 7's non-goals are current
-limitations, not aspirations. File paths inside the sections below (e.g.
-`kernel/mkfs.py`, `kernel/kmain.mx`) reflect the drafting-time repo layout
-and were not updated to match the current flat layout (`mkfs.py`, `kmain.mx`
-at repo root) — only this header was.
+limitations, not aspirations. Descriptive prose referring to the
+drafting-time repo layout (e.g. "drafted as `kernel/kmain.mx` below" a few
+lines up) was left as historical narrative and not rewritten. The
+copy-pasteable commands in Section 5 were the one exception: those are
+`kernel/mkfs.py`/`kernel/build.py` invocations a reader could actually try to
+run, so they were updated to the real flat-layout paths (`mkfs.py`,
+`build.py` at repo root) rather than left broken. Note that `kmain.mx`'s own
+`bad filesystem` message still prints the stale `kernel/mkfs.py` path
+(`kmain.mx:1751`) — that's a source bug, not a doc bug, and out of scope for
+a docs-only pass; see the new backlog item.
 
 Everything below was designed against the *actual* Mort compiler
 (`typechecker.py`, `codegen.py` in the separate [Mort](https://github.com/0xmortuex/Mort)
@@ -392,7 +398,8 @@ return the index.
 
 `fs_init` failure modes: no disk (`g_disk_ok` false) → silent, commands say
 `no disk (boot with -hda disk.img)`; disk present but wrong magic →
-commands say `bad filesystem (run: python kernel/mkfs.py disk.img)`.
+commands say `bad filesystem (host: python kernel/mkfs.py disk.img)`
+(quoted verbatim from `kmain.mx:1751`, stale `kernel/` prefix and all).
 Distinguish with two flags: `g_disk_ok` (ATA) and `g_fs_ok` (magic).
 
 ---
@@ -546,12 +553,12 @@ Errors: `not found: <name>` (color 12).
 
 ## 5. Host-side tooling
 
-### 5.1 `kernel/mkfs.py` (stdlib only)
+### 5.1 `mkfs.py` (stdlib only)
 
 ```
-python kernel/mkfs.py disk.img                              # empty 16 MiB MortFS
-python kernel/mkfs.py disk.img --size 16                    # size in MiB (default 16)
-python kernel/mkfs.py disk.img --add host.txt:oskernel-name.txt --add b.txt:b.txt
+python mkfs.py disk.img                              # empty 16 MiB MortFS
+python mkfs.py disk.img --size 16                    # size in MiB (default 16)
+python mkfs.py disk.img --add host.txt:oskernel-name.txt --add b.txt:b.txt
 ```
 
 Behavior:
@@ -579,11 +586,11 @@ Round-trip self-check (recommended, ~10 lines): after writing, re-open the
 image, re-parse the superblock and table, and compare against what was
 intended. Cheap insurance for the format's canonical implementation.
 
-### 5.2 `kernel/build.py` integration
+### 5.2 `build.py` integration
 
 - `DISK = os.path.join(BUILD, "disk.img")`.
 - New command `disk`: create `DISK` via mkfs **iff missing** (so user files
-  written from inside the OS survive rebuilds; `python kernel/mkfs.py`
+  written from inside the OS survive rebuilds; `python mkfs.py`
   directly is the explicit "wipe it" path). Seed it with one file, e.g.
   `--add` of a generated `hello.txt` ("this file lives on the MortFS disk"),
   so first boot's `ls` shows something. Implement by importing mkfs as a
