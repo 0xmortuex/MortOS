@@ -1,4 +1,8 @@
 // MORT OS Settings control center. Values are in-memory for v1.
+// Lives under net/ not because it's part of the networking stack, but because
+// build.py glues every net/*.mx file into the kernel's single translation
+// unit alongside kmain.mx (build.py:113-121) — this is just where that glue
+// step looks for extra kernel source files to pull in.
 let g_accent: u32 = 0x2c5364;
 let g_wall_top: u32 = 0x0a1830;
 let g_wall_bottom: u32 = 0x2c5364;
