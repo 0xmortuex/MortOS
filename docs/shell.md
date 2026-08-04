@@ -40,10 +40,10 @@ attached or its filesystem didn't parse.
 | `chown <uid> <path>` | disk | Changes a file/directory's owning uid; root only (`chown: not permitted (root only)`). Error: `usage: chown <uid> <path>`, `chown: not found`. | `kmain.mx:2504` |
 | `reboot` / `restart` | | Reboots the machine (`reboot`, `kmain.mx:1024`). | `kmain.mx:2537`, `kmain.mx:2541` |
 | `shutdown` / `poweroff` | | Powers the machine off — ACPI on emulators, or a halt with an "It is now safe..." message on bare metal (`poweroff`, `kmain.mx:3241`). | `kmain.mx:2545`, `kmain.mx:2549` |
-| `power` | | Opens the `F12` power menu (Lock/Sleep/Restart/Shut down) from the shell (`open_power_menu`, `kmain.mx:3145`). | `kmain.mx:2553` |
+| `power` | | Opens the `F12` power menu (Lock/Sleep/Restart/Shut down) from the shell (`open_power_menu`, `kmain.mx:3145`). In VGA text mode it silently does nothing — `open_power_menu` returns immediately `if !g_gfx`, no message printed (`kmain.mx:3146`-`3148`). | `kmain.mx:2553` |
 | `memtest` | | Runs a RAM test (`memtest`, `kmain.mx:971`). | `kmain.mx:2557` |
-| `lock` | | Shows the password lock screen (`open_lock`, `kmain.mx:3199`). | `kmain.mx:2561` |
-| `sleep` | | Blanks the display until a keypress (`open_sleep`, `kmain.mx:3229`). | `kmain.mx:2565` |
+| `lock` | | Shows the password lock screen (`open_lock`, `kmain.mx:3199`). In VGA text mode it prints `lock needs the graphical desktop` instead of opening the screen (`kmain.mx:3200`-`3203`). | `kmain.mx:2561` |
+| `sleep` | | Blanks the display until a keypress (`open_sleep`, `kmain.mx:3229`). In VGA text mode it prints `sleep needs the graphical desktop` instead of blanking (`kmain.mx:3230`-`3233`). | `kmain.mx:2565` |
 | `crash` | | Executes `ud2` to raise a #UD exception, to demo the exception-reporting handlers. | `kmain.mx:2569` |
 | `uptime` | | Prints seconds since boot, from the PIT tick counter (`g_ticks / 100`, ~100 Hz). | `kmain.mx:2573` |
 | `clear` | | Clears the screen and resets the cursor row. | `kmain.mx:2581` |
