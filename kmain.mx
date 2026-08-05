@@ -449,7 +449,7 @@ fn draw_text_abs(s: *u8, px: u32, py: u32, fg: u32, bg: u32) {
     }
 }
 
-// One clickable-looking app tab in the top bar; the active app is highlighted.
+// One clickable-looking app tab in the top bar; the active app is highlighted. Defined but never called anywhere in this file (confirmed by grep) -- draw_topbar() below draws no per-app tabs.
 fn draw_tab(label: *u8, x: u32, id: u32) {
     let w: u32 = str_len(label) * 8 + 12;
     let bg: u32 = 0x0d141c;
@@ -462,8 +462,8 @@ fn draw_tab(label: *u8, x: u32, id: u32) {
     draw_text_abs(label, x, 4, fg, bg);
 }
 
-// The top bar: the OS name, app switcher tabs (F1/F2/F3), a power hint, and the
-// clock (drawn by draw_clock, called at the end).
+// The top bar: the OS name, "F5 home"/"F12 power" hints, and the clock (drawn
+// by draw_clock). No per-app tabs -- draw_tab() above is defined but unused.
 fn draw_topbar() {
     fill_rect(0, 0, g_fb_w, 24, 0x0d141c);
     draw_text_abs("MORT OS", 12, 4, 0x9fd0d8, 0x0d141c);
