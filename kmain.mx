@@ -46,7 +46,7 @@ let g_fb_w: u32 = 0;                                           // width in pixel
 let g_fb_h: u32 = 0;                                           // height in pixels
 let g_cur_r: u32 = 0;                                          // last drawn cursor cell (graphics)
 let g_cur_c: u32 = 0;
-let g_app: u32 = 0;                                            // active app: 0 terminal, 1 files, 2 vex
+let g_app: u32 = 0;                                            // active app: 0 terminal, 1 files, 2 vex, 3 settings
 let g_files_sel: u32 = 0;                                      // Files: selected row
 let g_files_view: u32 = 0;                                     // Files: 0 = list, 1 = file contents
 let g_files_entry: u32 = 0;                                    // Files: entry index being viewed
