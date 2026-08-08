@@ -13,18 +13,46 @@ Section 4.5 is real too (`kmain.mx:40`, checked at `kmain.mx:895`).
 
 The sections below are kept as-is as a historical record of the design
 rationale and on-disk format — most of it (Sections 0-5) still accurately
-describes what got built. Section 6 ("Implementation order") is the plan
-that was executed, not a to-do list. Section 7's non-goals are current
-limitations, not aspirations. Descriptive prose referring to the
-drafting-time repo layout (e.g. "drafted as `kernel/kmain.mx` below" a few
-lines up) was left as historical narrative and not rewritten. The
-copy-pasteable commands in Section 5 were the one exception: those are
-`kernel/mkfs.py`/`kernel/build.py` invocations a reader could actually try to
-run, so they were updated to the real flat-layout paths (`mkfs.py`,
-`build.py` at repo root) rather than left broken. Note that `kmain.mx`'s own
-`bad filesystem` message still prints the stale `kernel/mkfs.py` path
-(`kmain.mx:1751`) — that's a source bug, not a doc bug, and out of scope for
-a docs-only pass; see the new backlog item.
+describes the v1 format as originally built. Section 6 ("Implementation
+order") is the plan that was executed, not a to-do list. Section 7's
+non-goals were accurate v1 limitations at the time; **one of them (no
+directories) is no longer true — see the "MortFS v2" note below.**
+Descriptive prose referring to the drafting-time repo layout (e.g. "drafted
+as `kernel/kmain.mx` below" a few lines up) was left as historical narrative
+and not rewritten. The copy-pasteable commands in Section 5 were the one
+exception: those are `kernel/mkfs.py`/`kernel/build.py` invocations a reader
+could actually try to run, so they were updated to the real flat-layout
+paths (`mkfs.py`, `build.py` at repo root) rather than left broken. Note
+that `kmain.mx`'s own `bad filesystem` message still prints the stale
+`kernel/mkfs.py` path (`kmain.mx:1751`) — that's a source bug, not a doc
+bug, and out of scope for a docs-only pass; see the backlog item.
+
+**MortFS has since grown a v2 format with directories, permissions, and
+ownership — not described anywhere below.** `fs_init` (`kmain.mx:1296`-`1332`)
+reads a `version` field from the superblock; `mkfs.py` (repo root) now
+writes `version = 2` (`mkfs.py:31`), and a disk built with the v1 tooling
+described in Section 5.1 is auto-upgraded in place on first boot (every
+existing file is reparented to root with mode `0644`, then the on-disk
+version is bumped to 2, `kmain.mx:1311`-`1326`). The extra 12 bytes live in
+what Section 2.3 below calls "reserved" (entry offset 40..51): `type` (u8,
+`0`=file/`1`=directory), `parent` (u8, entry index of the containing
+directory; `255`=root), `uid` (u8, owning user), `mode` (u32, Unix-style
+permission bits), and `mtime` (u32, seconds since midnight, from the CMOS
+RTC) — accessors at `kmain.mx:1269`-`1273`, comment block at
+`kmain.mx:1261`-`1267`. Root is implicit (not a table entry); a path is
+resolved component-by-component, including `.`/`..`, by `fs_resolve`
+(`kmain.mx:1367`). Directories carry no data extent (`start_sector` and
+`capacity_sectors` are both written `0`, `kmain.mx:1562`-`1563`), so unlike
+file deletion (Section 2.6), removing a directory leaks no disk space.
+`fs_ensure_layout` (`kmain.mx:1613`-`1621`) creates a standard `/bin /etc
+/home /var` layout on first boot, and `fs_populate_bin`
+(`kmain.mx:1637`-`1658`) reparents seeded `*.bin` programs into `/bin` with
+mode `0755` so they're runnable via `$PATH`. The corresponding shell
+commands (`cd`, `ls`, `mkdir`, `rmdir`, `chmod`, `chown`, plus `pwd`,
+`whoami`, `su`, `sudo`) are documented with line citations in
+[`docs/shell.md`](shell.md) — Section 4 below, which only specs
+`ls`/`cat`/`write`/`rm`/`run`, was written before any of this existed and is
+not a complete command reference; treat `docs/shell.md` as the current one.
 
 Everything below was designed against the *actual* Mort compiler
 (`typechecker.py`, `codegen.py` in the separate [Mort](https://github.com/0xmortuex/Mort)
@@ -282,8 +310,9 @@ sectors 16..32767 data region (contiguous per-file extents)
 | 24 | u32 | used | `1` = live, `0` = free slot |
 | 28 | u32 | size_bytes | current file size |
 | 32 | u32 | start_sector | first sector of this file's extent |
-| 36 | u32 | capacity_sectors | always written as `128` in v1 (see 2.5) |
-| 40..63 | — | reserved | zeros |
+| 36 | u32 | capacity_sectors | always written as `128` in v1 (see 2.5); `0` for a v2 directory (2.5) |
+| 40..51 | — | reserved in v1; **v2 metadata** | superseded — see "MortFS has since grown a v2 format" above |
+| 52..63 | — | reserved | zeros |
 
 ### 2.4 Fixed limits and their justification
 
@@ -644,7 +673,10 @@ intended. Cheap insurance for the format's canonical implementation.
 ## 7. Explicit non-goals / v1 limitations (for the README)
 
 - No space reclamation after `rm` (Section 2.6) — re-mkfs to compact.
-- No directories, no rename, no partial writes, single drive, single bus.
+- No rename, no partial writes, single drive, single bus. (Directories *are*
+  now implemented — v2, see the note near the top of this document — so
+  that half of this bullet is stale; left visible rather than silently
+  dropped since it's a direct quote of the original v1 non-goals list.)
 - Disk I/O runs with interrupts off; PIT ticks are lost during transfers.
 - Nested `run` is rejected.
 - No consistency story if power dies mid-`fs_sync` (metadata is 9 sequential

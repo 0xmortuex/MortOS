@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
-"""Create a MortFS v1 disk image for MORT OS (host-side mkfs).
+"""Create a MortFS disk image for MORT OS (host-side mkfs).
 
-    python kernel/mkfs.py disk.img                          # empty 16 MiB MortFS
-    python kernel/mkfs.py disk.img --size 32                # size in MiB (default 16)
-    python kernel/mkfs.py disk.img --add notes.txt          # seed a host file
-    python kernel/mkfs.py disk.img --add host.txt:name.txt  # seed under another name
-    python kernel/mkfs.py disk.img --add-bin prog.bin       # seed raw bytes (no CRLF fix)
-    python kernel/mkfs.py disk.img --add-bin p.bin:app.bin  # ...under another name
+    python mkfs.py disk.img                          # empty 16 MiB MortFS
+    python mkfs.py disk.img --size 32                # size in MiB (default 16)
+    python mkfs.py disk.img --add notes.txt          # seed a host file
+    python mkfs.py disk.img --add host.txt:name.txt  # seed under another name
+    python mkfs.py disk.img --add-bin prog.bin       # seed raw bytes (no CRLF fix)
+    python mkfs.py disk.img --add-bin p.bin:app.bin  # ...under another name
 
 Text files added with --add are CRLF->LF normalized (the kernel's `cat`/`run`
 want plain LF); binaries must use --add-bin, which stores the exact bytes so
 compiled program images are never corrupted.
 
 WARNING: the image at the given path is created OR OVERWRITTEN — running this
-against an existing image wipes everything on it. `python kernel/build.py disk`
+against an existing image wipes everything on it. `python build.py disk`
 is the non-destructive path (it creates the image only if missing).
 
-On-disk format (kernel/docs/fs-design.md, section 2): sector 0 is the
-superblock, sectors 1..8 the 64-entry file table, and data extents start at
-sector 16, a fixed 128 sectors (64 KiB) per file. All integers are
-little-endian u32, matching what the kernel's raw *u32 loads produce on x86.
+On-disk format (docs/fs-design.md, section 2 for the base v1 layout; see the
+"MortFS v2" note near the top of that doc for the type/parent/uid/mode/mtime
+fields this file now writes, VERSION below): sector 0 is the superblock,
+sectors 1..8 the 64-entry file table, and data extents start at sector 16, a
+fixed 128 sectors (64 KiB) per file. All integers are little-endian u32,
+matching what the kernel's raw *u32 loads produce on x86.
 """
 import argparse
 import os
@@ -163,9 +165,9 @@ def _self_check(path, total_sectors, files):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Create a MortFS v1 disk image for MORT OS. WARNING: the "
+        description="Create a MortFS disk image for MORT OS. WARNING: the "
                     "image is created OR OVERWRITTEN — everything on an "
-                    "existing image is lost. Use `python kernel/build.py disk` "
+                    "existing image is lost. Use `python build.py disk` "
                     "to create it only if missing.")
     ap.add_argument("image", help="path of the disk image to create/overwrite")
     ap.add_argument("--size", type=int, default=16, metavar="N",
