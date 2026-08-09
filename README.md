@@ -111,6 +111,9 @@ python build.py prog      # compile programs/*.mx -> build/*.bin
 > exec ask.bin            # an interactive program: it asks your name and greets you
 ```
 
+See [`docs/programs.md`](docs/programs.md) for the syscall ABI and how to
+write your own program.
+
 Automated tests (all drive the real kernel headless in QEMU):
 
 ```bash

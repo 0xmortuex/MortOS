@@ -108,6 +108,8 @@ the syscall number from the mailbox and implements four calls: print with
 newline (1), print inline (2), return uptime in seconds (3), and read a
 line of input by polling the keyboard ports directly rather than via IRQ1,
 since the handler runs with interrupts off (`read_line`, `kmain.mx:1801-1854`).
+See [`docs/programs.md`](programs.md) for the full syscall table and how to
+build and write your own program.
 
 ## Filesystem, networking, shell
 
