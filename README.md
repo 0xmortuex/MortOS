@@ -85,6 +85,13 @@ MORT OS -- interrupt-driven. type 'help', Enter
 (`~ $` is the auto-logged-in user's home-directory prompt, drawn by
 `draw_prompt`, `kmain.mx:709`-`727`.)
 
+That banner and prompt are what you're reading in the QEMU display window
+itself — there is no serial console to `tail` instead. Nothing in `boot.s`,
+`idt.s`, or `kmain.mx` touches a UART or `0x3F8` (COM1); all console output
+goes through either VGA text memory (`put_index`) or the drawn framebuffer
+console (`draw_glyph`), both funneled through `put_cell_at`
+(`kmain.mx:505`-`517`).
+
 `run` auto-creates `build/disk.img` (16 MiB, MortFS) and attaches it, so files
 you `write` in the OS survive reboots. `python mkfs.py build/disk.img` wipes it
 clean (add `--add host.txt:name.txt` to seed files). Try it:
