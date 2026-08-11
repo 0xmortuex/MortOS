@@ -10,7 +10,8 @@ Not every file under `net/` is part of the protocol stack: `net/hardware.mx`
 (generic PCI capability scan + PC-speaker audio), `net/audio.mx`,
 `net/hci_usb.mx` (USB host-controller enumeration), and `net/settings.mx`
 (the Settings app) live here too but are unrelated to mortnet. This document
-only covers the networking layers.
+only covers the networking layers — see [`docs/hardware.md`](hardware.md)
+for the PCI/USB/audio side.
 
 ## Layers, bottom to top
 

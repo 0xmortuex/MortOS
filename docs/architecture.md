@@ -52,8 +52,10 @@ In order: `heap_init()` carves the dynamic-memory heap out of high RAM,
 disk, `acct_init()`/`ensure_home()`/`login_default()` set up and log into
 the one built-in user account, `run_script(1)` runs the boot script from a
 multiboot module if one was passed in, and the prompt is drawn. Only after
-all of that does `kmain` call `usb_boot_init()`, `init_pit()` (arms the
-~100 Hz PIT on IRQ0), optionally `open_launcher()` on the graphics path, and
+all of that does `kmain` call `usb_boot_init()` (a one-shot, polling-only
+UHCI enumeration — see [`docs/hardware.md`](hardware.md)), `init_pit()`
+(arms the ~100 Hz PIT on IRQ0), optionally `open_launcher()` on the graphics
+path, and
 finally `asm("sti")` to enable interrupts — everything before that line runs
 with interrupts off. The function ends in `while true { asm("hlt"); }`
 (`kmain.mx:3622-3624`): once interrupts are on, all real work happens inside
