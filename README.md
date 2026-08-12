@@ -130,6 +130,9 @@ python test_exec.py       # build programs, seed, boot, exec, check syscall outp
 python test_gfx.py        # boot the ISO, screendump, assert the desktop + console rendered
 ```
 
+See [`docs/testing.md`](docs/testing.md) for what each script actually
+checks and the keyboard/screen-scrape harness they share.
+
 The graphical desktop comes up on the ISO path (`run-iso`), where Limine
 provides the framebuffer. The bare `-kernel` path has no framebuffer, so the
 kernel falls back to VGA text mode there — which is why the text-driven tests
