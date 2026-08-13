@@ -89,7 +89,8 @@ shell command — there is no concept of a background process.
 `g_app` (`kmain.mx:49`) selects which of four apps is active: `0` Terminal,
 `1` Files, `2` Vex (browser), `3` Settings. `switch_app()` (`kmain.mx:2839-2850`) just sets `g_app`, redraws
 the top bar, and calls that app's own draw function
-(`terminal_activate`/`files_draw`/`vex_draw`/`settings_draw`) — there's no
+(`terminal_activate`/`files_draw`/`vex_draw`/`settings_draw`, the last
+detailed in [`docs/settings.md`](settings.md)) — there's no
 generic window/widget abstraction, each app owns its own draw + key-handler
 pair, dispatched by the `if g_app == N` chain in `on_key()` above. `F12`
 opens the power menu as a modal overlay from any app (`g_overlay`,
