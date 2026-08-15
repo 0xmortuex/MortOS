@@ -1,3 +1,9 @@
+// Orphaned duplicate: this file is never referenced anywhere in the repo
+// (no include/import of "font_data.mxinc" in build.py or any *.mx/*.s file
+// — confirmed by grep). The 8x16 bitmap font it declares is instead embedded
+// directly in the kernel at kmain.mx:74-331 as this same `g_font` array,
+// byte-for-byte identical to the one below. See docs/architecture.md's
+// "Orphaned files" note.
 let g_font: [u8; 4096] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

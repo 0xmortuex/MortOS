@@ -137,3 +137,18 @@ long-mode transition, no scheduler or multitasking, no dynamic loading
 abstraction beyond the four hardcoded `g_app` slots described above. These
 aren't gaps in this document — they're genuinely absent from the kernel as
 it stands today.
+
+## Orphaned files
+
+`font_data.mxinc` (repo root) is never referenced anywhere in the source —
+no `build.py` step, and no `*.mx`/`*.s` file includes or imports it
+(confirmed by grepping the whole repo for `font_data`). It declares a
+`g_font: [u8; 4096]` bitmap-font array that is byte-for-byte identical to
+the one actually compiled in, which is embedded directly inside `kmain.mx`
+at `kmain.mx:74`-`331` (also named `g_font`, used by `draw_glyph`,
+`kmain.mx:420`). The file appears to be a leftover from before the font
+data was inlined into the kernel source; it costs nothing at build time
+since nothing pulls it in, but it's dead weight in the tree. A human could
+safely `git rm` it — deleting an unreferenced file changes no kernel
+behavior — but that's left as a call for a human to make rather than this
+docs-only pass.
