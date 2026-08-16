@@ -44,6 +44,46 @@ From `_start` (`boot.s:39-51`):
 (`linker.ld:8-13`) — the address `docs/memory-map.md` calls the kernel load
 address.
 
+## Build pipeline (`build()`, `build.py:105-155`)
+
+Before any of the above can boot, `python build.py build` (or `check`/`run`)
+turns the Mort source into the multiboot ELF that the boot chain loads:
+
+1. **Concatenate, then compile to C.** `kmain.mx` isn't compiled alone —
+   `build()` first reads every `net/*.mx` file (sorted, so output is
+   deterministic) and prepends that combined source to `kmain.mx` before
+   handing the whole thing to `mortc.compile_to_c(..., freestanding=True)`
+   as **one translation unit** (`build.py:109-122`). This is the same glue
+   loop `net/settings.mx`'s header comment points at to explain why an
+   unrelated Settings-app file lives under `net/`. Mort emits forward
+   prototypes, so it doesn't matter that `net/*.mx` is compiled before the
+   `kmain.mx` code that calls into it.
+2. **Cross-compile to 32-bit x86.** The generated C is compiled for
+   `x86-freestanding-none` (`build.py:51`) via Zig's C compiler
+   (`_zig()`, `build.py:96-103` — the reason `pip install ziglang` is a
+   build requirement). Two flags are load-bearing rather than cosmetic:
+   `-ffreestanding`/`-fno-builtin` (no hosted libc — see step 3) and
+   `-mno-sse -mno-sse2 -mno-mmx` — the kernel runs with SSE disabled
+   (`CR4.OSFXSR=0`), and at `-O2` the compiler can otherwise vectorize a
+   `memset`/zero-init into an `xorps` instruction, which would fault
+   (`#UD`) on real hardware; forbidding vector codegen keeps the network
+   buffers scalar (`build.py:127-132`).
+3. **Link in the freestanding runtime.** `runtime.c` (repo root) supplies
+   `memset`/`memcpy`/`memmove` — the primitives the optimizer reaches for
+   when lowering Mort array initialization or copies — since MortOS links
+   no hosted C library (`runtime.c:1-4`). It's compiled and linked into the
+   kernel exactly like `kmain.c`, `boot.s`, and `idt.s` (`build.py:139-146`).
+4. **Link into the multiboot ELF.** `boot.o`, `kmain.o`, `runtime.o`, and
+   `idt.o` are linked `-nostdlib -static -no-pie` with `linker.ld`
+   (`build.py:148-153`) into `build/kernel.elf` — the file the boot chain
+   above actually boots. `python build.py check` then re-parses that ELF's
+   header to confirm it's a valid 32-bit multiboot image before reporting
+   success (`check()`, `build.py:158-190`).
+
+`programs/*.mx` go through the same four-step recipe but linked
+differently (a fixed load address, no kernel symbols) — see
+[`docs/programs.md`](programs.md)'s build pipeline section for that path.
+
 ## Kernel entry (`kmain`, `kmain.mx:3589-3625`)
 
 In order: `heap_init()` carves the dynamic-memory heap out of high RAM,
