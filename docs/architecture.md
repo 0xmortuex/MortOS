@@ -139,6 +139,44 @@ The framebuffer console itself (`put_pixel`/`fill_rect`/`fill_gradient`,
 `kmain.mx:357-391`) is a flat pixel-pushing layer with no double buffering
 or dirty-rect tracking — every draw call writes straight to `g_fb`.
 
+## The Files and Vex apps
+
+Both are reachable only in graphics mode: the F1-F4 app-switch hotkeys are
+gated on `g_gfx` (`on_key`, `kmain.mx:3503`-`3508`), so on the bare
+`-kernel` text-mode path `g_app` never leaves `0` (Terminal) and neither
+app's code ever runs.
+
+**Files** (`g_app == 1`) is a two-view MortFS browser; its state is
+`g_files_sel`/`g_files_view`/`g_files_entry`/`g_files_count`
+(`kmain.mx:50`-`53`). The list view (`files_draw`, `kmain.mx:2691`-`2730`)
+walks all 64 file-table slots via `fs_entry_addr`, skips unused ones, and
+renders each in-use file's name and byte count, highlighting the row at
+`g_files_sel`. Enter (`files_open`, `kmain.mx:2746`-`2754`) reads the
+selected file into FILEBUF via `fs_read_file` and switches to the content
+view (`files_draw_content`, `kmain.mx:2681`-`2688`), which renders the raw
+bytes with `draw_page_text` (`kmain.mx:2638`). Esc (`files_back`,
+`kmain.mx:2756`-`2759`) always returns to the list regardless of which view
+is active; Up/Down (extended scancodes 72/80) only work in the list view,
+since `files_on_key` (`kmain.mx:2761`-`2774`) doesn't handle them in the
+content view. If `g_fs_ok` is false (no disk, or no valid MortFS on it),
+the app shows an error instead of the browser (`kmain.mx:2694`-`2698`).
+
+**Vex** (`g_app == 2`) is not a real browser — there's no network stack
+behind it, a fact its own "about" page states (`kmain.mx:2785`-`2786`).
+It's two static local pages selected by `g_vex_page` (`kmain.mx:54`):
+`vex_page_home` (`kmain.mx:2778`-`2787`), a tribute to the real Vex
+browser with a link out, and `vex_page_about` (`kmain.mx:2789`-`2796`), a
+paragraph about MORT OS itself. Keys `1`/`2` (scancodes 2/3) switch pages
+(`vex_on_key`, `kmain.mx:2816`-`2821`); despite the drawn URL box
+(`vex_draw`, `kmain.mx:2798`-`2814`), there's no address-bar input or any
+navigation beyond those two fixed pages.
+
+Switching to either app resets its state: `switch_app`
+(`kmain.mx:2839`-`2850`) always zeroes `g_files_view`/`g_files_sel` on
+entry to Files, so returning to it from another app never shows a stale
+content view or scroll position; Vex has no equivalent reset and simply
+redraws whatever `g_vex_page` was last set to.
+
 ## Programs and syscalls
 
 `exec <file>` (`exec_file`, `kmain.mx:1892`) copies a file's bytes from the
