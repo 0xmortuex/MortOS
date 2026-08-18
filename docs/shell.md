@@ -30,7 +30,7 @@ attached or its filesystem didn't parse.
 | `run <file>` | disk | Reads `<file>` and runs each line as a shell command (`run_file`, `kmain.mx:894`). Refuses to nest (`run: nested run not allowed`) because a script's `run` would clobber the shared `FILEBUF`. | `kmain.mx:2342` |
 | `exec <file>` | disk | Loads a compiled Mort program from `<file>` into the fixed program window at `0x00A00000` and jumps to it (`exec_file`, `kmain.mx:1892`); the program talks back to the kernel via `int 0x80` syscalls. Errors: `not found: <name>`, `empty program`. | `kmain.mx:2347` |
 | `whoami` | | Prints the current username and uid. | `kmain.mx:2352` |
-| `export NAME=value` | | Sets a shell environment variable (`env_set`). Usage error if there's no `=`. | `kmain.mx:2362` |
+| `export NAME=value` | | Sets a shell environment variable (`env_set`). Usage error if there's no `=`. Custom variables are capped at 8 slots (`g_env_name`/`g_env_val`, `kmain.mx:36`-`37`); a 9th *new* variable name is silently dropped with no error (`env_set`'s `g_env_count >= 8` check, `kmain.mx:1941`-`1943`) — re-`export`-ing an *existing* name still updates its value past the cap, since that path skips the count check. | `kmain.mx:2362` |
 | `env` | | Prints `USER`, `HOME`, `PATH`, `PWD`, then every variable set via `export`. | `kmain.mx:2380` |
 | `unset NAME` | | Removes a variable set via `export` (no-op if unset). | `kmain.mx:2392` |
 | `su [user]` | | Prompts for a password and, if it matches, switches the session uid/username to `user` (default `root`). Error: `su: no such user`, `su: authentication failure`. | `kmain.mx:2406` |
