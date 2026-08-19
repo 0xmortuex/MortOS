@@ -70,6 +70,7 @@ Requirements: Python 3, `pip install ziglang` (the C cross-compiler), and [QEMU]
 ```bash
 python build.py check     # build + verify it's a valid 32-bit multiboot ELF
 python build.py run       # build, then boot it fullscreen in QEMU (with the disk)
+python build.py window    # same as run, but in a resizable window instead of fullscreen
 ```
 
 The first thing on screen is the boot banner, printed at `kmain.mx:3599`, then
