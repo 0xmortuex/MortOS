@@ -57,7 +57,11 @@ def _parse_add(spec):
 
 
 def make(path, size_mib=16, adds=(), bins=()):
-    """Create (or overwrite) a MortFS v1 image at `path`.
+    """Create (or overwrite) a MortFS v2 image at `path`.
+
+    Every table entry is written with the v2 metadata fields below (file, root
+    parent, uid 0, mode 0o644), so a fresh image never needs the kernel's
+    v1->v2 in-place upgrade path.
 
     `adds` and `bins` are each an iterable of "HOST[:NAME]" specs (or
     (host, name) tuples); each seeds one file. `adds` files are CRLF->LF

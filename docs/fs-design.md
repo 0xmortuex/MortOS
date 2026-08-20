@@ -30,7 +30,7 @@ bug, and out of scope for a docs-only pass; see the backlog item.
 **MortFS has since grown a v2 format with directories, permissions, and
 ownership — not described anywhere below.** `fs_init` (`kmain.mx:1296`-`1332`)
 reads a `version` field from the superblock; `mkfs.py` (repo root) now
-writes `version = 2` (`mkfs.py:31`), and a disk built with the v1 tooling
+writes `version = 2` (`VERSION`, `mkfs.py:33`), and a disk built with the v1 tooling
 described in Section 5.1 is auto-upgraded in place on first boot (every
 existing file is reparented to root with mode `0644`, then the on-disk
 version is bumped to 2, `kmain.mx:1311`-`1326`). The extra 12 bytes live in
