@@ -12,6 +12,8 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 
 <img src="docs/mortos-power.png" alt="MORT OS power menu: Lock, Sleep, Restart, Shut down, with a live clock in the top bar" width="640" />
 
+<img src="docs/mortos-lock.png" alt="MORT OS lock screen: MORT OS / Locked, a password box, and 'type your password, then Enter'" width="640" />
+
 ## Networking — it serves a web page
 
 `net` brings up the RTL8139 NIC and leases an address over DHCP; `httpd` then serves an HTML page on port 80. This is the [mortnet](https://github.com/0xmortuex/mortnet) stack — NIC driver, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP, all written from scratch in Mort — vendored into `net/` and compiled into the kernel. See [`docs/networking.md`](docs/networking.md) for which file implements each layer and how `net`/`httpd` actually drive it.
@@ -30,6 +32,8 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 ## What it does
 
 - **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager**: a top bar and `F1`-`F4` app switching (`on_key`, `kmain.mx:3503-3508`) between a **Terminal**, a **Files** manager (browse MortFS, open files), a **Vex-styled browser** app (local pages, a tribute to [Vex](https://github.com/0xmortuex/Vex)), and a **Settings** control center (personalization, clock format, network/hardware controls — `net/settings.mx`; see [`docs/settings.md`](docs/settings.md) for every section, its search feature, and the on/off controls). `F5` opens a home launcher with icon tiles for all four apps plus Power (`open_launcher`, `kmain.mx:3362`). The whole shell renders to the framebuffer because only the cell-drawing primitive changed; everything else is untouched. Falls back to VGA text mode when no framebuffer is present (the bare `-kernel` path).
+
+![MORT OS home launcher: Terminal, Files, Vex, Settings, and Power tiles](docs/mortos-home.png)
 
 ![MORT OS Files app](docs/app-files.png)
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.
