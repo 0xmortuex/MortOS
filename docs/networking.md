@@ -29,7 +29,7 @@ for the PCI/USB/audio side.
 | DNS | `net/dns.mx` | RFC 1035 resolver client for A records — `dns_build_query` (`net/dns.mx:58`) and `dns_first_a` (`net/dns.mx:98`), including compression-pointer-aware name skipping (`dns_skip_name`, `net/dns.mx:73`). **Implemented and host-testable but not currently called from anywhere in the kernel** — no shell command or `net/netapp.mx` code path invokes it (verified by grep for `dns_` outside this file). It resolves no hostnames at runtime today. |
 | TCP | `net/tcp.mx` | RFC 793 segment format and checksum only — `tcp_build`/`tcp_verify` (`net/tcp.mx:55`-`78`). Per the file's own header comment (`net/tcp.mx:4`-`6`), the connection state machine (handshake, sequence tracking, teardown) is deliberately kept out of this file so the wire format stays host-testable; that state machine lives inline in `net_httpd` (see below). |
 | HTTP | `net/http.mx` | A minimal HTTP/1.1 response builder — `http_build_response` (`net/http.mx:63`) writes a `200 OK` with a correct `Content-Length`, and `http_is_get` (`net/http.mx:82`) checks for a `GET ` request line. |
-| Dispatch | `net/netcfg.mx` | `net_handle_frame` (`net/netcfg.mx:29`) is a pure frame-in/frame-out function: given a received Ethernet frame, it decides whether to answer (an ARP reply, or an ICMP echo reply) and builds the whole response. No hardware I/O, which is what makes it testable on the host against captured packets. |
+| Dispatch | `net/netcfg.mx` | `net_handle_frame` (`net/netcfg.mx:35`) is a pure frame-in/frame-out function: given a received Ethernet frame, it decides whether to answer (an ARP reply, or an ICMP echo reply) and builds the whole response. No hardware I/O, which is what makes it testable on the host against captured packets. |
 | Kernel bridge | `net/netapp.mx` | Wires the stack above to the kernel's shell and NIC driver — see below. |
 
 ## What `net` and `httpd` actually do
@@ -59,7 +59,7 @@ Both are shell commands dispatched in `run_command_impl`
   (`g_net_up`, checked at `net/netapp.mx:177`).
 
 Note that `net/netcfg.mx` initializes `g_our_ip` to a hardcoded
-`10.0.2.15` (`net/netcfg.mx:13`) — QEMU's default SLIRP guest address — but
+`10.0.2.15` (`net/netcfg.mx:18`) — QEMU's default SLIRP guest address — but
 `net_dhcp` immediately zeroes it (`net/netapp.mx:58`) and then overwrites it
 with whatever address DHCP actually leases, so the hardcoded value is never
 the address the kernel answers on once `net` has run.

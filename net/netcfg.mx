@@ -7,8 +7,13 @@
 // makes "MORT OS answers a ping" testable on the host with real captured packets,
 // and it is the same function the kernel's RX loop calls for every frame.
 
-// Our MAC is learned from the card at init (rtl_mac). Our IP is fixed to QEMU's
-// default SLIRP guest address so the demo needs no DHCP (that arrives in M3).
+// Our MAC is learned from the card at init (rtl_mac). This initializer is
+// QEMU's default SLIRP guest address, but it's only ever the address that's
+// actually live for the brief window before DHCP runs: net_dhcp()
+// (net/netapp.mx:46-121) zeroes g_our_ip at the start of every lease attempt
+// (net/netapp.mx:57-58) and calls net_set_ip() again with the leased address
+// on a DHCP ACK (net/netapp.mx:95) — DHCP is fully implemented (net/dhcp.mx),
+// not a future milestone.
 let g_our_mac: [u8; 6] = [0; 6];
 let g_our_ip: [u8; 4] = [10, 0, 2, 15];
 
@@ -16,7 +21,8 @@ fn net_set_mac(addr: u64) {
     mac_copy(&g_our_mac as u64, addr);
 }
 
-// Set our IPv4 address — hardcoded at boot, or learned from DHCP in M3.
+// Set our IPv4 address — called with this file's own hardcoded default at
+// load time, then again by net_dhcp() (net/netapp.mx) once a lease completes.
 fn net_set_ip(addr: u64) {
     ip4_copy(&g_our_ip as u64, addr);
 }
