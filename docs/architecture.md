@@ -89,8 +89,9 @@ differently (a fixed load address, no kernel symbols) — see
 In order: `heap_init()` carves the dynamic-memory heap out of high RAM,
 `fb_init()` looks for a framebuffer, `fs_init()`/`fs_ensure_layout()`/
 `fs_populate_bin()` mount MortFS and seed `/bin /etc /home /var` on a fresh
-disk, `acct_init()`/`ensure_home()`/`login_default()` set up and log into
-the one built-in user account, `run_script(1)` runs the boot script from a
+disk, `acct_init()`/`ensure_home()`/`login_default()` build the two built-in
+accounts (`root` and `mortuex`) and auto-log-in as the latter — see
+[`docs/accounts.md`](accounts.md) — `run_script(1)` runs the boot script from a
 multiboot module if one was passed in, and the prompt is drawn. Only after
 all of that does `kmain` call `usb_boot_init()` (a one-shot, polling-only
 UHCI enumeration — see [`docs/hardware.md`](hardware.md)), `init_pit()`
