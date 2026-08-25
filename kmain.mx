@@ -1583,7 +1583,11 @@ fn fs_create_full(name: *u8, parent: u32, typ: u8) -> u32 {
     return slot;
 }
 
-// A file at the root (the pre-directories default; used by `write`'s fast path).
+// A file at the root (typ=0, parent=255) — the pre-directories v1 shortcut.
+// Dead code as of MortFS v2: `write`'s creation path (kmain.mx:2302-2311)
+// always resolves the target directory via fs_parent_of and calls
+// fs_create_full directly, even for root-level files, so this wrapper has
+// no call sites anywhere in the repo (confirmed by grep).
 fn fs_create(name: *u8) -> u32 {
     return fs_create_full(name, 255, 0);
 }

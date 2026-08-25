@@ -4,12 +4,17 @@
 MortFS v1, and everything scoped below has since been built and shipped: the
 ATA PIO driver (`ata_init`/`ata_read`/`ata_write`, `kmain.mx:1175`-`1241`),
 the on-disk format and filesystem core (`fs_init`, `kmain.mx:1296`;
-`fs_read_file`, `kmain.mx:1662`; `fs_create`, `kmain.mx:1587`; `fs_remove`,
+`fs_read_file`, `kmain.mx:1662`; `fs_create_full`, `kmain.mx:1533`; `fs_remove`,
 `kmain.mx:1732`), the five shell commands (`ls`/`cat`/`write`/`rm`/`run`,
 documented with line citations in [`docs/shell.md`](shell.md)), and the
 host-side `mkfs.py` (repo root, not `kernel/mkfs.py` as drafted below) with
 `build.py disk` integration. The `g_run_depth` nested-`run` guard from
 Section 4.5 is real too (`kmain.mx:40`, checked at `kmain.mx:895`).
+
+(`fs_create`, `kmain.mx:1587`, a root-only convenience wrapper this section
+originally cited here, is now dead code — every real creation path, including
+`write`'s, calls `fs_create_full` directly; see its own updated comment and
+the "Code follow-ups" backlog item below.)
 
 The sections below are kept as-is as a historical record of the design
 rationale and on-disk format — most of it (Sections 0-5) still accurately

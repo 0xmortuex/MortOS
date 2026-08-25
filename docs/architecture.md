@@ -198,7 +198,7 @@ build and write your own program.
 These three subsystems each have their own detailed reference; this doc
 only places them in the picture:
 
-- **MortFS** (disk + files): `fs_init`/`fs_read_file`/`fs_create`/`fs_remove`
+- **MortFS** (disk + files): `fs_init`/`fs_read_file`/`fs_create_full`/`fs_remove`
   and the ATA PIO driver underneath it — see
   [`docs/fs-design.md`](fs-design.md) for the on-disk format and
   [`docs/memory-map.md`](memory-map.md) for `SECBUF`/`TABCACHE`/`FILEBUF`.
