@@ -121,6 +121,18 @@ all behavior after `sti`:
   which bumps `g_ticks` (backs the `uptime` command).
 - **`int 0x80` (syscall)** → `syscall_isr` (`idt.s:170-174`) → `on_syscall()`
   (`kmain.mx:1860`), described below.
+- **CPU exceptions (vectors 0-31)** → each vector gets its own stub
+  (`ISR_STUB`, `idt.s:180-184`) that pushes the vector number and jumps to
+  a shared `isr_common` (`idt.s:219-226`), which `cli`s, calls
+  `on_exception(vec)` (`kmain.mx:2629-2635`), then `hlt`s in an infinite
+  loop. Unlike the three sources above, this path never returns — no
+  `iret`, no end-of-interrupt — so a fault is unrecoverable; only a reboot
+  clears it. `on_exception` prints the raw vector number through the same
+  `put_cell_at` (`kmain.mx:505-517`) funnel as everything else (so it's
+  visible in both VGA text and framebuffer graphics mode), not a
+  per-vector fault name: the `crash` shell command's `ud2` (`kmain.mx:2573`,
+  vector 6, `#UD`) prints `*** CPU EXCEPTION #6 -- HALTED ***`, not
+  "Invalid Opcode".
 
 Only one compiled program can run at a time, synchronously, from inside a
 shell command — there is no concept of a background process.
