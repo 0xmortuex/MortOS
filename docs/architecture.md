@@ -35,7 +35,7 @@ From `_start` (`boot.s:39-51`):
    (`idt.s:98-101`), the timer gate at `0x20` (`idt.s:103-106`), and the
    syscall gate at `0x80` (`idt.s:108-111`) — then `lidt`s it (`idt.s:113`).
 3. `push %ebx; call mort_kmain` hands the multiboot info pointer (left in
-   `%ebx` by the bootloader) to `kmain(mbinfo)` in `kmain.mx:3589`.
+   `%ebx` by the bootloader) to `kmain(mbinfo)` in `kmain.mx:3593`.
 4. If `kmain` ever returns, `_start` does `cli; hlt` in a loop rather than
    running off into undefined memory (`boot.s:48-51`).
 
@@ -84,7 +84,7 @@ turns the Mort source into the multiboot ELF that the boot chain loads:
 differently (a fixed load address, no kernel symbols) — see
 [`docs/programs.md`](programs.md)'s build pipeline section for that path.
 
-## Kernel entry (`kmain`, `kmain.mx:3589-3625`)
+## Kernel entry (`kmain`, `kmain.mx:3593-3629`)
 
 In order: `heap_init()` carves the dynamic-memory heap out of high RAM,
 `fb_init()` looks for a framebuffer, `fs_init()`/`fs_ensure_layout()`/
@@ -99,7 +99,7 @@ UHCI enumeration — see [`docs/hardware.md`](hardware.md)), `init_pit()`
 path, and
 finally `asm("sti")` to enable interrupts — everything before that line runs
 with interrupts off. The function ends in `while true { asm("hlt"); }`
-(`kmain.mx:3622-3624`): once interrupts are on, all real work happens inside
+(`kmain.mx:3626-3628`): once interrupts are on, all real work happens inside
 IRQ handlers.
 
 ## Execution model: no scheduler, no processes
@@ -112,15 +112,15 @@ Shell and UI state lives in global variables at the top of `kmain.mx`
 all behavior after `sti`:
 
 - **IRQ1 (keyboard)** → `keyboard_isr` (`idt.s:137-145`) → `mort_on_key` →
-  `on_key()` (`kmain.mx:3491`), which reads the scancode and either routes
+  `on_key()` (`kmain.mx:3495`), which reads the scancode and either routes
   it to an open overlay (`g_overlay != 0`), an app-switch hotkey (F1-F5,
-  graphics only, `kmain.mx:3503-3508`), the active app's own handler when
-  `g_app` isn't the terminal (`kmain.mx:3510-3518`), or the terminal/shell
+  graphics only, `kmain.mx:3507-3512`), the active app's own handler when
+  `g_app` isn't the terminal (`kmain.mx:3514-3522`), or the terminal/shell
   scancode-to-ASCII path.
 - **IRQ0 (timer, ~100 Hz)** → `timer_isr` (`idt.s:147-155`) → `mort_on_tick`,
   which bumps `g_ticks` (backs the `uptime` command).
 - **`int 0x80` (syscall)** → `syscall_isr` (`idt.s:170-174`) → `on_syscall()`
-  (`kmain.mx:1860`), described below.
+  (`kmain.mx:1864`), described below.
 - **CPU exceptions (vectors 0-31)** → each vector gets its own stub
   (`ISR_STUB`, `idt.s:180-184`) that pushes the vector number and jumps to
   a shared `isr_common` (`idt.s:219-226`), which `cli`s, calls
@@ -140,7 +140,7 @@ shell command — there is no concept of a background process.
 ## The desktop / window manager
 
 `g_app` (`kmain.mx:49`) selects which of four apps is active: `0` Terminal,
-`1` Files, `2` Vex (browser), `3` Settings. `switch_app()` (`kmain.mx:2839-2850`) just sets `g_app`, redraws
+`1` Files, `2` Vex (browser), `3` Settings. `switch_app()` (`kmain.mx:2843-2854`) just sets `g_app`, redraws
 the top bar, and calls that app's own draw function
 (`terminal_activate`/`files_draw`/`vex_draw`/`settings_draw`, the last
 detailed in [`docs/settings.md`](settings.md)) — there's no
@@ -155,53 +155,53 @@ or dirty-rect tracking — every draw call writes straight to `g_fb`.
 ## The Files and Vex apps
 
 Both are reachable only in graphics mode: the F1-F4 app-switch hotkeys are
-gated on `g_gfx` (`on_key`, `kmain.mx:3503`-`3508`), so on the bare
+gated on `g_gfx` (`on_key`, `kmain.mx:3507`-`3512`), so on the bare
 `-kernel` text-mode path `g_app` never leaves `0` (Terminal) and neither
 app's code ever runs.
 
 **Files** (`g_app == 1`) is a two-view MortFS browser; its state is
 `g_files_sel`/`g_files_view`/`g_files_entry`/`g_files_count`
-(`kmain.mx:50`-`53`). The list view (`files_draw`, `kmain.mx:2691`-`2730`)
+(`kmain.mx:50`-`53`). The list view (`files_draw`, `kmain.mx:2695`-`2734`)
 walks all 64 file-table slots via `fs_entry_addr`, skips unused ones, and
 renders each in-use file's name and byte count, highlighting the row at
-`g_files_sel`. Enter (`files_open`, `kmain.mx:2746`-`2754`) reads the
+`g_files_sel`. Enter (`files_open`, `kmain.mx:2750`-`2758`) reads the
 selected file into FILEBUF via `fs_read_file` and switches to the content
-view (`files_draw_content`, `kmain.mx:2681`-`2688`), which renders the raw
-bytes with `draw_page_text` (`kmain.mx:2638`). Esc (`files_back`,
-`kmain.mx:2756`-`2759`) always returns to the list regardless of which view
+view (`files_draw_content`, `kmain.mx:2685`-`2692`), which renders the raw
+bytes with `draw_page_text` (`kmain.mx:2642`). Esc (`files_back`,
+`kmain.mx:2760`-`2763`) always returns to the list regardless of which view
 is active; Up/Down (extended scancodes 72/80) only work in the list view,
-since `files_on_key` (`kmain.mx:2761`-`2774`) doesn't handle them in the
+since `files_on_key` (`kmain.mx:2765`-`2778`) doesn't handle them in the
 content view. If `g_fs_ok` is false (no disk, or no valid MortFS on it),
-the app shows an error instead of the browser (`kmain.mx:2694`-`2698`).
+the app shows an error instead of the browser (`kmain.mx:2698`-`2702`).
 
 **Vex** (`g_app == 2`) is not a real browser — there's no network stack
-behind it, a fact its own "about" page states (`kmain.mx:2785`-`2786`).
+behind it, a fact its own "about" page states (`kmain.mx:2789`-`2790`).
 It's two static local pages selected by `g_vex_page` (`kmain.mx:54`):
-`vex_page_home` (`kmain.mx:2778`-`2787`), a tribute to the real Vex
-browser with a link out, and `vex_page_about` (`kmain.mx:2789`-`2796`), a
+`vex_page_home` (`kmain.mx:2782`-`2791`), a tribute to the real Vex
+browser with a link out, and `vex_page_about` (`kmain.mx:2793`-`2800`), a
 paragraph about MORT OS itself. Keys `1`/`2` (scancodes 2/3) switch pages
-(`vex_on_key`, `kmain.mx:2816`-`2821`); despite the drawn URL box
-(`vex_draw`, `kmain.mx:2798`-`2814`), there's no address-bar input or any
+(`vex_on_key`, `kmain.mx:2820`-`2825`); despite the drawn URL box
+(`vex_draw`, `kmain.mx:2802`-`2818`), there's no address-bar input or any
 navigation beyond those two fixed pages.
 
 Switching to either app resets its state: `switch_app`
-(`kmain.mx:2839`-`2850`) always zeroes `g_files_view`/`g_files_sel` on
+(`kmain.mx:2843`-`2854`) always zeroes `g_files_view`/`g_files_sel` on
 entry to Files, so returning to it from another app never shows a stale
 content view or scroll position; Vex has no equivalent reset and simply
 redraws whatever `g_vex_page` was last set to.
 
 ## Programs and syscalls
 
-`exec <file>` (`exec_file`, `kmain.mx:1892`) copies a file's bytes from the
+`exec <file>` (`exec_file`, `kmain.mx:1896`) copies a file's bytes from the
 disk's FILEBUF straight to the fixed load address `0x00A00000`
-(`kmain.mx:1908-1916`, see `docs/memory-map.md` for why not `0x01000000`)
+(`kmain.mx:1912-1920`, see `docs/memory-map.md` for why not `0x01000000`)
 and calls into it. The loaded program shares no symbols with the kernel;
 it communicates entirely through a fixed mailbox at `0x009F0000` plus
-`int 0x80` (`kmain.mx:1773-1779`). `on_syscall()` (`kmain.mx:1860`) reads
+`int 0x80` (`kmain.mx:1777-1783`). `on_syscall()` (`kmain.mx:1864`) reads
 the syscall number from the mailbox and implements four calls: print with
 newline (1), print inline (2), return uptime in seconds (3), and read a
 line of input by polling the keyboard ports directly rather than via IRQ1,
-since the handler runs with interrupts off (`read_line`, `kmain.mx:1801-1854`).
+since the handler runs with interrupts off (`read_line`, `kmain.mx:1805-1858`).
 See [`docs/programs.md`](programs.md) for the full syscall table and how to
 build and write your own program.
 
