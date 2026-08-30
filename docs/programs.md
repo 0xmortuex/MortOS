@@ -11,7 +11,7 @@ physical memory.
 
 A program is **a flat 32-bit binary with no ELF header** — just raw
 `.text`/`.rodata`/`.data`/`.bss` bytes linked to load at the fixed address
-`0x00A00000` (`kmain.mx:1775`). It shares no symbols with the kernel: the
+`0x00A00000` (`kmain.mx:1779`). It shares no symbols with the kernel: the
 only way in is its entry point, and the only way to ask the kernel for
 anything is the syscall mailbox below.
 
@@ -57,11 +57,11 @@ present the moment the OS boots.
 
 ## Running one
 
-From the MORT OS shell: `exec <name>.bin` (`exec_file`, `kmain.mx:1892`-
-`1920`, dispatched at `kmain.mx:2347`). It looks the file up on MortFS,
+From the MORT OS shell: `exec <name>.bin` (`exec_file`, `kmain.mx:1896`-
+`1924`, dispatched at `kmain.mx:2351`). It looks the file up on MortFS,
 reads it into `FILEBUF`, zeroes the full 64 KiB program region at
 `0x00A00000`, copies the binary in, and calls into it (`exec_enter`,
-`kmain.mx:1886`-`1888`, an indirect call through the stored entry address
+`kmain.mx:1890`-`1892`, an indirect call through the stored entry address
 so the call's register clobber can't reach live kernel state). There is no
 process isolation or separate stack — a program that overflows the stack
 corrupts kernel state (see the note in `docs/memory-map.md`).
@@ -70,7 +70,7 @@ corrupts kernel state (see the note in `docs/memory-map.md`).
 
 A program asks the kernel to do something by filling a fixed mailbox and
 raising `int 0x80`. Every field is a 4-byte little-endian value
-(`kmain.mx:1777`-`1779`):
+(`kmain.mx:1782`-`1783`):
 
 | Address | Field | Direction |
 |---|---|---|
@@ -78,15 +78,15 @@ raising `int 0x80`. Every field is a 4-byte little-endian value
 | `0x009F0004` | arg0 | program → kernel |
 | `0x009F000C` | return value | kernel → program |
 
-`on_syscall()` (`kmain.mx:1860`-`1881`) reads the number and implements
+`on_syscall()` (`kmain.mx:1864`-`1885`) reads the number and implements
 exactly four calls:
 
 | # | Name | arg0 | Returns | Behavior |
 |---|---|---|---|---|
-| `1` | print + newline | pointer to a NUL-terminated string | — | Prints the string, then a newline (`kmain.mx:1862`-`1867`) |
-| `2` | print inline | pointer to a NUL-terminated string | — | Prints the string with no trailing newline, so a prompt and typed input can share a line (`kmain.mx:1868`-`1871`) |
-| `3` | uptime | — | seconds since boot | Writes `g_ticks / 100` to the return slot (`kmain.mx:1872`-`1875`) |
-| `4` | read line | — | pointer to the input buffer at `0x009F0100` | Polls the keyboard ports directly rather than via IRQ1, since the handler that services `int 0x80` runs with interrupts off (`kmain.mx:1876`-`1880`); the returned buffer holds up to 120 chars + NUL (`docs/memory-map.md`) |
+| `1` | print + newline | pointer to a NUL-terminated string | — | Prints the string, then a newline (`kmain.mx:1866`-`1871`) |
+| `2` | print inline | pointer to a NUL-terminated string | — | Prints the string with no trailing newline, so a prompt and typed input can share a line (`kmain.mx:1872`-`1875`) |
+| `3` | uptime | — | seconds since boot | Writes `g_ticks / 100` to the return slot (`kmain.mx:1876`-`1879`) |
+| `4` | read line | — | pointer to the input buffer at `0x009F0100` | Polls the keyboard ports directly rather than via IRQ1, since the handler that services `int 0x80` runs with interrupts off (`kmain.mx:1880`-`1884`); the returned buffer holds up to 120 chars + NUL (`docs/memory-map.md`) |
 
 There is no syscall 0 and no calls above 4 — an unrecognized number is
 silently a no-op (`on_syscall` falls through its `if` chain with no `else`).

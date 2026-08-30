@@ -4,14 +4,14 @@
 MortFS v1, and everything scoped below has since been built and shipped: the
 ATA PIO driver (`ata_init`/`ata_read`/`ata_write`, `kmain.mx:1175`-`1241`),
 the on-disk format and filesystem core (`fs_init`, `kmain.mx:1296`;
-`fs_read_file`, `kmain.mx:1662`; `fs_create_full`, `kmain.mx:1533`; `fs_remove`,
-`kmain.mx:1732`), the five shell commands (`ls`/`cat`/`write`/`rm`/`run`,
+`fs_read_file`, `kmain.mx:1666`; `fs_create_full`, `kmain.mx:1533`; `fs_remove`,
+`kmain.mx:1736`), the five shell commands (`ls`/`cat`/`write`/`rm`/`run`,
 documented with line citations in [`docs/shell.md`](shell.md)), and the
 host-side `mkfs.py` (repo root, not `kernel/mkfs.py` as drafted below) with
 `build.py disk` integration. The `g_run_depth` nested-`run` guard from
 Section 4.5 is real too (`kmain.mx:40`, checked at `kmain.mx:895`).
 
-(`fs_create`, `kmain.mx:1587`, a root-only convenience wrapper this section
+(`fs_create`, `kmain.mx:1591`, a root-only convenience wrapper this section
 originally cited here, is now dead code — every real creation path, including
 `write`'s, calls `fs_create_full` directly; see its own updated comment and
 the "Code follow-ups" backlog item below.)
@@ -29,7 +29,7 @@ exception: those are `kernel/mkfs.py`/`kernel/build.py` invocations a reader
 could actually try to run, so they were updated to the real flat-layout
 paths (`mkfs.py`, `build.py` at repo root) rather than left broken. Note
 that `kmain.mx`'s own `bad filesystem` message still prints the stale
-`kernel/mkfs.py` path (`kmain.mx:1751`) — that's a source bug, not a doc
+`kernel/mkfs.py` path (`kmain.mx:1755`) — that's a source bug, not a doc
 bug, and out of scope for a docs-only pass; see the backlog item.
 
 **MortFS has since grown a v2 format with directories, permissions, and
@@ -49,9 +49,9 @@ resolved component-by-component, including `.`/`..`, by `fs_resolve`
 (`kmain.mx:1367`). Directories carry no data extent (`start_sector` and
 `capacity_sectors` are both written `0`, `kmain.mx:1562`-`1563`), so unlike
 file deletion (Section 2.6), removing a directory leaks no disk space.
-`fs_ensure_layout` (`kmain.mx:1613`-`1621`) creates a standard `/bin /etc
+`fs_ensure_layout` (`kmain.mx:1617`-`1625`) creates a standard `/bin /etc
 /home /var` layout on first boot, and `fs_populate_bin`
-(`kmain.mx:1637`-`1658`) reparents seeded `*.bin` programs into `/bin` with
+(`kmain.mx:1641`-`1662`) reparents seeded `*.bin` programs into `/bin` with
 mode `0755` so they're runnable via `$PATH`. The corresponding shell
 commands (`cd`, `ls`, `mkdir`, `rmdir`, `chmod`, `chown`, plus `pwd`,
 `whoami`, `su`, `sudo`) are documented with line citations in
@@ -433,7 +433,7 @@ return the index.
 `fs_init` failure modes: no disk (`g_disk_ok` false) → silent, commands say
 `no disk (boot with -hda disk.img)`; disk present but wrong magic →
 commands say `bad filesystem (host: python kernel/mkfs.py disk.img)`
-(quoted verbatim from `kmain.mx:1751`, stale `kernel/` prefix and all).
+(quoted verbatim from `kmain.mx:1755`, stale `kernel/` prefix and all).
 Distinguish with two flags: `g_disk_ok` (ATA) and `g_fs_ok` (magic).
 
 ---

@@ -35,7 +35,7 @@ for the PCI/USB/audio side.
 ## What `net` and `httpd` actually do
 
 Both are shell commands dispatched in `run_command_impl`
-(`kmain.mx:2131`-`2137`), which call straight into `net/netapp.mx`:
+(`kmain.mx:2135`-`2142`), which call straight into `net/netapp.mx`:
 
 - **`net`** runs `net_dhcp` (`net/netapp.mx:46`). It calls `rtl_init` to bring
   up the NIC, reads the card's burned-in MAC via `rtl_mac`, then builds and
