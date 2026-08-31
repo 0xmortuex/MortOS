@@ -82,7 +82,7 @@ switches (`test_gfx.py:105`-`140`) — e.g. that pixel `(296, 10)` is the
 active-tab color at boot and after switching back to F1, and the
 inactive-tab color after `F2`. That assertion does not match the kernel as
 currently written: `draw_topbar()` (`kmain.mx:467`-`473`, called from
-`switch_app()` at `kmain.mx:2841`) draws only the "MORT OS" label, the "F5
+`switch_app()` at `kmain.mx:2845`) draws only the "MORT OS" label, the "F5
 home"/"F12 power" hints, and the clock — no per-app tabs. The helper that
 would draw a highlighted tab, `draw_tab()` (`kmain.mx:453`-`462`), is
 defined but never called anywhere in the source (confirmed by grep), and

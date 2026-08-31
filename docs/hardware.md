@@ -73,7 +73,7 @@ polling until IRQ support is added`.
    (`0x0100`).
 4. **Enumerate the first device found** — a hand-built control-transfer
    pipeline using a fixed frame list (`g_usb_frame_mem`) and a single
-   queue head (`g_usb_qh`/`usb_td`, `net/hci_usb.mx:28`-`30`) that chains
+   queue head (`usb_qh()`/`usb_td()`, `net/hci_usb.mx:28`-`30`) that chains
    transfer descriptors:
    - `usb_boot_descriptor8()` (`:32`-`64`) — `GET_DESCRIPTOR` for the first
      8 bytes of the device descriptor (enough to read `bMaxPacketSize0`).
