@@ -103,6 +103,17 @@ Both redraw the whole desktop (`draw_desktop()`) immediately, so the change
 is visible outside the Settings window too — the accent color, for example,
 also colors the selected sidebar row (`settings_sidebar_row`, `:32`-`41`).
 
+`g_accent` itself is a genuinely global theme value, not scoped to the
+Settings window: every app's title bar is painted by the same
+`window_title()` helper (`kmain.mx:476`-`479`, `fill_rect`+`draw_text_abs`
+both in `g_accent`), and all four apps call it when they draw — Terminal
+(`draw_desktop()`/`terminal_activate()`, `kmain.mx:493`/`2830`), Files
+(`kmain.mx:2696`), Vex (`kmain.mx:2803`), and Settings itself
+(`net/settings.mx:442`, plus the dynamic `"settings - connecting..."` title
+during a DHCP attempt, `net/settings.mx:539`). So an accent color picked in
+Personalization recolors every app's title bar the next time it draws, not
+just Settings' own sidebar highlight.
+
 ## Clock (`g_settings_view == 2`)
 
 `settings_draw_clock()` (`:398`-`404`). Two on/off toggles, both applied
