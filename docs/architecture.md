@@ -134,6 +134,24 @@ all behavior after `sti`:
   vector 6, `#UD`) prints `*** CPU EXCEPTION #6 -- HALTED ***`, not
   "Invalid Opcode".
 
+Every text-entry point funnels raw scancodes through the same
+`scancode_to_ascii(sc, shift)` (`kmain.mx:606-641`): a fixed, hand-built
+US-QWERTY table covering only the alphabetic keys, the digit row (with its
+shifted symbols `!@#$%^&*()`), space, and eleven punctuation keys
+(`-_=+[]{};:'"` `` `~ `` `\|,.<>/?`), each `if sc == N` line mapping one
+scancode. Anything else — Tab, Caps Lock, function keys, the numpad, media
+keys — falls through to `return 0`. All four call sites treat `0` the same
+way, silently dropping the keystroke rather than inserting a character: the
+main shell prompt (`on_key`, `kmain.mx:3580-3581`), the blocking poll-based
+line reader used for `su`/`passwd`/masked prompts (`kread_line`,
+`kmain.mx:2935`, `ch != 0` at `kmain.mx:2961`), the program `read-line`
+syscall (`read_line`, `kmain.mx:1810`, `ch != 0` at `kmain.mx:1843`), and
+the lock screen (`lock_on_key`, `kmain.mx:3449`, `ch != 0` at
+`kmain.mx:3473`). There is no Caps Lock state anywhere in the source — only
+the tracked Shift flag (`g_shift` or a local `shift`) selects the
+upper/shifted row, so `scancode_to_ascii`'s own two-value `shift: bool`
+parameter is the entire case-toggle mechanism.
+
 Only one compiled program can run at a time, synchronously, from inside a
 shell command — there is no concept of a background process.
 
