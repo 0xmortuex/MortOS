@@ -29,6 +29,50 @@ boot and vary by machine/bootloader.
 | `0x04000000` (64 MiB) | — | heap top **fallback**, used only if the multiboot mem-lower/upper flag (bit 0) is absent | fixed | `kmain.mx:1044` |
 | *(computed)* | — | heap top in the common case: `0x00100000 + mem_upper_kib * 1024`, clamped to `0x20000000` (512 MiB) if `mem_upper` looks absurd | dynamic | `kmain.mx:1046-1051` |
 
+## The kernel heap allocator (`kmalloc`/`kfree`)
+
+The heap region above (`0x01000000` up to the computed top) isn't just a
+range — it's carved into blocks by a first-fit allocator with block headers
+(`kmain.mx:1031-1039`'s own header comment lays out the design; the code
+below matches it exactly). Every block starts with an 8-byte header,
+`[size: u32][used: u32]`, immediately followed by the payload; `kmalloc`
+hands back `blk + 8`, i.e. the address right after the header.
+
+- **`kmalloc(size)`** (`kmain.mx:1062-1095`) rounds `size` up to `need =
+  (size + 8 + 7) & 0xFFFFFFF8` (header plus payload, 8-byte aligned), then
+  scans every block from `g_heap_base` to the current break `g_heap_brk`
+  looking for a free (`used == 0`) block whose `size` is at least `need`.
+  A fitting block big enough to leave 16+ spare bytes is split in place
+  (`kmain.mx:1074-1079`: the remainder becomes its own free block, the front
+  part gets marked used); otherwise the whole block is handed out as-is. If
+  no free block fits, `kmalloc` grows the heap by bumping `g_heap_brk` past
+  a brand-new block (`kmain.mx:1090-1094`), returning `0` if that would
+  cross `g_heap_end`.
+- **`kfree(ptr)`** (`kmain.mx:1098-1118`) marks the block's `used` word `0`,
+  then coalesces **forward only**: while the next block (by address) is
+  before `g_heap_brk` and is also free, it's absorbed into the current
+  block's `size` and the loop repeats, so a chain of consecutive free
+  blocks merges into one. There is no backward pass — if the block
+  immediately *before* the one just freed is already free, the two are
+  never merged (that earlier block's own `kfree` call already finished its
+  forward scan before this block existed as free), so first-fit can still
+  see them as two separate candidates on the next `kmalloc`. This is a
+  real, verifiable fragmentation gap in the allocator, not a hypothetical
+  one.
+- **`heap_used()`** (`kmain.mx:1121-1131`) walks the same block chain and
+  sums the `size` of every block marked used — but has no caller anywhere
+  in the repo (confirmed by grep across every `.mx` file). `mem`
+  (`kmain.mx:2127`, `docs/shell.md`) reports total RAM from the multiboot
+  memory map, not heap usage; `heap_used` isn't wired into it or anywhere
+  else.
+- **`kmalloc`/`kfree` themselves have exactly one caller pair in the whole
+  codebase: `memtest`** (`kmain.mx:971-1021`, the `memtest` shell command).
+  Nothing else in the kernel allocates from this heap — it's foundational
+  infrastructure `heap_init`'s own comment describes as being for "the
+  shell, the package manager, and the rest" (`kmain.mx:1033-1034`), not yet
+  used by any shipped feature. See `docs/shell.md`'s `memtest` row for what
+  that command actually verifies.
+
 ## Notes
 
 - **The boot stack** is a fixed-size (16 KiB) `.bss` region (`boot.s:33-37`,
