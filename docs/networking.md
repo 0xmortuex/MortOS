@@ -28,7 +28,7 @@ for the PCI/USB/audio side.
 | DHCP | `net/dhcp.mx` | RFC 2131 client (DORA exchange): `dhcp_build_discover`/`dhcp_build_request` (`net/dhcp.mx:50`-`73`) and `dhcp_find_option`/`dhcp_msg_type` (`net/dhcp.mx:76`-`104`) to parse OFFER/ACK. |
 | DNS | `net/dns.mx` | RFC 1035 resolver client for A records — `dns_build_query` (`net/dns.mx:58`) and `dns_first_a` (`net/dns.mx:98`), including compression-pointer-aware name skipping (`dns_skip_name`, `net/dns.mx:73`). **Implemented and host-testable but not currently called from anywhere in the kernel** — no shell command or `net/netapp.mx` code path invokes it (verified by grep for `dns_` outside this file). It resolves no hostnames at runtime today. |
 | TCP | `net/tcp.mx` | RFC 793 segment format and checksum only — `tcp_build` (`net/tcp.mx:55`). Per the file's own header comment (`net/tcp.mx:4`-`6`), the connection state machine (handshake, sequence tracking, teardown) is deliberately kept out of this file so the wire format stays host-testable; that state machine lives inline in `net_httpd` (see below). `tcp_verify` (`net/tcp.mx:76`), `tcp_window` (`net/tcp.mx:38`), and `tcp_payload` (`net/tcp.mx:39`) are all unused — `net_httpd`'s own state machine reads what it needs (flags, sequence numbers, header length) through other accessors instead. |
-| HTTP | `net/http.mx` | A minimal HTTP/1.1 response builder — `http_build_response` (`net/http.mx:63`) writes a `200 OK` with a correct `Content-Length`, and `http_is_get` (`net/http.mx:82`) checks for a `GET ` request line. |
+| HTTP | `net/http.mx` | A minimal HTTP/1.1 response builder — `http_build_response` (`net/http.mx:63`) writes a `200 OK` with a correct `Content-Length`, and `http_is_get` (`net/http.mx:82`) checks for a `GET ` request line. `http_is_get` reads only the first 4 bytes of the request (`net/http.mx:83`-`87`) — it never looks at the request path or any header, so there is no routing and no 404: every `GET` to any path (`/`, `/favicon.ico`, anything) gets the same `200 OK` page back. |
 | Dispatch | `net/netcfg.mx` | `net_handle_frame` (`net/netcfg.mx:35`) is a pure frame-in/frame-out function: given a received Ethernet frame, it decides whether to answer (an ARP reply, or an ICMP echo reply) and builds the whole response. No hardware I/O, which is what makes it testable on the host against captured packets. |
 | Kernel bridge | `net/netapp.mx` | Wires the stack above to the kernel's shell and NIC driver — see below. |
 
@@ -53,7 +53,10 @@ Both are shell commands dispatched in `run_command_impl`
   own inline single-connection TCP server state machine
   (`net/netapp.mx:193`-`259`) — SYN → SYN/ACK, then on the first `GET`
   payload it serves the fixed page from `net_page` (`net/netapp.mx:141`)
-  via `http_build_response`, then FIN. It only tracks one connection's state
+  via `http_build_response`, then FIN. The request's path is never
+  inspected (`http_is_get`, `net/http.mx:82`-`87`, only checks that the
+  request starts with `GET `), so any path returns the same page — there
+  is no routing and no 404. It only tracks one connection's state
   (`g_h_mac`/`g_h_ip`/`g_h_port`/`g_h_snd`/`g_h_rcv`, `net/netapp.mx:146`-`151`)
   at a time, and requires `net` to have already leased an address
   (`g_net_up`, checked at `net/netapp.mx:177`).
