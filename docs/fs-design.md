@@ -44,7 +44,23 @@ what Section 2.3 below calls "reserved" (entry offset 40..51): `type` (u8,
 directory; `255`=root), `uid` (u8, owning user), `mode` (u32, Unix-style
 permission bits), and `mtime` (u32, seconds since midnight, from the CMOS
 RTC) — accessors at `kmain.mx:1269`-`1273`, comment block at
-`kmain.mx:1261`-`1267`. Root is implicit (not a table entry); a path is
+`kmain.mx:1261`-`1267`.
+
+`mtime` is write-only in practice, despite the "last-modified" name its
+comment gives it. `fs_set_meta` (`kmain.mx:1286`-`1293`) stamps it from
+`fs_now()`'s CMOS-RTC read (`kmain.mx:1276`-`1283`) exactly once, when
+`fs_create_full` creates the entry (the call at `kmain.mx:1578`); appending
+to an *existing* file — `write`'s `i != 64` branch (`kmain.mx:2294`-`2305`)
+falling through to `fs_append_line` (`kmain.mx:2317`) — never calls
+`fs_set_meta` again, so the stamp really records creation time, not the
+last write. And `fs_mtime` itself (`kmain.mx:1273`) has zero callers
+anywhere in the source: `ls` (`kmain.mx:2195`-`2214`) prints the type
+marker, octal mode bits, name, size, and owning uid, but never the
+timestamp, and no `stat`/`touch`-style command exists either. So the value
+is faithfully written to disk on every create and never read back by
+anything.
+
+Root is implicit (not a table entry); a path is
 resolved component-by-component, including `.`/`..`, by `fs_resolve`
 (`kmain.mx:1367`). Directories carry no data extent (`start_sector` and
 `capacity_sectors` are both written `0`, `kmain.mx:1562`-`1563`), so unlike
