@@ -57,7 +57,7 @@ DISK = os.path.join(BUILD, "disk.img")
 # loads at 0x00A00000 and enters at byte 0 (see programs/prog.ld / pstart.s).
 PROGRAMS = os.path.join(HERE, "programs")
 
-# Bootable-ISO tooling (downloaded + cached once under kernel/tools/).
+# Bootable-ISO tooling (downloaded + cached once under tools/).
 TOOLS = os.path.join(HERE, "tools")
 ISO = os.path.join(BUILD, "mort.iso")
 # Limine boots our multiboot1 kernel unchanged; both tools are portable Windows

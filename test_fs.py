@@ -3,7 +3,7 @@
 disk stack end to end: ls/cat/write/rm/run, error paths, and persistence
 across a reboot.
 
-    python kernel/test_fs.py
+    python test_fs.py
 
 Needs QEMU (same discovery as build.py). Scratch disk images go to the system
 temp dir, never the repo. Exit code 0 = all passed.

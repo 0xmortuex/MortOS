@@ -4,7 +4,7 @@ them onto a fresh MortFS image, boots the kernel in QEMU, and `exec`s them —
 proving a Mort program compiled to a flat binary loads off disk, runs at
 0x00A00000, makes int 0x80 syscalls, and returns to the shell.
 
-    python kernel/test_exec.py
+    python test_exec.py
 
 Needs QEMU + `pip install ziglang`. Scratch image goes to the temp dir.
 """

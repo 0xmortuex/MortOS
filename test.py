@@ -5,8 +5,8 @@ Boots the kernel headless in QEMU, types commands over the QEMU human
 monitor (`sendkey`), reads the VGA text screen back out of guest memory
 (`memsave 0xb8000`), and asserts on what the shell drew.
 
-    python kernel/test.py smoke                 # build + boot + run the smoke tests
-    python kernel/test.py smoke --disk foo.img  # same, with a disk attached as -hda
+    python test.py smoke                 # build + boot + run the smoke tests
+    python test.py smoke --disk foo.img  # same, with a disk attached as -hda
 
 Python stdlib only. Works on Windows (pipes to `-monitor stdio` are drained
 by a background thread; nothing here assumes a tty or select()).

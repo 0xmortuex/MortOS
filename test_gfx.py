@@ -3,7 +3,7 @@
 QEMU (the Limine path provides a linear framebuffer), and screendumps the
 framebuffer to assert the desktop, the console, and app-switching all render.
 
-    python kernel/test_gfx.py
+    python test_gfx.py
 
 Needs QEMU + the ISO toolchain (Limine/xorriso, downloaded+cached by build.py).
 Stdlib only — parses the PPM screendump directly, no Pillow.
