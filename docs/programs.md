@@ -55,6 +55,23 @@ needed). `python build.py disk`/`ensure_disk()` builds and seeds all of them
 onto `build/disk.img` as `<name>.bin` (`build.py:357`-`365`) so they're
 present the moment the OS boots.
 
+**That disk-seeding happens exactly once.** `ensure_disk()` returns
+immediately if `build/disk.img` already exists (`build.py:349`-`350`) —
+true after the very first `run`/`window`/`disk`/`run-iso`, since none of
+them ever delete or rewrite an existing image. `prog()` itself never
+touches `disk.img` at all; it only (re)writes the loose `build/*.bin`
+files. So editing an existing `programs/*.mx` file, or adding a new one,
+and re-running `python build.py prog` does **not** change what `exec`
+sees inside a running OS — the binary already seeded on disk is
+untouched. To pick up the rebuilt program, delete `build/disk.img` (or
+reseed it by hand, e.g. `python mkfs.py build/disk.img --add-bin
+build/<name>.bin` for each program you want on it) so the next
+`run`/`window`/`disk` reseeds it via `ensure_disk()`. This is the
+opposite of the kernel itself: `_run()` (`build.py:403`-`421`) calls
+`build()` on every `run`/`window`, so kernel-source changes always take
+effect on the next boot — only the disk image, program binaries
+included, is create-once.
+
 ## Running one
 
 From the MORT OS shell: `exec <name>.bin` (`exec_file`, `kmain.mx:1896`-

@@ -124,6 +124,13 @@ python build.py prog      # compile programs/*.mx -> build/*.bin
 > exec ask.bin            # an interactive program: it asks your name and greets you
 ```
 
+Note: program binaries are seeded onto `build/disk.img` only once, when
+`ensure_disk()` first creates it (`build.py:341`-`365`) — editing a program
+and re-running `python build.py prog` alone won't update what `exec` sees
+inside a running OS, since `prog` never touches the disk image. Delete
+`build/disk.img` to get a rebuilt program back onto disk; see
+[`docs/programs.md`](docs/programs.md#build-pipeline) for the details.
+
 See [`docs/programs.md`](docs/programs.md) for the syscall ABI and how to
 write your own program.
 
