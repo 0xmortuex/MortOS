@@ -108,7 +108,7 @@ There is no scheduler, no task list, and no preemption anywhere in this
 codebase — the repo has exactly one flow of control besides interrupts.
 Shell and UI state lives in global variables at the top of `kmain.mx`
 (e.g. `g_row` at `kmain.mx:10`, `g_uid` at `kmain.mx:25`, `g_gfx` at
-`kmain.mx:42`, `g_app` at `kmain.mx:49`), and three interrupt sources drive
+`kmain.mx:42`, `g_app` at `kmain.mx:49`), and four interrupt sources drive
 all behavior after `sti`:
 
 - **IRQ1 (keyboard)** → `keyboard_isr` (`idt.s:137-145`) → `mort_on_key` →
@@ -133,6 +133,18 @@ all behavior after `sti`:
   per-vector fault name: the `crash` shell command's `ud2` (`kmain.mx:2573`,
   vector 6, `#UD`) prints `*** CPU EXCEPTION #6 -- HALTED ***`, not
   "Invalid Opcode".
+
+Every other vector — the 224 slots from 32 to 255, minus the three gates
+above — is wired to `default_isr` (`idt.s:157-162`): acknowledge the PIC
+(EOI) and `iret`, with no Mort-level handling at all. `load_idt` fills all
+224 of those gates with `default_isr` first (`idt.s:90-96`), then
+overwrites the keyboard/timer/syscall gates on top of it (`idt.s:98-111`).
+In normal operation this stub can never run: `remap_pic`'s own PIC mask
+(`0xFC` on the master, `idt.s:131`; `0xFF` on the slave, `idt.s:133`)
+enables only IRQ0 and IRQ1 and masks the master's IRQ2 cascade line, so no
+other hardware IRQ can reach the CPU even if the (fully masked) slave PIC
+raised one, and nothing in the source executes a software `int` in that
+range. It's a safety net for a case the rest of the source never triggers.
 
 Every text-entry point funnels raw scancodes through the same
 `scancode_to_ascii(sc, shift)` (`kmain.mx:606-641`): a fixed, hand-built
