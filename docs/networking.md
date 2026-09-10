@@ -27,7 +27,7 @@ for the PCI/USB/audio side.
 | UDP | `net/udp.mx` | RFC 768 — `udp_build` (`net/udp.mx:31`), the transport DHCP and DNS ride on. `udp_verify` (`net/udp.mx:48`) and `udp_src_port` (`net/udp.mx:12`) are both unused. |
 | DHCP | `net/dhcp.mx` | RFC 2131 client (DORA exchange): `dhcp_build_discover`/`dhcp_build_request` (`net/dhcp.mx:50`-`73`) and `dhcp_find_option`/`dhcp_msg_type` (`net/dhcp.mx:76`-`104`) to parse OFFER/ACK. |
 | DNS | `net/dns.mx` | RFC 1035 resolver client for A records — `dns_build_query` (`net/dns.mx:58`) and `dns_first_a` (`net/dns.mx:98`), including compression-pointer-aware name skipping (`dns_skip_name`, `net/dns.mx:73`). **Implemented and host-testable but not currently called from anywhere in the kernel** — no shell command or `net/netapp.mx` code path invokes it (verified by grep for `dns_` outside this file). It resolves no hostnames at runtime today. |
-| TCP | `net/tcp.mx` | RFC 793 segment format and checksum only — `tcp_build` (`net/tcp.mx:55`). Per the file's own header comment (`net/tcp.mx:4`-`6`), the connection state machine (handshake, sequence tracking, teardown) is deliberately kept out of this file so the wire format stays host-testable; that state machine lives inline in `net_httpd` (see below). `tcp_verify` (`net/tcp.mx:76`), `tcp_window` (`net/tcp.mx:38`), and `tcp_payload` (`net/tcp.mx:39`) are all unused — `net_httpd`'s own state machine reads what it needs (flags, sequence numbers, header length) through other accessors instead. |
+| TCP | `net/tcp.mx` | RFC 793 segment format and checksum only — `tcp_build` (`net/tcp.mx:55`). Per the file's own header comment (`net/tcp.mx:4`-`6`), the connection state machine (handshake, sequence tracking, teardown) is deliberately kept out of this file so the wire format stays host-testable; that state machine lives inline in `net_httpd` (see below). `tcp_verify` (`net/tcp.mx:76`), `tcp_window` (`net/tcp.mx:38`), and `tcp_payload` (`net/tcp.mx:39`) are all unused — `net_httpd`'s own state machine reads what it needs (flags, sequence numbers, header length) through other accessors instead. `TCP_RST` (`net/tcp.mx:18`) is defined but never used anywhere: `httpd_xmit` (`net/netapp.mx:153`-`173`) never sends it, and `net_httpd`'s flag checks (`net/netapp.mx:206`-`247`) never test for it on a received segment — see the "httpd has no reset handling" note below. |
 | HTTP | `net/http.mx` | A minimal HTTP/1.1 response builder — `http_build_response` (`net/http.mx:63`) writes a `200 OK` with a correct `Content-Length`, and `http_is_get` (`net/http.mx:82`) checks for a `GET ` request line. `http_is_get` reads only the first 4 bytes of the request (`net/http.mx:83`-`87`) — it never looks at the request path or any header, so there is no routing and no 404: every `GET` to any path (`/`, `/favicon.ico`, anything) gets the same `200 OK` page back. |
 | Dispatch | `net/netcfg.mx` | `net_handle_frame` (`net/netcfg.mx:35`) is a pure frame-in/frame-out function: given a received Ethernet frame, it decides whether to answer (an ARP reply, or an ICMP echo reply) and builds the whole response. No hardware I/O, which is what makes it testable on the host against captured packets. |
 | Kernel bridge | `net/netapp.mx` | Wires the stack above to the kernel's shell and NIC driver — see below. |
@@ -60,6 +60,36 @@ Both are shell commands dispatched in `run_command_impl`
   (`g_h_mac`/`g_h_ip`/`g_h_port`/`g_h_snd`/`g_h_rcv`, `net/netapp.mx:146`-`151`)
   at a time, and requires `net` to have already leased an address
   (`g_net_up`, checked at `net/netapp.mx:177`).
+
+### httpd has no reset handling
+
+`net_httpd`'s `state` variable (`net/netapp.mx:189`) only ever moves
+0 → 1 (SYN accepted, `net/netapp.mx:213`-`221`) → 2 (handshake ACK seen,
+`net/netapp.mx:224`-`227`) → 0 (client's FIN seen with a matching sequence
+number, `net/netapp.mx:247`-`251`) — those are the only three assignments
+to `state` in the whole function (confirmed by reading it end to end,
+`net/netapp.mx:189`-`260`). `TCP_RST` is never sent or checked anywhere
+(see the TCP row above), which has two consequences neither the code nor
+any prior doc pass called out:
+
+- **A second connection attempt while `state != 0` is silently dropped,
+  not refused.** A new client's SYN only matches the accept branch when
+  `state == 0` (`net/netapp.mx:213`); while a first connection is in
+  progress, that SYN instead falls into the `else` at
+  `net/netapp.mx:222`, whose `sport == g_h_port` check
+  (`net/netapp.mx:223`) fails for a different client's port, so the frame
+  produces no response at all — no SYN/ACK, and no RST to reject it
+  either. The second client's TCP stack just times out waiting for a
+  reply.
+- **A client that resets instead of closing gracefully leaves the server
+  stuck.** The only way `state` returns to 0 is a received segment
+  carrying `TCP_FIN` at the exact expected sequence number
+  (`net/netapp.mx:247`). If a client's stack sends `TCP_RST` after reading
+  the response instead of a graceful `FIN` (or the closing `FIN` is
+  simply lost), nothing in the loop ever resets `state` back to 0 — there
+  is no timeout either. `net_httpd` then serves no further requests from
+  any client until the kernel is rebooted, even though the loop is still
+  running and polling the NIC.
 
 Note that `net/netcfg.mx` initializes `g_our_ip` to a hardcoded
 `10.0.2.15` (`net/netcfg.mx:18`) — QEMU's default SLIRP guest address — but
