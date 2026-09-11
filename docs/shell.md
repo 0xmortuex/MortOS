@@ -59,6 +59,43 @@ tail of a `sudo`/`su` invocation — is passed through `expand_vars`
 (`kmain.mx:1985`) before dispatch, so `echo $USER` or `cd $HOME` work
 anywhere a command line is accepted.
 
+### `export`ing `USER`, `HOME`, `PATH`, or `PWD` is invisible
+
+`export` (`kmain.mx:2366`-`2383`) has no reserved-name check — it hands
+whatever name follows `export ` straight to `env_set`
+(`kmain.mx:1942`-`1959`), which has no such check either. But `env_get`
+(`kmain.mx:1963`-`1978`), the function every read goes through, tests for
+four computed built-ins with `streq` *before* it ever consults the custom
+table (`env_find`, `kmain.mx:1930`-`1940`): `USER` and `PWD` return live
+kernel state, `PATH` returns the hardcoded literal `"/bin"`
+(`kmain.mx:1966`), and `HOME` is rebuilt from the current username
+(`kmain.mx:1967`-`1970`). One consequence, not previously documented:
+
+- `export PATH=/custom` (or `USER=`/`HOME=`/`PWD=`) does create a real
+  entry in the 8-slot custom-variable table, and does count against the
+  cap (`kmain.mx:1946`-`1947`) — it isn't rejected. But every subsequent
+  read of `$PATH` (via `expand_vars`) or `env`'s `PATH=` line still calls
+  `env_get("PATH")`, which returns `/bin` regardless: the exported value
+  is stored but never once read back anywhere in the source.
+- `env` (`kmain.mx:2384`-`2395`) prints the four built-ins first, then
+  loops over every custom entry and prints it by name
+  (`kmain.mx:2390`-`2392`) — through the same `env_get`. So a `PATH`
+  entry that exists only because it was exported still resolves through
+  the built-in check, and `env` shows `PATH=/bin` twice, identically,
+  rather than showing what was actually exported.
+- Separately, `try_exec_path` (`kmain.mx:2060`-`2096`) — the code that
+  turns an unrecognized command into `/bin/<name>` or `/bin/<name>.bin`
+  (`kmain.mx:2081`, `kmain.mx:2090`) — never calls `env_get("PATH")` at
+  all; the `/bin/` prefix is a literal string on both lines. `PATH`'s
+  built-in value and the shell's actual command-lookup path are
+  unconnected code, so no `export` could ever change where commands are
+  found even if the shadowing above didn't exist.
+
+`unset PATH` (or `USER`/`HOME`/`PWD`) still works as an escape hatch: it
+removes the shadowed entry via `env_find`, which only ever searches the
+custom table (`kmain.mx:1930`-`1940`), freeing the wasted slot — though
+the read behavior it was hiding was never affected either way.
+
 ## Line editing
 
 Independent of the command table above, the input loop that builds `cmd`
