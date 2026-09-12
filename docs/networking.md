@@ -42,11 +42,17 @@ Both are shell commands dispatched in `run_command_impl`
   broadcasts a DHCP DISCOVER (`net_dhcp_send`, `net/netapp.mx:124`, which
   wraps a `dhcp_build_discover` body in UDP/IP/Ethernet by hand — it does not
   go through `net_handle_frame`). It polls `rtl_poll_rx` in a spin loop
-  (`net/netapp.mx:77`-`115`), watching for a DHCP OFFER, sending a REQUEST in
-  reply, and finishing when an ACK lands — at which point `net_set_ip` records
-  the leased address and prints it. There is no fallback: if no OFFER arrives
-  before the spin count runs out, `net` prints `DHCP: no response (timeout)`
-  and returns false.
+  (`net/netapp.mx:77`-`115`), watching for a DHCP OFFER and sending exactly
+  **one** REQUEST in reply the first time `have_offer` goes true
+  (`net/netapp.mx:108`-`113`, guarded by a `requested` flag so a later
+  duplicate OFFER can't trigger a second REQUEST), finishing when an ACK
+  lands — at which point `net_set_ip` records the leased address and prints
+  it. There is no retry and no fallback: the spin loop (30,000,000 iterations,
+  `net/netapp.mx:77`) runs to completion regardless of whether an OFFER was
+  ever seen, so `net` prints the same `DHCP: no response (timeout)` message
+  and returns false for two different failures — no OFFER ever arriving, or
+  an OFFER arriving but the REQUEST (or the server's ACK to it) being lost,
+  since the REQUEST is never resent.
 - **`httpd`** runs `net_httpd` (`net/netapp.mx:176`), an infinite loop (until
   reboot) that polls `rtl_poll_rx` and, per received frame: hands it to
   `net_handle_frame` for automatic ARP/ICMP replies, and separately runs its
