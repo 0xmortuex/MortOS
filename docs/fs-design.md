@@ -60,6 +60,11 @@ timestamp, and no `stat`/`touch`-style command exists either. So the value
 is faithfully written to disk on every create and never read back by
 anything.
 
+Separately, the CMOS-RTC read `fs_now()` performs is itself unguarded
+against the chip's own update cycle — the same `rtc_reg()` calls the
+top-bar clock uses, with the same gap; see
+[`docs/settings.md`](settings.md)'s Clock section for the detail.
+
 Root is implicit (not a table entry); a path is
 resolved component-by-component, including `.`/`..`, by `fs_resolve`
 (`kmain.mx:1367`). Directories carry no data extent (`start_sector` and

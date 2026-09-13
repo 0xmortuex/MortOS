@@ -125,6 +125,23 @@ immediately in `settings_enter()` (`:512`-`517`):
 Toggling either calls `draw_topbar()` right away, so the top-right clock
 updates without leaving Settings.
 
+### The RTC reads are unguarded against the chip's own update cycle
+
+`draw_clock()`'s three time reads (`rtc_conv(rtc_reg(0|2|4), binmode)`,
+`kmain.mx:3061`-`3063`) go through `rtc_reg()` (`kmain.mx:3031`-`3034`),
+which just does `outb(0x70, reg)` then `inb(0x71)` — nothing in the kernel
+ever reads CMOS register `0x0A` (confirmed by grep across every `.mx`/`.s`
+file: zero hits), which is where an MC146818-compatible RTC (this
+hardware) exposes its Update-In-Progress flag. The documented-safe way to
+read such a chip is to poll that flag (or read twice and compare) before
+trusting the seconds/minutes/hours registers, since the chip holds them
+mid-update for a stretch roughly once a second; this kernel does neither,
+so a read landing in that window can come back with a torn value in
+whichever field the update is touching (e.g. a minute that hasn't finished
+rolling over while the hour already has). `fs_now()` (`kmain.mx:1276`-
+`1283`) shares the exact same unguarded `rtc_reg()` calls to stamp file
+creation times — see [`docs/fs-design.md`](fs-design.md)'s `mtime` note.
+
 ## Accessibility (`g_settings_view == 3`)
 
 `settings_draw_accessibility()` (`:406`-`412`). Two toggles
