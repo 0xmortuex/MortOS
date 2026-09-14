@@ -53,7 +53,7 @@ let g_files_entry: u32 = 0;                                    // Files: entry i
 let g_files_count: u32 = 0;                                    // Files: number of listed files
 let g_vex_page: u32 = 0;                                       // Vex: current local page
 // ----- session / power state -----
-let g_overlay: u32 = 0;                                        // 0 none, 1 power menu, 2 lock, 3 sleep
+let g_overlay: u32 = 0;                                        // 0 none, 1 power menu, 2 lock, 3 sleep, 4 launcher
 let g_power_sel: u32 = 0;                                      // highlighted power-menu item (0..3)
 let g_launch_sel: u32 = 0;                                     // highlighted home-launcher tile (0..4)
 let g_ov_ext: bool = false;                                    // overlay's own extended-scancode flag

@@ -178,6 +178,47 @@ generic window/widget abstraction, each app owns its own draw + key-handler
 pair, dispatched by the `if g_app == N` chain in `on_key()` above. `F12`
 opens the power menu as a modal overlay from any app (`g_overlay`,
 `kmain.mx:3498-3499`); overlays intercept the keyboard ahead of app routing.
+
+### The overlay state machine
+
+`g_overlay` (`kmain.mx:56`) is actually a five-way state, though its own
+comment only ever listed three values (a drift last left uncorrected when the
+home launcher was added — the same stale-field-comment pattern already found
+and fixed once for `g_settings_view`, see [`docs/settings.md`](settings.md)):
+`0` none, `1` power menu (`F12`, `kmain.mx:3502-3504`), `2` lock, `3` sleep,
+`4` home launcher (`F5`, `kmain.mx:3512`). `on_key()`'s overlay gate
+(`kmain.mx:3498-3500`) routes every keystroke to `overlay_on_key()`
+(`kmain.mx:3482-3493`) whenever `g_overlay != 0`, which dispatches by value to
+`power_on_key`/`lock_on_key`/`launcher_on_key`, or (for sleep) handles
+wake-on-any-keypress inline.
+
+The four overlays don't dismiss the same way. Only the power menu's Esc-cancel
+path restores a saved pixel snapshot rather than repainting: `open_power_menu()`
+(`kmain.mx:3149-3160`) calls `save_box()` (`kmain.mx:3096-3109`) to copy the
+260x200 region under the flyout into `g_boxsave`, and `power_on_key`'s Esc
+branch (`kmain.mx:3438-3441`) calls `restore_box()` (`kmain.mx:3111-3124`) to
+copy it back exactly — cheap, since the power menu only ever covers that one
+small centered box. Every other overlay exit instead calls `restore_desktop()`
+(`kmain.mx:3163-3168`, a full gradient + window-frame + active-app + clock
+repaint): unlocking (`kmain.mx:3456-3457`), sleep waking on any keypress
+(`kmain.mx:3488-3489`), and the launcher's Esc (`kmain.mx:3394-3395`) and
+Enter-an-app (`kmain.mx:3401-3403`) branches. Picking "Power" from the
+launcher does both in sequence — `restore_desktop()` first, then
+`open_power_menu()` on the now-freshly-drawn desktop (`kmain.mx:3405-3406`) —
+so the box that call saves is always current, not stale launcher pixels. The
+full repaint elsewhere isn't an inconsistency: the lock and sleep screens both
+paint over the *entire* framebuffer themselves (`draw_lock`,
+`kmain.mx:3172-3201`; `draw_sleep`, `kmain.mx:3227-3231`), and the launcher
+does too (`draw_launcher`, `kmain.mx:3339-3364`), so `restore_box()`'s saved
+260x200 region would be far too small to undo any of them — `g_boxsave` is
+sized and used for exactly one transition.
+
+One more overlay asymmetry: the lock screen has no cancel key at all —
+`lock_on_key` (`kmain.mx:3449-3480`) only ever checks Enter, Backspace, Shift,
+and character keys; `Esc` (scancode `1`) isn't one of its `if` branches, falls
+through `scancode_to_ascii` as `0`, and is silently dropped like any other
+unmapped key — unlike the power menu and launcher, which both close on `Esc`.
+
 The framebuffer console itself (`put_pixel`/`fill_rect`/`fill_gradient`,
 `kmain.mx:357-391`) is a flat pixel-pushing layer with no double buffering
 or dirty-rect tracking — every draw call writes straight to `g_fb`.
