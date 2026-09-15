@@ -25,7 +25,7 @@ for the PCI/USB/audio side.
 | IPv4 | `net/ip.mx` | RFC 791 header, no fragmentation or options — `ip_build_header` (`net/ip.mx:57`). `ip_verify` (`net/ip.mx:50`) is unused; see "Unverified receive path" below. |
 | ICMP | `net/icmp.mx` | Echo request/reply only (ping) — `icmp_build_echo_reply` flips type 8→0 and recomputes the checksum over the whole message (`net/icmp.mx:46`-`58`). `icmp_verify` (`net/icmp.mx:17`) and `icmp_build_echo_request` (`net/icmp.mx:24`) — the receive-side check and the request-building counterpart a client, not a responder, would send — are both unused; see "Unverified receive path" below. |
 | UDP | `net/udp.mx` | RFC 768 — `udp_build` (`net/udp.mx:31`), the transport DHCP and DNS ride on. `udp_verify` (`net/udp.mx:48`) and `udp_src_port` (`net/udp.mx:12`) are both unused. |
-| DHCP | `net/dhcp.mx` | RFC 2131 client (DORA exchange): `dhcp_build_discover`/`dhcp_build_request` (`net/dhcp.mx:50`-`73`) and `dhcp_find_option`/`dhcp_msg_type` (`net/dhcp.mx:76`-`104`) to parse OFFER/ACK. |
+| DHCP | `net/dhcp.mx` | RFC 2131 client (DORA exchange): `dhcp_build_discover`/`dhcp_build_request` (`net/dhcp.mx:50`-`73`) and `dhcp_find_option`/`dhcp_msg_type` (`net/dhcp.mx:76`-`104`) to parse OFFER/ACK. `dhcp_find_option` is only ever called for option 53 (message type) and option 54 (server id) — see "DHCP asks for a gateway and DNS server, then discards them" below. |
 | DNS | `net/dns.mx` | RFC 1035 resolver client for A records — `dns_build_query` (`net/dns.mx:58`) and `dns_first_a` (`net/dns.mx:98`), including compression-pointer-aware name skipping (`dns_skip_name`, `net/dns.mx:73`). **Implemented and host-testable but not currently called from anywhere in the kernel** — no shell command or `net/netapp.mx` code path invokes it (verified by grep for `dns_` outside this file). It resolves no hostnames at runtime today. |
 | TCP | `net/tcp.mx` | RFC 793 segment format and checksum only — `tcp_build` (`net/tcp.mx:55`). Per the file's own header comment (`net/tcp.mx:4`-`6`), the connection state machine (handshake, sequence tracking, teardown) is deliberately kept out of this file so the wire format stays host-testable; that state machine lives inline in `net_httpd` (see below). `tcp_verify` (`net/tcp.mx:76`), `tcp_window` (`net/tcp.mx:38`), and `tcp_payload` (`net/tcp.mx:39`) are all unused — `net_httpd`'s own state machine reads what it needs (flags, sequence numbers, header length) through other accessors instead. `TCP_RST` (`net/tcp.mx:18`) is defined but never used anywhere: `httpd_xmit` (`net/netapp.mx:153`-`173`) never sends it, and `net_httpd`'s flag checks (`net/netapp.mx:206`-`247`) never test for it on a received segment — see the "httpd has no reset handling" note below. |
 | HTTP | `net/http.mx` | A minimal HTTP/1.1 response builder — `http_build_response` (`net/http.mx:63`) writes a `200 OK` with a correct `Content-Length`, and `http_is_get` (`net/http.mx:82`) checks for a `GET ` request line. `http_is_get` reads only the first 4 bytes of the request (`net/http.mx:83`-`87`) — it never looks at the request path or any header, so there is no routing and no 404: every `GET` to any path (`/`, `/favicon.ico`, anything) gets the same `200 OK` page back. |
@@ -66,6 +66,25 @@ Both are shell commands dispatched in `run_command_impl`
   (`g_h_mac`/`g_h_ip`/`g_h_port`/`g_h_snd`/`g_h_rcv`, `net/netapp.mx:146`-`151`)
   at a time, and requires `net` to have already leased an address
   (`g_net_up`, checked at `net/netapp.mx:177`).
+
+### DHCP asks for a gateway and DNS server, then discards them
+
+`dhcp_build_discover` sends a parameter request list (DHCP option 55) asking
+the server for the subnet mask (option 1), router (option 3), and DNS server
+(option 6) alongside the address itself (`net/dhcp.mx:54`-`56`). But
+`dhcp_find_option` — the only function that can pull a value back out of an
+OFFER or ACK's option bytes (`net/dhcp.mx:76`-`95`) — has exactly two call
+sites in the whole repo (confirmed by grep): `dhcp_msg_type`
+(`net/dhcp.mx:99`), which reads option 53 (message type), and one direct
+call in `net_dhcp` for option 54, the server id (`net/netapp.mx:90`). Options
+1, 3, and 6 are never looked up anywhere, so even though the server answers
+them, MORT OS never learns a subnet mask, a default gateway, or a DNS server
+address — there is no `g_gateway`, `g_netmask`, or `g_dns`-style variable
+anywhere in the source (grepped `kmain.mx`+`net/*.mx`), only `g_our_ip`
+(`net/netcfg.mx`) for the leased address itself. This is the concrete reason
+`net/dns.mx` (see the DNS row above) could not resolve a real-world hostname
+even if it were wired up: nothing in the kernel ever records which server to
+ask.
 
 ### httpd has no reset handling
 
