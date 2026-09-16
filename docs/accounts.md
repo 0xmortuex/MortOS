@@ -70,6 +70,36 @@ The same before-login-runs-as-root ordering is why the standard layout
 are root-owned on a fresh disk — both run at `kmain.mx:3605`-`3606`, ahead of
 `acct_init()`.
 
+## The seeded `hello.txt` belongs to root, not to you
+
+The paragraph above notes that the standard layout and reparented `*.bin`
+programs are root-owned on a fresh disk. The seeded `hello.txt` is a sharper
+case of the same fact, and one a new user is likely to hit directly.
+
+`mkfs.py`'s `make()` stamps *every* entry it writes — including `hello.txt` —
+with uid 0 (root) and mode `0644`
+(`struct.pack("<BBBBII", 0, 255, 0, 0, 0o644, 0)`, `mkfs.py:122`-`123`), and
+`ensure_disk()` seeds `hello.txt` this way on every fresh disk image
+(`build.py:341`-`365`). Unlike the seeded `*.bin` programs, `hello.txt` is
+never touched by `fs_populate_bin` — that function only reparents names
+ending in `.bin` (`ends_with_bin`, `kmain.mx:1628`-`1636`) — so it stays at
+the filesystem root, owned by root, mode `0644`, for the life of the disk
+image.
+
+That matters because the default session is `mortuex`, uid 1, not root (see
+"Login is automatic" above). Tracing `can_write(uid, mode)`
+(`kmain.mx:2978`-`2986`) for `hello.txt`'s stored `uid=0`/`mode=0644` against
+`g_uid=1`: the root case (`g_uid == 0`) doesn't apply, the owner case
+(`g_uid == uid`) doesn't apply, and `0644`'s other-write bit (`0002`) is
+unset — so the check fails. Concretely: `cat hello.txt` and `exec hello.bin`
+both work (read and exec are never checked — see "What is not checked"
+below), but `write hello.txt <text>` and `rm hello.txt`
+(`kmain.mx:2300`, `kmain.mx:2338`) both print `permission denied` for the
+default user, until you `su root` first. Files `mortuex` creates itself are
+unaffected: `fs_create_full` stamps new entries with the creating session's
+own uid (`g_uid`, `kmain.mx:1578`), so anything you create yourself stays
+writable and removable by you.
+
 ## Where the current user shows up
 
 | Surface | Source |
