@@ -2777,8 +2777,8 @@ fn files_on_key(sc: u8) {
     if sc == 1  { files_back(); return; }  // Esc
 }
 
-// Vex: a browser-styled app. NOT a real web browser — MORT OS has no network
-// stack; these are local pages paying homage to the real Vex (0xmortuex/Vex).
+// Vex: a browser-styled app. NOT a real web browser — mortnet (net/) is
+// server-only (no HTTP client); a tribute to the real Vex (0xmortuex/Vex).
 fn vex_page_home() {
     draw_text_abs("Vex", 200, 262, 0x4fd1c5, 0x0b0f14);
     draw_text_abs("A browser built just for you.", 232, 262, 0xffffff, 0x0b0f14);

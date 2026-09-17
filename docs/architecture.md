@@ -245,15 +245,22 @@ since `files_on_key` (`kmain.mx:2765`-`2778`) doesn't handle them in the
 content view. If `g_fs_ok` is false (no disk, or no valid MortFS on it),
 the app shows an error instead of the browser (`kmain.mx:2698`-`2702`).
 
-**Vex** (`g_app == 2`) is not a real browser — there's no network stack
-behind it, a fact its own "about" page states (`kmain.mx:2789`-`2790`).
-It's two static local pages selected by `g_vex_page` (`kmain.mx:54`):
-`vex_page_home` (`kmain.mx:2782`-`2791`), a tribute to the real Vex
-browser with a link out, and `vex_page_about` (`kmain.mx:2793`-`2800`), a
-paragraph about MORT OS itself. Keys `1`/`2` (scancodes 2/3) switch pages
-(`vex_on_key`, `kmain.mx:2820`-`2825`); despite the drawn URL box
-(`vex_draw`, `kmain.mx:2802`-`2818`), there's no address-bar input or any
-navigation beyond those two fixed pages.
+**Vex** (`g_app == 2`) is not a real browser — not because MORT OS lacks a
+network stack (`mortnet`, vendored into `net/`, is real and serves a page
+over TCP/IP; see [`docs/networking.md`](networking.md)), but because
+nothing gives Vex an HTTP *client*: `net`/`httpd` only ever serve one fixed
+page, they never fetch one. It's two static local pages selected by
+`g_vex_page` (`kmain.mx:54`): `vex_page_home` (`kmain.mx:2782`-`2791`), a
+tribute to the real Vex browser with a link out, and `vex_page_about`
+(`kmain.mx:2793`-`2800`), a paragraph about MORT OS itself. Both pages'
+own on-screen text has drifted from current source: `vex_page_home` still
+prints "there is no network stack here yet, so it can't load real
+websites" (`kmain.mx:2789`-`2790`), written before mortnet existed, and
+`vex_page_about`'s hint line "Switch apps any time with F1 / F2 / F3"
+(`kmain.mx:2799`) predates the F4 Settings app. Keys `1`/`2` (scancodes
+2/3) switch pages (`vex_on_key`, `kmain.mx:2820`-`2825`); despite the
+drawn URL box (`vex_draw`, `kmain.mx:2802`-`2818`), there's no
+address-bar input or any navigation beyond those two fixed pages.
 
 Switching to either app resets its state: `switch_app`
 (`kmain.mx:2843`-`2854`) always zeroes `g_files_view`/`g_files_sel` on

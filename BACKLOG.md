@@ -70,6 +70,63 @@ behavior, add a backlog item describing it and stop.
 - [x] The `docs/shell.md` citation-drift fix (2026-08-27) covered only that one file; this pass covered the two files it flagged as likely also affected. Done 2026-08-28: verified every `kmain.mx:` citation in `docs/architecture.md` (44 citations) and `docs/accounts.md` (49 citations) individually against current source — not a blanket offset, since the prior pass's own finding held (`docs/fs-design.md`'s `fs_create_full` citation was already current while others weren't). Confirmed drift is real but *localized*: most citations from `on_syscall` (kmain.mx:1864) onward through the account/shell-dispatch region (kmain.mx:2200s-3600s) were stale by exactly +4 lines and got fixed (28 citations in `architecture.md`, 24 in `accounts.md`) — but a contiguous block around `fs_create_full`/`fs_set_meta` (`kmain.mx:1533`-`1593`, cited in `accounts.md`'s permission-bits section) was already correct and needed no change, confirming those exact items from the note above (`fs_create_full` at `kmain.mx:1540`-`1544`) were false alarms. Also fixed one unrelated pre-existing off-by-one, found while verifying: `fs_uid`/`fs_mode`'s citation in `accounts.md` said `kmain.mx:1272`-`1273`, real is `1271`-`1272`. Method: for every citation, read the actual source at the cited line(s) and confirm it matches what the doc says is there — line-count-in-range checks alone would have missed all of this, same lesson as the `shell.md` pass. Re-ran the citation/link check across `README.md` + all `docs/*.md`: 0 citations out of range, 0 broken links.
 - [x] The `docs/shell.md`/`docs/architecture.md`/`docs/accounts.md` citation-drift audits (2026-08-27/28) did not cover `README.md`, `docs/memory-map.md`, `docs/fs-design.md`, `docs/programs.md`, or `docs/networking.md` — a quick automated pass (compare each `` `fn_name` `` citation's line number against that function's real `^fn fn_name(` line in `kmain.mx`) turned up candidates in all five, e.g. `README.md`'s `on_key`/`open_launcher`/`acct_init`/`can_write` citations and `docs/fs-design.md`'s `fs_create`/`fs_ensure_layout`/`fs_populate_bin`/`fs_read_file`/`fs_remove`/`ata_write`. Many of these will be false positives the same way `docs/accounts.md`'s `fs_create_full`/`fs_set_meta` citations were (the naive check compares against a function's own `fn` line, but plenty of citations correctly point at a body line or call site instead) — each one needs the same direct read-the-actual-source verification used in the two 2026-08-28 passes above, not the naive script alone. `README.md` is the highest-value next target (it's what a new reader sees first). Found 2026-08-28. Done 2026-08-29 (README.md only, per the item's own recommendation to start there — `docs/memory-map.md`, `docs/fs-design.md`, `docs/programs.md`, and `docs/networking.md` are still unaudited by this method and split out as a follow-up below): read every citation's cited line directly against current source rather than trusting the naive `fn`-line diff. Confirmed real drift, same +4 pattern found in the 2026-08-27/28 passes over a different line range: `on_key`'s F1-F4/F5 dispatch block (`kmain.mx:3503`-`3508` -> `3507`-`3512`), `open_launcher` (`kmain.mx:3362` -> `3366`, both of its two citations), `acct_init` (`kmain.mx:2900` -> `2904`), `login_default`/`cwd_init` (`kmain.mx:2906`/`2912` -> `2910`/`2916`), `can_write` (`kmain.mx:2974` -> `2978`), the boot-banner `print_string` call (`kmain.mx:3599` -> `3603`), the `run_script(1)` call site in the ISO-path paragraph (`kmain.mx:3608` -> `3612` — the other `run_script` citation, `kmain.mx:884`, points at the function's own `fn` line and was already correct), and the `usb_boot_init()` call site (`kmain.mx:3616` -> `3620`). Confirmed several citations were already correct and needed no change: `draw_prompt` (`kmain.mx:709`-`727`), `put_cell_at` (`kmain.mx:505`-`517`), every `net/hardware.mx`/`net/hci_usb.mx`/`net/audio.mx`/`net/settings.mx` citation in the PCI/USB/audio bullet, and every `build.py:` citation in the Windows-only ISO note. Re-ran the repo's link-resolution check across `README.md` + all `docs/*.md`: 0 broken links. Doc-only change, no kernel/build.py logic touched.
 
+## Doc quality (found 2026-09-17, not yet done)
+- [x] `docs/architecture.md`'s Vex paragraph claimed "there's no network stack
+  behind it, a fact its own 'about' page states" — both halves were wrong.
+  Found 2026-09-17: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure change (re-read
+  `BACKLOG.md` in full to confirm — matches every prior daily pass's
+  finding), and the usual dead-code `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx` turned up nothing new (every currently-unused
+  function is already flagged in an existing entry), so this pass read the
+  Files/Vex app code (`kmain.mx:2765`-`2825`) end to end looking for a fresh
+  gap. MORT OS has a real, extensively-documented network stack (`mortnet`,
+  vendored into `net/`, see `docs/networking.md` — written 2026-07-28,
+  *before* this Vex paragraph was added on 2026-08-17, so the contradiction
+  was avoidable at the time) — it's a server (`net`/`httpd`), not a client,
+  which is the real reason Vex can't load a page, not the absence of any
+  stack at all. Also traced the citation itself: `kmain.mx:2789`-`2790` (the
+  "there is no network stack here yet" text) falls inside `vex_page_home`
+  (`kmain.mx:2782`-`2791`), not `vex_page_about` (`kmain.mx:2793`-`2800`) as
+  the doc said — the "about" page was the wrong page from the start. While
+  reading both pages in full for the rewrite, found a second, previously
+  undocumented drift: `vex_page_about`'s own hint line, "Switch apps any
+  time with F1 / F2 / F3" (`kmain.mx:2799`), predates the F4 Settings app —
+  the same missing-4th-app pattern already fixed once in README's app list
+  (2026-07-30 entry above), just never caught in this string. Done
+  2026-09-17: rewrote `docs/architecture.md`'s Vex paragraph to state
+  mortnet is real but server-only, correctly attribute the stale text to
+  the home page, and note the F1/F2/F3 drift, all re-cited. Also fixed the
+  misleading source comment directly above `vex_page_home`
+  (`kmain.mx:2780`-`2781`) — comment-only, kept it at exactly two lines so
+  no citation below it (there are hundreds, across every doc) drifted;
+  verified `wc -l kmain.mx` is still 3629 lines before and after. Did not
+  touch either on-screen string itself (`draw_text_abs` calls are visible
+  kernel behavior, not comments — out of scope without a QEMU boot to
+  confirm a corrected string still fits); added both as follow-up items
+  below. Re-ran the citation-range check (0 out of range) and
+  link-resolution check (0 broken) across `README.md` + all of `docs/*.md`.
+
+## Code follow-ups (found 2026-09-17, need a local QEMU boot test)
+- [ ] `vex_page_home` (`kmain.mx:2782`-`2791`) prints "This page is a local
+  tribute rendered by MORT OS -- there is no network stack here yet, so it
+  can't load real websites" (`kmain.mx:2789`-`2790`) — stale since mortnet
+  shipped (`net/`, documented in `docs/networking.md`). MORT OS does have a
+  network stack; it's just server-only (`net`/`httpd`), with no HTTP client
+  for a browser to use. A human with a local QEMU boot could reword this to
+  something like "...MORT OS's network stack only serves a page (`net` +
+  `httpd`), it can't fetch one, so this can't load real websites" — needs a
+  boot test to confirm the new line(s) still fit the window's text budget.
+  Found 2026-09-17 while fixing `docs/architecture.md`'s Vex paragraph.
+- [ ] `vex_page_about` (`kmain.mx:2793`-`2800`) has the hint line "Switch
+  apps any time with F1 / F2 / F3" (`kmain.mx:2799`), which predates the F4
+  Settings app (`g_app == 3`) — same class of miscount as the already-fixed
+  README app list (2026-07-30 entry above) and `g_overlay`/`g_settings_view`
+  stale-comment findings, just in an on-screen string this time. A human
+  with a local QEMU boot could change it to "F1 / F2 / F3 / F4" (or name
+  Settings) and confirm it still fits the line. Found 2026-09-17 while
+  fixing `docs/architecture.md`'s Vex paragraph.
+
 ## Code follow-ups (found 2026-08-24, all need a local QEMU boot test)
 - [ ] `fs_create` (`kmain.mx:1587`) is confirmed dead code (see the doc-quality item above) — a human could `git rm` it, i.e. delete the function, since nothing calls it and MortFS v2's real creation path is `fs_create_full`. Low risk (removing an uncalled function changes no behavior) but still needs a local build to confirm nothing else in the translation unit references it in a way a text grep missed, and a QEMU boot to confirm `write`/`mkdir`/login still work exactly as before. Found 2026-08-25.
 
