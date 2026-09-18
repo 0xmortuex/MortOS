@@ -178,6 +178,23 @@ Two other commands do their own, separate checks:
 This is the practical part. Outside the five checks above, the mode bits are
 inert:
 
+- **Path traversal is never checked, only the final component.**
+  `fs_resolve` (`kmain.mx:1367`-`1421`) is the one function behind every path
+  a command takes — `cd` (`kmain.mx:2157`), `ls <path>` (`kmain.mx:2178`),
+  `rmdir` (`kmain.mx:2241`), and, through the thin `fs_find` wrapper
+  (`kmain.mx:1494`-`1500`), `cat`/`write`/`rm`/`run`/`exec`; `fs_parent_of`
+  (`kmain.mx:1448`-`1490`, used by `write`'s create path and `mkdir`'s
+  `fs_mkdir`, `kmain.mx:1597`-`1607`) resolves everything but the leaf the
+  same way, via its own `fs_resolve` call at `kmain.mx:1480`. The walk
+  through each `/`-separated component is a bare `fs_find_in` name lookup
+  (`kmain.mx:1400`) — no call to `can_write`, `dir_mode`, or anything else
+  permission-related anywhere in the loop. So the "parent directory" row in
+  the table above is narrower than it sounds: it fires once, on the
+  immediate parent of the thing being created, never on any directory
+  higher up the path. A `0700` root-owned directory is fully walkable by
+  any user — `cd` into it, `ls` its contents, `cat`/`run` anything inside,
+  however many levels deep — and `mkdir a/b/c/newdir` only ever checks
+  write permission on `c`, not on `a` or `b`.
 - **Read bits are never consulted.** `cat` (`kmain.mx:2262`-`2281`) reads any
   file it can resolve, whatever its mode or owner.
 - **Execute bits are never consulted.** `exec_file` (`kmain.mx:1896`-`1924`)
