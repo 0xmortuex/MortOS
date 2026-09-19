@@ -167,6 +167,59 @@ behavior, add a backlog item describing it and stop.
 ## Doc quality (found 2026-09-18, not yet done)
 - [x] `docs/accounts.md`'s "What is not checked" section already listed three specific gaps (read bits, execute bits, `rmdir`) but never named the much larger, more foundational one underneath all of them: path *traversal* is never permission-checked at all, only ever the final path component. Found 2026-09-18: every unchecked backlog item was still an explicitly out-of-scope code/build.py/QEMU-test/repo-structure change (re-read `BACKLOG.md` in full to confirm — matches every prior daily pass's finding), and the usual dead-code `fn`-call-site grep across `kmain.mx`+`net/*.mx` turned up nothing new beyond what's already flagged, so this pass read `fs_resolve` (`kmain.mx:1367`-`1421`) and `fs_parent_of` (`kmain.mx:1448`-`1490`) in full, tracing exactly what runs inside the per-component path-walk loop. Found that `fs_resolve`'s loop is a bare `fs_find_in` name lookup (`kmain.mx:1400`) with no call to `can_write`, `dir_mode`, or anything permission-related anywhere in it — and that `fs_resolve` is the *only* path-resolution function in the kernel: `cd` (`kmain.mx:2157`), `ls <path>` (`kmain.mx:2178`), `rmdir` (`kmain.mx:2241`), and, through the thin `fs_find` wrapper (`kmain.mx:1494`-`1500`), `cat`/`write`/`rm`/`run`/`exec` all call it directly on the full path typed; `fs_parent_of` (used by `write`'s create path and `fs_mkdir`, `kmain.mx:1597`-`1607`) resolves everything but the leaf the same unchecked way, via its own nested `fs_resolve` call at `kmain.mx:1480`. Confirmed the concrete consequence: the "parent directory" row in `docs/accounts.md`'s existing enforcement table is narrower than it reads — it fires once, on the immediate parent of the thing being created, never on any directory higher up the path — so a `0700` root-owned directory is still fully walkable by any user (`cd` into it, `ls` it, `cat`/`run` anything inside, however deep), and `mkdir a/b/c/newdir` only ever checks write permission on `c`, never on `a` or `b`. Done 2026-09-18: added this as a new lead bullet in `docs/accounts.md`'s "What is not checked" section, cited to all of the above. Doc-only change, no kernel logic touched. Re-ran the citation-range check (491 citations, 0 out of range) and link-resolution check (54 links, 0 broken) across `README.md` + all of `docs/*.md`.
 
+## Doc quality (found 2026-09-19, not yet done)
+- [x] `docs/architecture.md`'s Files-app paragraph said the list view "renders
+  each in-use file's name and byte count", but the filter it's describing
+  (`files_draw`'s `used`-flag check, `kmain.mx:2712`) has nothing to do with
+  MortFS v2's `type`/`parent` fields — the list is not files, it's every
+  used table slot, files and directories together, flattened across the
+  whole tree. Found 2026-09-19: every unchecked backlog item was still an
+  explicitly out-of-scope code/build.py/QEMU-test/repo-structure change
+  (re-read `BACKLOG.md` in full to confirm — matches every prior daily
+  pass's finding), and the usual dead-code `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx` turned up nothing new beyond what's already
+  flagged, so this pass read the Files app (`kmain.mx:2669`-`2778`) end to
+  end against its own doc section, the one place in `docs/architecture.md`
+  not yet re-verified line-by-line against source this way. Confirmed:
+  `files_draw`'s loop condition (`kmain.mx:2712`) checks only the v1
+  `used` flag (byte offset 24), never `fs_type` (`kmain.mx:1269`) or
+  `fs_parent` (`kmain.mx:1270`), so directories (`/bin`/`/etc`/`/home`/
+  `/var`, seeded by `fs_ensure_layout`, `kmain.mx:1617`-`1625`) show up
+  with no visual distinction from files, and every entry at every nesting
+  level is shown in one flat list — a `.bin` program `fs_populate_bin`
+  (`kmain.mx:1641`-`1662`) reparented into `/bin` still appears next to
+  root-level entries, with no path shown. Traced what happens if you
+  actually select a directory and press Enter: `files_open`
+  (`kmain.mx:2750`-`2758`) has no type check either, so it switches to the
+  content view and calls `fs_read_file` on the directory entry;
+  `fs_read_file` (`kmain.mx:1666`-`1682`) returns `0` immediately whenever
+  the stored `size_bytes` is `0` (`kmain.mx:1668`-`1671`), and every
+  directory's is, since `fs_create_full` never gives a `typ == 1` entry a
+  data extent (`kmain.mx:1561`-`1564`) and nothing ever appends to one —
+  so the content view shows an empty page under the directory's name, not
+  an error and not real contents. There is no way to browse into a
+  subdirectory from the Files app at all; only the shell's `cd`/
+  `ls <path>` actually walk the tree. Done 2026-09-19: rewrote the Files
+  paragraph in `docs/architecture.md` with the above, cited, and
+  cross-linked to `docs/shell.md` for the real directory-navigation
+  commands. Doc-only change, no kernel logic touched. Re-ran the
+  citation-range check and link-resolution check across `README.md` +
+  all of `docs/*.md`: 0 out of range, 0 broken.
+
+## Code follow-ups (found 2026-09-19, needs a local QEMU boot test)
+- [ ] The Files app (`kmain.mx:2695`-`2778`) lists MortFS's whole file
+  table flattened, with no way to browse into a subdirectory and no
+  visual distinction between files and directories (see the doc-quality
+  item above for the full trace). A human with a local QEMU boot could
+  give it real directory navigation — filter `files_draw`'s loop by
+  `fs_parent(i) == g_files_cwd` instead of just `used`, add a "cwd" state
+  field, mark rows with `fs_type`, and make Enter on a directory descend
+  into it instead of calling `fs_read_file` — mirroring what the shell's
+  `cd` already does. Needs a boot test to confirm the new list still fits
+  the window and Up/Down/Enter/Esc still behave correctly at each nesting
+  level. Found 2026-09-19 while documenting the current flat-listing
+  behavior.
+
 ## Code follow-ups (found 2026-09-04, needs a local QEMU boot test)
 - [ ] `heap_used()` (`kmain.mx:1121`-`1131`) is a fully-working, correctly-implemented function with zero callers — not even `mem` (`kmain.mx:2127`), which reports total RAM from the multiboot map but says nothing about heap usage. A human could wire it into `mem`'s output (e.g. an added "heap: X/Y KB used" line) or leave it as unused infrastructure alongside `kmalloc`/`kfree` themselves, which are also only ever exercised by `memtest`. Needs a QEMU boot to confirm the added output fits the existing print budget and doesn't break `mem`'s current callers/tests. Found 2026-09-04 while documenting the heap allocator in `docs/memory-map.md`.
 

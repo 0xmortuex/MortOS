@@ -233,11 +233,30 @@ app's code ever runs.
 **Files** (`g_app == 1`) is a two-view MortFS browser; its state is
 `g_files_sel`/`g_files_view`/`g_files_entry`/`g_files_count`
 (`kmain.mx:50`-`53`). The list view (`files_draw`, `kmain.mx:2695`-`2734`)
-walks all 64 file-table slots via `fs_entry_addr`, skips unused ones, and
-renders each in-use file's name and byte count, highlighting the row at
-`g_files_sel`. Enter (`files_open`, `kmain.mx:2750`-`2758`) reads the
-selected file into FILEBUF via `fs_read_file` and switches to the content
-view (`files_draw_content`, `kmain.mx:2685`-`2692`), which renders the raw
+walks all 64 file-table slots via `fs_entry_addr` and renders every row
+whose `used` flag (byte offset 24) is `1` (`kmain.mx:2712`) — not "every
+file": the filter checks only `used`, never MortFS v2's `type` byte
+(`fs_type`, `kmain.mx:1269`) or `parent` byte (`fs_parent`,
+`kmain.mx:1270`), so directories (`/bin`,
+`/etc`, `/home`, `/var`, seeded by `fs_ensure_layout`, `kmain.mx:1617`-
+`1625`) are listed with no visual distinction from files, and every entry
+in the table is shown in one flat list regardless of nesting — a `.bin`
+program reparented into `/bin` by `fs_populate_bin` (`kmain.mx:1641`-
+`1662`) still appears alongside root-level entries, with no indication of
+its real path. There is no way to browse into a subdirectory: `files_open`
+(`kmain.mx:2750`-`2758`, bound to Enter) never checks `fs_type` either, so
+selecting a directory just switches to the content view and calls
+`fs_read_file` on it; `fs_read_file` (`kmain.mx:1666`-`1682`) returns `0`
+immediately whenever the stored `size_bytes` is `0`
+(`kmain.mx:1668`-`1671`), which every directory's is — `fs_create_full`
+never gives a `typ == 1` entry a data extent (`kmain.mx:1561`-`1564`) and
+nothing ever appends to one — so the content view just shows an empty
+page under the directory's name, not an error and not its contents. The
+shell's `cd`/`ls <path>` ([`docs/shell.md`](shell.md)) are the only way to
+actually navigate MortFS's directory tree; the Files app only ever shows
+the whole table flattened. Enter on a real file (`files_open`, same citation) reads
+it into FILEBUF via `fs_read_file` and switches to the content view
+(`files_draw_content`, `kmain.mx:2685`-`2692`), which renders the raw
 bytes with `draw_page_text` (`kmain.mx:2642`). Esc (`files_back`,
 `kmain.mx:2760`-`2763`) always returns to the list regardless of which view
 is active; Up/Down (extended scancodes 72/80) only work in the list view,
