@@ -206,6 +206,41 @@ behavior, add a backlog item describing it and stop.
   citation-range check and link-resolution check across `README.md` +
   all of `docs/*.md`: 0 out of range, 0 broken.
 
+## Doc quality (found 2026-09-20, not yet done)
+- [x] `docs/hardware.md`'s PC speaker section claimed "All three are no-ops
+  when `g_speaker_enabled` is `false`" for `speaker_start`/`speaker_stop`/
+  `speaker_test` together, but that's only true for two of them. Found
+  2026-09-20: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure change (re-read
+  `BACKLOG.md` in full to confirm — matches every prior daily pass's
+  finding), and a fresh sweep of every top-level `fn` in `kmain.mx`+
+  `net/*.mx` for zero-call-site names (the same technique that previously
+  found `fs_create`/`draw_tab`/`font_data.mxinc`/`net/dns.mx`/`heap_used`/
+  the unused `net/*.mx` verify functions) turned up nothing new — the only
+  two candidates it flagged, `on_exception`/`on_tick`, are called from
+  `idt.s` (assembly), not `.mx`, so the `.mx`-only grep missed their real
+  call sites; both are already documented as live. So this pass re-read
+  `net/hardware.mx` end to end instead, the one hardware file whose
+  citations had been range-checked but not verified line-by-line against
+  its own claims. Read `speaker_start`/`speaker_stop`/`speaker_test`
+  (`net/hardware.mx:37`-`58`) and found `speaker_stop()`
+  (`net/hardware.mx:47`-`50`) has no `g_speaker_enabled` check at all —
+  only `speaker_start` (`net/hardware.mx:38`) and `speaker_test`
+  (`net/hardware.mx:53`) check the flag. Traced why this is correct
+  behavior, not a bug: the Settings speaker toggle
+  (`net/settings.mx:530`) calls `speaker_stop()` unconditionally when
+  switching the speaker *off*, specifically so a currently-playing tone
+  is silenced immediately rather than left running — if `speaker_stop`
+  itself no-op'd on the flag, turning the speaker off mid-tone would do
+  nothing audible until the tone's own busy-wait finished. Also noted the
+  concrete UI consequence: pressing "Test" (`net/settings.mx:531`) while
+  disabled produces no tone and no message — a silent no-op with no
+  feedback that the keypress registered. Done 2026-09-20: rewrote the
+  PC-speaker paragraph in `docs/hardware.md` with the accurate per-function
+  breakdown, cited. Doc-only change, no kernel logic touched. Re-ran the
+  citation-range check (0 out of range) and link-resolution check (55
+  links, 0 broken) across `README.md` + all of `docs/*.md`.
+
 ## Code follow-ups (found 2026-09-19, needs a local QEMU boot test)
 - [ ] The Files app (`kmain.mx:2695`-`2778`) lists MortFS's whole file
   table flattened, with no way to browse into a subdirectory and no

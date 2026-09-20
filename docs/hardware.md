@@ -37,9 +37,20 @@ manual rescan (`net/settings.mx:504`, `529`).
 `0x42` data) with a frequency divisor (`1193182 / freq`) and sets bits 0-1
 of port `0x61` to gate the divider output into the speaker. `speaker_stop()`
 clears those two bits. `speaker_test()` plays an 880 Hz tone for a fixed
-busy-wait spin count (no PIT-tick timing). All three are no-ops when
-`g_speaker_enabled` is `false` (default `true`, `net/hardware.mx:10`) — the
-Settings speaker toggle flips that flag (`net/settings.mx:530`).
+busy-wait spin count (no PIT-tick timing).
+
+Only `speaker_start` and `speaker_test` check `g_speaker_enabled` (default
+`true`, `net/hardware.mx:10`) and no-op when it's `false`
+(`net/hardware.mx:38`, `:53`) — `speaker_stop()` itself has no such check
+and always clears the gate bits regardless of the flag
+(`net/hardware.mx:47`-`50`). That asymmetry is intentional, not a gap: the
+Settings speaker toggle (`g_settings_sel == 1`, `net/settings.mx:530`)
+calls `speaker_stop()` unconditionally when turning the speaker *off*, so a
+tone already playing is silenced immediately rather than left running
+until it finishes on its own. One consequence of `speaker_test` checking
+the flag itself: pressing the "Test" row (`g_settings_sel == 2`,
+`net/settings.mx:531`) while the speaker is disabled does nothing at
+all — no tone, no message, no visible feedback that the press registered.
 
 ## Ethernet disconnect (`net/hardware.mx:60`-`66`)
 
