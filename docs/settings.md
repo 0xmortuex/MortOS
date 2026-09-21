@@ -49,14 +49,19 @@ for `type == 1`), Diagnostics reads `g_ticks` and the heap bounds
 sections in the "opens sub-page" column above (`settings_enter()`,
 `net/settings.mx:498`-`506`).
 
-Two rows worth calling out as not-quite-live-data: `settings_hardware()`
+Three rows worth calling out as not-quite-live-data: `settings_hardware()`
 displays the PS/2 keyboard row as a hardcoded literal `"Ready"`
 (`:283`) rather than probing for a device — see
 [`docs/hardware.md`](hardware.md) for that and the rest of the Hardware page.
 Power's four actions (Lock/Sleep/Restart/Shut down) are described but not
 triggerable from this page at all; the real controls are the global `F12`
 power menu or the matching shell commands (`net/settings.mx:276`,
-`docs/shell.md`).
+`docs/shell.md`). And Storage's "Heap used" / Diagnostics' "Heap allocated"
+(`:233`, `:325`, the latter under a subtitle that literally says "Live
+kernel health") read `g_heap_brk`, a high-water mark that in this kernel's
+own practice never moves off `0 KiB` — see
+[`docs/memory-map.md`](memory-map.md#the-kernel-heap-allocator-kmallockfree)
+for the full byte-by-byte trace.
 
 ## Navigation state machine
 

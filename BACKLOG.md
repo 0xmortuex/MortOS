@@ -281,3 +281,42 @@ behavior, add a backlog item describing it and stop.
 
 ## Doc quality (found 2026-09-13, not yet done)
 - [x] Neither `docs/settings.md`'s Clock section nor `docs/fs-design.md`'s `mtime` note mentioned a real gap in the CMOS-RTC reads both features depend on. Found 2026-09-13: every unchecked backlog item was still an explicitly out-of-scope code/build.py/QEMU-test/repo-structure change (re-read `BACKLOG.md` in full to confirm — matches every prior daily pass's finding), and the shell command table, environment-variable plumbing, TCP state machine, and DHCP timeout path were already covered by the last several passes, so this pass looked at the one remaining hardware-adjacent subsystem with its own doc section but no depth: the top-bar clock (`docs/settings.md`'s Clock section only described the two display toggles, not the read itself). Read `draw_clock()` and `rtc_reg()` in full (`kmain.mx:3031`-`3090`) and grepped for every RTC access in the tree: exactly two call sites share `rtc_reg()` (`draw_clock()`, `kmain.mx:3059`-`3063`, and `fs_now()`, `kmain.mx:1276`-`1283`, which stamps MortFS file-creation `mtime`), and neither — nor anything else in the kernel — ever reads CMOS register `0x0A` (confirmed by grep across every `.mx`/`.s` file: zero hits). That register is where an MC146818-compatible RTC (the class of chip this hardware presents) exposes its Update-In-Progress flag; the documented-safe read pattern for such a chip polls that flag (or reads twice and compares) before trusting the seconds/minutes/hours registers, since the chip holds them mid-update for a stretch roughly once a second. This kernel does neither, so a read landing in that window can return a torn value in whichever field is mid-update. Done 2026-09-13: added a "The RTC reads are unguarded against the chip's own update cycle" subsection to `docs/settings.md`'s Clock section (the fuller writeup, since that's where `draw_clock()` is otherwise documented) and a shorter cross-linked note to `docs/fs-design.md`'s `mtime` paragraph (since `fs_now()` shares the exact same gap). Comment/doc-only change, no kernel logic touched. Verified both new citation ranges against current source and re-ran the citation-range check (0 out of range) and link-resolution check, including the two new cross-links between `settings.md` and `fs-design.md` (0 broken), across `README.md` + all of `docs/*.md`.
+
+## Doc quality (found 2026-09-21, not yet done)
+- [x] `docs/settings.md`'s Storage and Diagnostics pages display "Heap
+  used"/"Heap allocated" fields, and Diagnostics' own subtitle calls itself
+  "Live kernel health and resource counters" (`net/settings.mx:320`), but
+  neither doc said what those two fields actually compute or whether they
+  ever move. Found 2026-09-21: every unchecked backlog item was still an
+  explicitly out-of-scope code/build.py/QEMU-test/repo-structure change
+  (re-read `BACKLOG.md` in full to confirm — matches every prior daily
+  pass's finding), and the usual dead-code `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx` turned up nothing new beyond what's already
+  flagged (only `on_tick`/`on_exception`, already-known false positives
+  since `idt.s` calls them), so this pass read `net/settings.mx`'s
+  Storage/Diagnostics sections (`:227-236`, `:319-331`) end to end looking
+  for a fresh gap in code not yet exhausted. Found that both "Heap used"
+  (`net/settings.mx:233-234`) and "Heap allocated"
+  (`net/settings.mx:325-326`) compute `(g_heap_brk - g_heap_base) / 1024`
+  directly — not `heap_used()` (`kmain.mx:1121-1131`, already documented as
+  dead code with zero callers) — and `g_heap_brk` is a high-water mark that
+  `kfree` never lowers. Traced the exact byte math since `memtest`
+  (`kmain.mx:971-1021`) is the only caller of `kmalloc`/`kfree` anywhere in
+  the kernel (already documented in `docs/memory-map.md`): its two
+  allocations round up to 112 and 208 bytes (`kmain.mx:980-981`, `1066`),
+  bumping `g_heap_brk` by exactly 320 bytes the first time `memtest` ever
+  runs; its closing `kfree` calls (`kmain.mx:1003-1004`) forward-coalesce
+  that back into one free block that every later `memtest` run reuses
+  exactly (traced the first-fit split/exact-fit addresses match run to
+  run), so `g_heap_brk` never grows past that first 320 bytes. `320 / 1024`
+  is `0` under integer division, so both fields read `0 KiB` before
+  `memtest` has ever run and still `0 KiB` after — static in this kernel's
+  own practice regardless of the "live" label. Done 2026-09-21: added a new
+  bullet to `docs/memory-map.md`'s heap-allocator section with the full
+  trace, and cross-linked it from `docs/settings.md`'s existing
+  not-quite-live-data paragraph (now "Three rows" instead of "Two").
+  Doc-only change, no kernel logic touched. Verified every new
+  `file:line` citation by reading the exact cited line(s) against current
+  source and the new `docs/memory-map.md` anchor link resolves; re-ran the
+  citation-range check (508 citations, 0 out of range) and link-resolution
+  check (57 links, 0 broken) across `README.md` + all of `docs/*.md`.

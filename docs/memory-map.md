@@ -72,6 +72,28 @@ hands back `blk + 8`, i.e. the address right after the header.
   shell, the package manager, and the rest" (`kmain.mx:1033-1034`), not yet
   used by any shipped feature. See `docs/shell.md`'s `memtest` row for what
   that command actually verifies.
+- **The Settings app's "Heap used"/"Heap allocated" fields display
+  `g_heap_brk`, not `heap_used()`** — Storage's "Heap used"
+  (`net/settings.mx:233-234`) and Diagnostics' "Heap allocated"
+  (`net/settings.mx:325-326`, under a section subtitled "Live kernel health
+  and resource counters", `net/settings.mx:320`) both compute
+  `(g_heap_brk - g_heap_base) / 1024` directly, rather than calling the
+  actually-correct-for-this `heap_used()` above. Since `g_heap_brk` is a
+  high-water mark that only rises (never falls on `kfree`) and `memtest` is
+  its only mover, tracing the exact byte math shows both fields are static
+  in practice: `memtest`'s two allocations round up to 112 and 208 bytes
+  (`(100+8+7)&0xFFFFFFF8` and `(200+8+7)&0xFFFFFFF8`, `kmain.mx:980-981`,
+  `1066`), bumping `g_heap_brk` by 320 bytes total the first time `memtest`
+  ever runs; its closing `kfree` calls (`kmain.mx:1003-1004`) forward-coalesce
+  that same 320 bytes back into one free block, which every later `memtest`
+  run reuses via first-fit (a 112-byte split then an exact 208-byte fit)
+  with zero further growth. `320 / 1024` is `0` in this integer division, so
+  both fields read `0 KiB` before `memtest` has ever run and still `0 KiB`
+  after — visibly unchanging regardless of the "live" label, since
+  `memtest` is the only thing in the kernel that ever calls `kmalloc` (see
+  the bullet above) and its own allocations never exceed the 320 bytes
+  already accounted for above. See [`docs/settings.md`](settings.md) for
+  the rest of the Storage/Diagnostics pages.
 
 ## Notes
 
