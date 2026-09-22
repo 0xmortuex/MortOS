@@ -320,3 +320,52 @@ behavior, add a backlog item describing it and stop.
   source and the new `docs/memory-map.md` anchor link resolves; re-ran the
   citation-range check (508 citations, 0 out of range) and link-resolution
   check (57 links, 0 broken) across `README.md` + all of `docs/*.md`.
+
+## Doc quality (found 2026-09-22, not yet done)
+- [x] `docs/shell.md`'s "Line editing" section was one paragraph that only
+  named `g_history` and cited where Up/Down decode the `0xE0`
+  extended-scancode prefix — it never said how recall, storage, or the
+  ring-buffer wraparound actually work, and one of its two citations had
+  drifted. Found 2026-09-22: every unchecked backlog item was still an
+  explicitly out-of-scope code/build.py/QEMU-test/repo-structure change
+  (re-read `BACKLOG.md` in full to confirm — matches every prior daily
+  pass's finding), so this pass cross-checked every `fn`-defined function
+  in `kmain.mx`+`net/*.mx` against every doc's text (322 functions,
+  case-sensitive name search) to find fresh territory; nearly all the
+  misses were small accessor/helper functions (e.g. `arp_oper`,
+  `str_copy`, `num_to_str`) not worth individual doc entries, but
+  `history_up`/`history_down` stood out — the two functions that back the
+  paragraph's own "recalled with Up/Down arrows" claim were never cited or
+  explained anywhere. Read `hist_slot`/`hist_store`/`history_up`/
+  `history_down` in full (`kmain.mx:752`-`802`) plus their two call sites
+  in the keyboard handler (Enter's store-on-submit at `kmain.mx:3551`-
+  `3556`, the character-typed reset at `kmain.mx:3580`-`3583`, and the
+  extended-scancode dispatch at `kmain.mx:3524`-`3536`). Two concrete
+  findings: (1) the doc's `kmain.mx:3520` citation for the `0xE0` prefix
+  check had drifted — that line is now the middle of the unrelated
+  `g_app == 2` dispatch block a few lines above; the actual `if sc == 224`
+  check is `kmain.mx:3524`. (2) `kmain.mx:729`'s own section-header comment
+  said "ring of 8 x 40-byte slots", but both `hist_slot`
+  (`kmain.mx:752`-`755`) and `hist_store` (`kmain.mx:757`-`761`) index
+  slots with `idx * 80`, matching `g_history`'s declaration comment at
+  `kmain.mx:71` ("8 slots x 80 bytes") — confirmed the buffer's actual
+  string-literal length is exactly `640` bytes (`8 * 80`) by reading it
+  with a script; the "40-byte" comment was stale, not the code. Fixed the
+  comment in place (comment-only, no behavior change). Done 2026-09-22:
+  rewrote `docs/shell.md`'s "Line editing" section with the real
+  mechanism, cited: only non-empty lines are stored and nothing
+  de-duplicates (`hist_store`, `kmain.mx:757`-`761`, gated by
+  `kmain.mx:3553`-`3554`); storage always writes slot `g_hist_n % 8`
+  (`kmain.mx:21`), so past 8 commands each new one silently overwrites the
+  oldest surviving slot; `g_hist_nav` (`kmain.mx:22`) is `0` for the live
+  line or `k` for the `k`-th most recent recalled command; `history_up`
+  (`kmain.mx:785`-`792`) caps recall at `min(g_hist_n, 8)`; `history_down`
+  (`kmain.mx:794`-`802`) clears to blank at `1` or below, including
+  repeated presses on an already-blank live line; and typing any character
+  silently resets `g_hist_nav` to `0` (`kmain.mx:3583`), so editing a
+  recalled command and pressing Enter stores it as a new entry rather than
+  editing history in place. Doc/comment-only change, no kernel logic
+  touched. Verified every citation (old and new) by reading the exact
+  cited line(s) against current source with a script, then re-ran the
+  citation-range check (514 citations, 0 out of range) and link-resolution
+  check (57 links, 0 broken) across `README.md` + all of `docs/*.md`.

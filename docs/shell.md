@@ -100,6 +100,30 @@ the read behavior it was hiding was never affected either way.
 
 Independent of the command table above, the input loop that builds `cmd`
 supports Backspace line editing and command history: a ring buffer of the
-last 8 lines (`g_history`, `kmain.mx:754`-`758`), recalled with Up/Down
-arrows once the keyboard handler has decoded the `0xE0` extended-scancode
-prefix (`kmain.mx:3520`) that PS/2 sends before arrow-key scancodes.
+last 8 lines (`g_history`, 8 slots x 80 bytes, `kmain.mx:71`), recalled with
+Up/Down arrows once the keyboard handler has decoded the `0xE0`
+extended-scancode prefix (`kmain.mx:3524`) that PS/2 sends before arrow-key
+scancodes.
+
+On Enter, only a non-empty line gets appended to the ring, via `hist_store`
+(`kmain.mx:757`-`761`) — an empty Enter press is never recorded
+(`kmain.mx:3553`-`3554`). Nothing de-duplicates: entering the same command
+twice in a row stores it twice, each in its own slot. Storage always writes
+slot `g_hist_n % 8` and increments the total-commands counter `g_hist_n`
+(`kmain.mx:21`), so once more than 8 commands have been entered, each new
+one silently overwrites the oldest surviving slot.
+
+`g_hist_nav` (`kmain.mx:22`) tracks how far back the currently-displayed
+line has been recalled: `0` means the live line the user is typing, `k`
+means the `k`-th most recent stored command. Up arrow calls `history_up`
+(`kmain.mx:785`-`792`), which increments `g_hist_nav` (capped at
+`min(g_hist_n, 8)`, so it stops at the oldest command still in the ring)
+and replaces the input line with that slot's text. Down arrow calls
+`history_down` (`kmain.mx:794`-`802`): above `1` it steps back toward more
+recent commands the same way; at `1` or already `0` it resets
+`g_hist_nav` to `0` and clears the line to blank — so pressing Down
+repeatedly past the newest recalled command, or while already on a blank
+live line, just keeps clearing it. Typing any character also resets
+`g_hist_nav` to `0` (`kmain.mx:3583`), so editing a recalled command and
+pressing Enter stores the edited text as a new entry rather than modifying
+history in place.

@@ -726,7 +726,7 @@ fn draw_prompt(row: u32) {
     g_prompt_len = pl + 3;
 }
 
-// ----- command history (ring of 8 x 40-byte slots) -----
+// ----- command history (ring of 8 x 80-byte slots, g_history) -----
 
 fn str_len(s: *u8) -> u32 {
     let i: u32 = 0;
