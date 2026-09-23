@@ -369,3 +369,47 @@ behavior, add a backlog item describing it and stop.
   cited line(s) against current source with a script, then re-ran the
   citation-range check (514 citations, 0 out of range) and link-resolution
   check (57 links, 0 broken) across `README.md` + all of `docs/*.md`.
+
+## Doc quality (found 2026-09-23, not yet done)
+- [x] `docs/architecture.md`'s overlay-state-machine section documented the
+  power menu, lock screen, and sleep screen's text-mode fallbacks (each has
+  a shell command and a real `if !g_gfx` guard) but never covered the home
+  launcher's entry points at all. Found 2026-09-23: every unchecked backlog
+  item was still an explicitly out-of-scope code/build.py/QEMU-test/
+  repo-structure change (re-read `BACKLOG.md` in full to confirm — matches
+  every prior daily pass's finding; `git log` also showed zero non-doc
+  commits since the 2026-09-22 pass, so no source had changed to re-audit),
+  so this pass grepped every top-level `fn` in `kmain.mx`+`net/*.mx` for
+  names absent from every doc (same technique as the 2026-09-22 pass) and,
+  seeing only small accessors among the new hits, read the launcher code
+  (`kmain.mx:3286-3417`) end to end instead, since `docs/architecture.md`
+  only ever named `open_launcher`/`draw_launcher` in passing. Found that
+  `open_launcher()`'s own `if !g_gfx { return; }` guard (`kmain.mx:3367-3369`)
+  is dead code: its only two call sites are the `F5` dispatch
+  (`kmain.mx:3512`) and the boot-time greet call (`kmain.mx:3623`), and both
+  are already nested inside their own `if g_gfx` block (`kmain.mx:3507`,
+  `3622`) one level up — confirmed by grep, those are the function's only
+  two callers anywhere in the source. This is the opposite of
+  `open_power_menu()`/`open_lock()`/`open_sleep()`'s identical-looking
+  guards, which *are* reachable, because each of those three also has a
+  shell-command call site (`power`/`lock`/`sleep`, `kmain.mx:2557`/`2565`/
+  `2569`) with no `g_gfx` check upstream — confirmed there's no equivalent
+  `home`/`launcher` shell command by grepping every `streq(cmd, "...")`
+  dispatch in `run_command_impl` for one. Done 2026-09-23: added a new
+  paragraph to `docs/architecture.md`'s overlay-state-machine section
+  contrasting the launcher's single, already-gated `F5` entry point against
+  power/lock/sleep's shell-reachable ones, cited as above. Doc-only change,
+  no kernel logic touched. Verified every new `file:line` citation by
+  reading the exact cited line(s) against current source and re-ran the
+  citation-range check (0 out of range) and link-resolution check (0
+  broken) across `README.md` + all of `docs/*.md`.
+
+## Code follow-ups (found 2026-09-23, needs a local QEMU boot test)
+- [ ] `open_launcher()`'s `if !g_gfx { return; }` guard (`kmain.mx:3367-3369`)
+  is confirmed dead code (see the doc-quality item above) — a human could
+  delete it, since both of `open_launcher()`'s call sites are already
+  behind their own `g_gfx` check one level up. Low risk (removing an
+  unreachable branch changes no behavior) but still needs a local build to
+  confirm nothing else in the translation unit calls `open_launcher()` in a
+  way a text grep missed, and a QEMU boot to confirm `F5` and the boot-time
+  greet still open the launcher exactly as before. Found 2026-09-23.

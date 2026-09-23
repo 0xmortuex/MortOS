@@ -219,6 +219,22 @@ and character keys; `Esc` (scancode `1`) isn't one of its `if` branches, falls
 through `scancode_to_ascii` as `0`, and is silently dropped like any other
 unmapped key — unlike the power menu and launcher, which both close on `Esc`.
 
+Unlike the power menu, lock screen, and sleep screen — each of which has a
+shell-command equivalent reachable from VGA text mode (`power`/`lock`/`sleep`,
+[`docs/shell.md`](shell.md), dispatched at `kmain.mx:2557`/`2565`/`2569`) —
+there is no shell command that opens the launcher; `F5` is its only entry
+point (`kmain.mx:3512`), plus the unconditional boot-time greet call
+(`kmain.mx:3623`). Both of those call sites are already nested inside their
+own `if g_gfx` block (`kmain.mx:3507` and `kmain.mx:3622`), so
+`open_launcher()`'s own `if !g_gfx { return; }` guard (`kmain.mx:3367-3369`)
+can never actually run — confirmed by grep, those are `open_launcher()`'s
+only two callers in the whole source. That makes it dead code, unlike the
+identical-looking guards in `open_power_menu()`/`open_lock()`/`open_sleep()`
+(`kmain.mx:3150-3152`, `3204-3207`, `3234-3237`), which *are* reachable —
+each has a shell-command call site with no `g_gfx` check upstream of it, so
+typing `power`/`lock`/`sleep` in text mode is the case those guards exist
+for.
+
 The framebuffer console itself (`put_pixel`/`fill_rect`/`fill_gradient`,
 `kmain.mx:357-391`) is a flat pixel-pushing layer with no double buffering
 or dirty-rect tracking — every draw call writes straight to `g_fb`.
