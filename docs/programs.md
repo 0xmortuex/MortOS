@@ -83,6 +83,20 @@ so the call's register clobber can't reach live kernel state). There is no
 process isolation or separate stack — a program that overflows the stack
 corrupts kernel state (see the note in `docs/memory-map.md`).
 
+**`main`'s return value is compiled in but never used.** `_pstart` calls
+`mort_main` and then just `ret`s (`programs/pstart.s:6`-`8`) — under the
+cdecl convention the Mort compiler targets, that leaves `main`'s `int`
+result sitting in `eax`. Control lands back in `exec_enter`'s single `asm`
+statement (`kmain.mx:1890`-`1892`) and then in `exec_file`, whose body ends
+right after the `exec_enter();` call with no following statement
+(`kmain.mx:1896`-`1924`) — nothing reads `eax`, prints it, or branches on
+it. There is no shell-visible exit code or `$?`-style variable anywhere in
+`run_command_impl` (grepped: no reference to a program's return value
+outside `pstart.s` itself). All three example programs always `return 0`
+(`programs/hello.mx:16`, `programs/count.mx:17`, `programs/ask.mx:30`), so
+this has no observable effect yet, but a program that returns nonzero to
+signal failure has no way to make that visible to the shell that ran it.
+
 ## The syscall ABI
 
 A program asks the kernel to do something by filling a fixed mailbox and

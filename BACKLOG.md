@@ -413,3 +413,35 @@ behavior, add a backlog item describing it and stop.
   confirm nothing else in the translation unit calls `open_launcher()` in a
   way a text grep missed, and a QEMU boot to confirm `F5` and the boot-time
   greet still open the launcher exactly as before. Found 2026-09-23.
+
+## Doc quality (found 2026-09-24, not yet done)
+- [x] `docs/programs.md`'s "Running one" section documented how `exec_file`
+  loads and jumps into a program but never said what happens to `main`'s
+  own `int` return value. Found 2026-09-24: every unchecked backlog item
+  was still an explicitly out-of-scope code/build.py/QEMU-test/
+  repo-structure change (re-read `BACKLOG.md` in full to confirm — matches
+  every prior daily pass's finding, and `git log` showed no non-doc
+  commits at all in the visible history), and the usual dead-code
+  `fn`-call-site grep across `kmain.mx`+`net/*.mx`
+  turned up nothing new beyond what's already flagged, so this pass looked
+  at the `programs/` build target itself (`pstart.s`/`prog.ld`), the one
+  small surface not yet mined function-by-function the way `kmain.mx` and
+  `net/*.mx` have been. Read `_pstart` (`programs/pstart.s:6`-`8`) —
+  `call mort_main` then a bare `ret`, no register handling — alongside
+  `exec_enter` (`kmain.mx:1890`-`1892`, an indirect `call *0x009F0010`) and
+  `exec_file` (`kmain.mx:1896`-`1924`, whose body ends immediately after
+  the `exec_enter();` call). Under the cdecl convention the Mort compiler
+  targets, `main`'s `int` result is left in `eax` after `ret`, and nothing
+  on the kernel side ever reads it — confirmed by grep across
+  `kmain.mx`/`net/*.mx` for `eax`/`$?`/`exit_code`: zero hits outside
+  `pstart.s` itself, and no exit-code concept anywhere in
+  `run_command_impl`. All three example programs always `return 0`
+  (`programs/hello.mx:16`, `programs/count.mx:17`, `programs/ask.mx:30`),
+  so this has no visible effect today, but a program that tries to signal
+  failure via a nonzero return has no way to make that reach the shell.
+  Done 2026-09-24: added a paragraph to `docs/programs.md`'s "Running one"
+  section documenting this, cited as above. Doc-only change, no kernel
+  logic touched. Verified every citation by reading the exact cited
+  line(s) against current source and re-ran the citation-range check (0
+  out of range) and link-resolution check (0 broken) across `README.md` +
+  all of `docs/*.md`.
