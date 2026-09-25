@@ -13,7 +13,7 @@ attached or its filesystem didn't parse.
 
 | Command | Disk? | Behavior | Source |
 |---|---|---|---|
-| `help` | | Prints the five command-group summary lines shown below. | `kmain.mx:2108` |
+| `help` | | Prints six lines (`kmain.mx:2109`-`2120`): one unlabeled bare list of command names (`help clear about echo uptime crash readme mem`), then five labeled groups — `files:`, `net:`, `power:`, `users:`, `env:`. `mods` (below) is the one command in this whole table that appears in none of the six lines, so `help` alone won't tell you it exists. | `kmain.mx:2108` |
 | `readme` | | Shows the multiboot module text passed in by the bootloader (`show_module`, `kmain.mx:841`). | `kmain.mx:2123` |
 | `mem` | | Sums the multiboot memory map's usable (type 1) regions and prints total RAM in MB. | `kmain.mx:2127`, `kmain.mx:917` |
 | `mods` | | Lists the multiboot modules loaded at boot, with sizes. | `kmain.mx:2131`, `kmain.mx:945` |

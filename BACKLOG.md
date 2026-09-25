@@ -445,3 +445,55 @@ behavior, add a backlog item describing it and stop.
   line(s) against current source and re-ran the citation-range check (0
   out of range) and link-resolution check (0 broken) across `README.md` +
   all of `docs/*.md`.
+
+## Doc quality (found 2026-09-25, not yet done)
+- [x] `docs/shell.md`'s `help` row said `help` "Prints the five command-group
+  summary lines shown below" — miscounted and incomplete. Found 2026-09-25:
+  every unchecked backlog item was still an explicitly out-of-scope
+  code/build.py/QEMU-test/repo-structure change (re-read `BACKLOG.md` in
+  full to confirm — matches every prior daily pass's finding; `git log`
+  and a `git rev-parse` check also showed the local `main` branch had
+  drifted behind a detached, already-pushed commit from the 2026-09-24
+  pass — reconciled by fast-forwarding, no actual lost work, `origin/main`
+  already had it), and the usual dead-code `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx` turned up nothing new beyond already-known false
+  positives (`on_tick`/`on_exception`, called from `idt.s`). So this pass
+  cross-checked the full `run_command_impl` `streq`/`starts_with` dispatch
+  chain (`kmain.mx:2104`-`2606`) against `docs/shell.md`'s command table —
+  confirmed the table itself lists every real command including `mods` —
+  and then read the `help` command's own literal output (`kmain.mx:2108`-
+  `2121`) against the doc's description of it, the one row describing
+  output rather than dispatching to it. Found two things: (1) `help`
+  prints exactly six `feed()`+`print_string` lines, not five — one bare,
+  unlabeled list of command names (`"help clear about echo uptime crash
+  readme mem"`, `kmain.mx:2110`) followed by five lines each prefixed with
+  a labeled group (`files:`/`net:`/`power:`/`users:`/`env:`,
+  `kmain.mx:2112`-`2120`); (2) `mods` (`kmain.mx:2131`, `945`), a real,
+  already-documented command, appears in none of those six lines — a user
+  who only ever reads `help`'s own output has no way to discover it
+  exists, same "the summary text doesn't list a real command" class of
+  gap as the already-fixed `docs/architecture.md` "three interrupt
+  sources" miscount (2026-09-09 entry above), just self-inflicted by this
+  doc's own row rather than by the kernel's help text (the kernel's `help`
+  text is what's incomplete; this fix only corrects the *doc's*
+  description of that fact, since rewording `help`'s own printed string is
+  a kernel-behavior change needing a QEMU boot to confirm it still fits
+  the print budget — flagged as a follow-up below). Done 2026-09-25:
+  rewrote the `help` row in `docs/shell.md` to state the real six-line
+  structure and name the `mods` gap explicitly, cited to the exact lines
+  above. Doc-only change, no kernel logic touched. Verified both new
+  citations by reading the exact cited lines against current source, and
+  re-ran the citation-range check (529 citations, 0 out of range) and
+  link-resolution check (58 links, 0 broken) across `README.md` + all of
+  `docs/*.md`.
+
+## Code follow-ups (found 2026-09-25, needs a local QEMU boot test)
+- [ ] `help`'s own printed text (`kmain.mx:2108`-`2121`) never mentions
+  `mods` in any of its six lines, unlike every other real shell command
+  (see the doc-quality item above for the full trace: `readme`/`mem` are
+  named in the bare first line, but `mods` — right next to them in the
+  dispatch chain, `kmain.mx:2131` — was left out, plausibly just missed
+  when that line was last edited). A human could add `mods` to the bare
+  first line (`kmain.mx:2110`) or its own line; needs a QEMU boot to
+  confirm the edited line still fits the fixed-width text console. Found
+  2026-09-25 while auditing `help`'s output against `docs/shell.md`.
