@@ -164,6 +164,30 @@ the tracked Shift flag (`g_shift` or a local `shift`) selects the
 upper/shifted row, so `scancode_to_ascii`'s own two-value `shift: bool`
 parameter is the entire case-toggle mechanism.
 
+Arrow keys are a separate case worth tracing, since they arrive as a
+two-byte `0xE0`-prefixed sequence rather than the single scancodes
+`scancode_to_ascii` maps. The desktop's list/menu contexts explicitly check
+for that prefix to drive navigation — Files (`files_on_key`,
+`kmain.mx:2766`), the home launcher (`launcher_on_key`, `kmain.mx:3377`),
+the power menu (`power_on_key`, `kmain.mx:3422`), and Settings' sidebar and
+search results (`net/settings.mx:608`, `net/settings.mx:611-613`), all
+using the raw scancodes `72` (Up), `75`/`77` (Left/Right), `80` (Down) once
+the prefix is seen — as does the shell prompt's own history recall
+(`kmain.mx:3524`, see
+[`docs/shell.md`](shell.md)'s Line editing section). The three plain
+text-entry readers do not: `kread_line` and `read_line` drop the prefix
+only incidentally, since `224` fails their own `sc < 128` gate
+(`kmain.mx:2959`, `kmain.mx:1841`) before ever reaching
+`scancode_to_ascii`; `lock_on_key` drops it explicitly (`if sc == 224 {
+return; }`, `kmain.mx:3452`). Either way, the arrow key's second byte (`72`/
+`75`/`77`/`80`) also maps to `0` in `scancode_to_ascii` — none of those
+values fall inside any of its mapped ranges — so pressing an arrow key
+while typing a password (`su`/`passwd`), answering a program's `read-line`
+syscall, or at the lock screen is a complete no-op: no digit is inserted,
+no cursor moves, nothing is recalled. None of these three readers supports
+editing anywhere but the end of the line — only appending a character and
+Backspace.
+
 Only one compiled program can run at a time, synchronously, from inside a
 shell command — there is no concept of a background process.
 

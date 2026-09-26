@@ -497,3 +497,39 @@ behavior, add a backlog item describing it and stop.
   first line (`kmain.mx:2110`) or its own line; needs a QEMU boot to
   confirm the edited line still fits the fixed-width text console. Found
   2026-09-25 while auditing `help`'s output against `docs/shell.md`.
+
+## Doc quality (found 2026-09-26, not yet done)
+- [x] `docs/architecture.md`'s execution-model paragraph already traced all
+  four text-entry call sites of `scancode_to_ascii` (`on_key`, `kread_line`,
+  `read_line`, `lock_on_key`) but never said what happens when one of them
+  receives an arrow key, a two-byte `0xE0`-prefixed sequence its own table
+  isn't built to parse. Found 2026-09-26: every unchecked backlog item was
+  still an explicitly out-of-scope code/build.py/QEMU-test/repo-structure
+  change (re-read `BACKLOG.md` in full to confirm — matches every prior
+  daily pass's finding), and the usual dead-code `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx` turned up nothing new beyond already-known false
+  positives, so this pass grepped every `sc == 224` site in `kmain.mx` (the
+  `0xE0` extended-scancode prefix) to see which functions handle it and
+  which don't. Found a real split: the desktop's list/menu contexts —
+  `files_on_key` (`kmain.mx:2766`), `launcher_on_key` (`kmain.mx:3377`),
+  `power_on_key` (`kmain.mx:3422`), the shell prompt's own history recall
+  (`kmain.mx:3524`, already documented in `docs/shell.md`'s Line editing
+  section), and Settings' sidebar/search (`net/settings.mx:608`,
+  `:611`-`613`) — all explicitly check for the prefix and act on the raw
+  scancodes `72`/`75`/`77`/`80` (Up/Left/Right/Down) that follow it. The
+  three plain text-entry line readers do not: `kread_line` and `read_line`
+  drop the prefix only incidentally, since `224` fails their own
+  `sc < 128` gate (`kmain.mx:2959`, `kmain.mx:1841`) before ever reaching
+  `scancode_to_ascii`; `lock_on_key` drops it explicitly
+  (`kmain.mx:3452`). Confirmed by reading `scancode_to_ascii`
+  (`kmain.mx:606`-`638`) that the arrow key's second byte also maps to `0`
+  there regardless — none of `72`/`75`/`77`/`80` fall inside any of its
+  mapped ranges — so the net effect in all three readers is a harmless,
+  silent no-op: no digit inserted, no cursor moves, no history recalled.
+  Done 2026-09-26: added this as a new paragraph in `docs/architecture.md`
+  right after the existing four-call-site paragraph, cited as above.
+  Doc-only change, no kernel logic touched. Verified every new
+  `file:line` citation by reading the exact cited line(s) against current
+  source, and ran a citation-range + link-resolution check across
+  `README.md` + all of `docs/*.md`: 538 citations, 0 out of range; 59
+  links, 0 broken.
