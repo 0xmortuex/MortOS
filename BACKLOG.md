@@ -533,3 +533,31 @@ behavior, add a backlog item describing it and stop.
   source, and ran a citation-range + link-resolution check across
   `README.md` + all of `docs/*.md`: 538 citations, 0 out of range; 59
   links, 0 broken.
+
+## Doc quality (found 2026-09-27, not yet done)
+- [x] `docs/hardware.md`'s AC'97 bullet already said `ac97_fill_tone`/
+  `ac97_test_tone` generate "one square wave" into a 1024-stereo-frame
+  buffer, but never stated the wave's actual pitch or the buffer's actual
+  duration, even though both are plain arithmetic on constants already
+  sitting in the source. Found 2026-09-27: every unchecked backlog item
+  was still an explicitly out-of-scope code/build.py/QEMU-test/
+  repo-structure change (re-read `BACKLOG.md` in full to confirm — matches
+  every prior daily pass's finding), and the usual `fn`-call-site-zero-hits
+  grep across `kmain.mx`+`net/*.mx` turned up nothing new beyond
+  already-known accessor/helper false positives, so this pass read
+  `net/audio.mx` end to end (69 lines, the shortest file with a dedicated
+  doc section not yet mined this way) looking for a fact computable from
+  its own constants but never stated. Found it in `ac97_fill_tone`
+  (`net/audio.mx:43`-`54`): the polarity flip every 27 frames
+  (`net/audio.mx:52`) at the 48000 Hz rate `ac97_init` programs
+  (`net/audio.mx:27`) makes the tone a square wave at
+  `48000 / (2 * 27)` ≈ 889 Hz, and the 1024-frame buffer holds only
+  `1024 / 48000` ≈ 21 ms of audio. Also confirmed `ac97_test_tone()`
+  (`net/audio.mx:56`-`68`) starts the DMA and returns immediately, with no
+  wait for playback to finish, unlike `speaker_test()`'s busy-wait
+  (already documented one section above in the same doc) — so pressing
+  Settings' "Test" plays a roughly 21 ms blip, not a sustained tone. Done
+  2026-09-27: added this to `docs/hardware.md`'s AC'97 bullet, cited as
+  above. Doc-only change, no kernel logic touched. Re-ran the
+  citation-range check (777 citations, 0 out of range) and link-resolution
+  check (59 links, 0 broken) across `README.md` + all of `docs/*.md`.

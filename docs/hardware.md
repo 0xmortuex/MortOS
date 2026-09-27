@@ -128,7 +128,16 @@ runs when the Settings app's "Initialize AC97" control is used
   through a single-entry buffer descriptor list (`g_ac97_bdl`) on the
   NABM PCM-out DMA engine (offsets `0x10`/`0x15`/`0x1b`). There is no
   capture path (no microphone input) and no interrupt-driven refill — one
-  buffer plays once.
+  buffer plays once. The tone's actual pitch and length are both computable
+  from constants already in the file but state neither anywhere else:
+  `ac97_fill_tone`'s polarity flips every 27 frames (`net/audio.mx:52`) at
+  the 48000 Hz rate `ac97_init` programs (`net/audio.mx:27`), a square wave
+  of `48000 / (2 * 27)` ≈ 889 Hz; the buffer holds only 1024 frames, i.e.
+  `1024 / 48000` ≈ 21 ms of audio. `ac97_test_tone()` starts the DMA and
+  returns immediately (`:56`-`68`) without waiting for it to finish, unlike
+  `speaker_test()`'s busy-wait (see the PC speaker section above) — so
+  pressing Settings' "Test" plays a roughly 21 ms blip, not a sustained
+  tone.
 
 ## Surfaced in Settings (`net/settings.mx`)
 
