@@ -561,3 +561,48 @@ behavior, add a backlog item describing it and stop.
   above. Doc-only change, no kernel logic touched. Re-ran the
   citation-range check (777 citations, 0 out of range) and link-resolution
   check (59 links, 0 broken) across `README.md` + all of `docs/*.md`.
+
+## Doc quality (found 2026-09-29, not yet done)
+- [x] `docs/architecture.md`'s execution-model section described IRQ0
+  (`on_tick()`) as doing only one thing — bumping `g_ticks` for `uptime` —
+  but it does a second, undocumented thing in graphics mode: redraw the
+  top-bar clock once a second on its own. Found 2026-09-29: every unchecked
+  backlog item was still an explicitly out-of-scope code/build.py/QEMU-test/
+  repo-structure change (re-read `BACKLOG.md` in full to confirm — matches
+  every prior daily pass's finding; also reconciled the environment's
+  detached-`HEAD`/stale-local-`main` state left over from the 2026-09-27
+  pass by fast-forwarding `main` to `origin/main`, no lost work), so this
+  pass read `on_tick()` (`kmain.mx:2617`-`2624`) end to end looking for
+  behavior not yet mined by prior citation-drift or dead-code-grep passes.
+  Found: `on_tick()` calls `draw_clock()` every 100th tick when `g_gfx` is
+  true (`kmain.mx:2619`-`2622`), so the clock advances continuously with no
+  user action needed — not previously stated anywhere (`docs/settings.md`'s
+  existing Clock section documents *what* `draw_clock()` draws and its RTC
+  read, but not what calls it or how often). Traced two more facts while
+  grounding this: `draw_clock()` no-ops whenever an overlay is open
+  (`g_overlay != 0`, `kmain.mx:3056`-`3058`), so the once-a-second tick can
+  never paint over a full-screen power/lock/sleep/launcher screen; and
+  `restore_desktop()`'s own explicit `draw_clock()` call
+  (`kmain.mx:3163`-`3168`) is redundant in the common case, since it runs
+  right after `switch_app(g_app)`, whose `draw_topbar()`
+  (`kmain.mx:2843`-`2845`) already redraws the clock unconditionally —
+  harmless (same 108x24 region repainted twice), just previously-unnoticed
+  duplication. Done 2026-09-29: expanded the IRQ0 bullet in
+  `docs/architecture.md`'s execution-model section with all of the above,
+  cross-linked to `docs/settings.md`. Doc-only change, no kernel logic
+  touched. Verified every new `file:line` citation by reading the exact
+  cited line(s) against current source and ran a citation-range +
+  link-resolution check across `README.md` + all of `docs/*.md`: 544
+  citations checked, 0 out of range; 60 links checked, 0 broken.
+
+## Doc quality (found 2026-09-29, not yet done)
+- [ ] `restore_desktop()` (`kmain.mx:3163`-`3168`) calls `draw_clock()`
+  right after `switch_app(g_app)`, but `switch_app()`'s own `draw_topbar()`
+  (`kmain.mx:2843`-`2845`) already redraws the clock unconditionally — the
+  explicit call is a redundant second repaint of the same 108x24 region
+  every time an overlay closes. Harmless today (just a wasted draw), but a
+  human with a local QEMU boot could drop the redundant `draw_clock()` line
+  from `restore_desktop()` and confirm the clock still updates correctly on
+  every overlay-close path (unlock, sleep-wake, launcher Esc/Enter-an-app).
+  Found 2026-09-29 while documenting `on_tick()`'s clock-refresh behavior in
+  `docs/architecture.md`.

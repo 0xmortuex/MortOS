@@ -117,8 +117,21 @@ all behavior after `sti`:
   graphics only, `kmain.mx:3507-3512`), the active app's own handler when
   `g_app` isn't the terminal (`kmain.mx:3514-3522`), or the terminal/shell
   scancode-to-ASCII path.
-- **IRQ0 (timer, ~100 Hz)** → `timer_isr` (`idt.s:147-155`) → `mort_on_tick`,
-  which bumps `g_ticks` (backs the `uptime` command).
+- **IRQ0 (timer, ~100 Hz)** → `timer_isr` (`idt.s:147-155`) → `mort_on_tick` →
+  `on_tick()` (`kmain.mx:2617-2624`), which bumps `g_ticks` (backs the
+  `uptime` command) and, in graphics mode, redraws the top-bar clock once a
+  second (`(g_ticks % 100) == 0` calling `draw_clock()`, `kmain.mx:2619-2622`)
+  — so the clock advances on its own, with no user action or app redraw
+  needed. `draw_clock()` itself no-ops while an overlay is open
+  (`g_overlay != 0`, `kmain.mx:3056-3058`), so this per-second tick never
+  paints over a full-screen power/lock/sleep/launcher screen; see
+  [`docs/settings.md`](settings.md) for the RTC read `draw_clock()` does and
+  its own caveats. That guard also makes `restore_desktop()`'s own explicit
+  `draw_clock()` call (`kmain.mx:3163-3168`) redundant in the common case:
+  `restore_desktop()` calls `switch_app(g_app)` first, whose `draw_topbar()`
+  (`kmain.mx:2843-2845`) already redraws the clock unconditionally, so the
+  line right after it repaints the same 108x24 region a second time —
+  harmless, just an extra draw.
 - **`int 0x80` (syscall)** → `syscall_isr` (`idt.s:170-174`) → `on_syscall()`
   (`kmain.mx:1864`), described below.
 - **CPU exceptions (vectors 0-31)** → each vector gets its own stub
