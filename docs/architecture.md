@@ -250,6 +250,26 @@ does too (`draw_launcher`, `kmain.mx:3339-3364`), so `restore_box()`'s saved
 260x200 region would be far too small to undo any of them — `g_boxsave` is
 sized and used for exactly one transition.
 
+A third case neither restore path covers: selecting "Lock" or "Sleep" from
+inside the power menu itself. Enter (`power_on_key`'s activate branch,
+`kmain.mx:3443-3446`) calls `power_activate()` (`kmain.mx:3412-3417`), which
+for `sel == 0`/`sel == 1` jumps straight into `open_lock()`/`open_sleep()` —
+neither `restore_box()` nor `restore_desktop()` runs first, so the
+`g_boxsave` snapshot `open_power_menu()` took when `F12` was pressed is
+simply abandoned, exactly as `power_activate()`'s own comment says
+("`full-screen; box stays saved but unused`", `kmain.mx:3413`). That's
+harmless only because `open_lock()`/`open_sleep()` repaint the whole
+framebuffer themselves (as above) and `g_boxsave` gets overwritten wholesale
+the next time `open_power_menu()` runs — nothing ever reads the stale copy
+in between. This path is also the only *graphical* way to reach the lock or
+sleep screen from a non-Terminal app: the `lock`/`sleep` shell commands
+(`docs/shell.md`) need the Terminal app focused, while `F12` works from any
+app (`kmain.mx:3502-3504`), so `F12` then Down then Enter is the only route
+in from Files, Vex, or Settings. "Restart" and "Shut down" (`sel == 2`/`3`)
+need no restore at all: `reboot()` (`kmain.mx:1024-1029`) and `poweroff()`
+(`kmain.mx:3245-3263`) both end in an infinite `hlt` loop with no `iret`, so
+control never returns to `power_activate()` to draw anything further.
+
 One more overlay asymmetry: the lock screen has no cancel key at all —
 `lock_on_key` (`kmain.mx:3449-3480`) only ever checks Enter, Backspace, Shift,
 and character keys; `Esc` (scancode `1`) isn't one of its `if` branches, falls

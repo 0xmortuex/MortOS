@@ -606,3 +606,47 @@ behavior, add a backlog item describing it and stop.
   every overlay-close path (unlock, sleep-wake, launcher Esc/Enter-an-app).
   Found 2026-09-29 while documenting `on_tick()`'s clock-refresh behavior in
   `docs/architecture.md`.
+
+## Doc quality (found 2026-09-30, not yet done)
+- [x] `docs/architecture.md`'s overlay-state-machine section already traced
+  the power menu's Esc-cancel restore (`save_box`/`restore_box`) and every
+  other overlay's `restore_desktop()` exit, but never covered what happens
+  when you select "Lock" or "Sleep" *from inside* the power menu itself —
+  a third transition path neither restore mechanism handles. Found
+  2026-09-30: reconciled a detached-`HEAD`/stale-local-`main` state at the
+  start of this pass (five unpushed commits from the 2026-09-29 run sitting
+  on a detached `HEAD`, already present on `origin/main` — fast-forwarded
+  local `main` to match, same reconciliation this backlog has needed on at
+  least two prior passes, 2026-09-25 and 2026-09-29). Then confirmed every
+  unchecked backlog item was still an explicitly out-of-scope
+  code/build.py/QEMU-test/repo-structure change (re-read `BACKLOG.md` in
+  full), and a fresh `fn`-call-site-vs-every-doc name search across
+  `kmain.mx`+`net/*.mx` (322 functions checked) turned up `power_activate`
+  among 73 unmentioned names — nearly all small accessors not worth their
+  own entry, same as prior passes, but `power_activate` looked worth
+  reading since the power *menu* itself (`draw_power_menu`,
+  `kmain.mx:3137`-`3147`) was already documented while what happens on
+  Enter was not. Read `power_activate()` (`kmain.mx:3412`-`3417`) and
+  `power_on_key()`'s Enter branch (`kmain.mx:3443`-`3446`) in full: selecting
+  "Lock" or "Sleep" (`sel == 0`/`1`) calls `open_lock()`/`open_sleep()`
+  directly, running neither `restore_box()` nor `restore_desktop()` first —
+  the `g_boxsave` snapshot `open_power_menu()` took on `F12` is simply
+  abandoned, exactly as `power_activate()`'s own comment already says
+  (`kmain.mx:3413`). Traced why this is harmless (both screens repaint the
+  whole framebuffer themselves, and the next `open_power_menu()` overwrites
+  `g_boxsave` wholesale before anything could read the stale copy) and a
+  second, previously-undocumented consequence: since `F12` is reachable from
+  any app (`kmain.mx:3502`-`3504`) but the `lock`/`sleep` shell commands need
+  the Terminal app focused, the power menu is the *only* graphical route to
+  the lock/sleep screens from Files, Vex, or Settings. Also confirmed
+  "Restart"/"Shut down" (`sel == 2`/`3`) need no restore logic at all, since
+  `reboot()` (`kmain.mx:1024`-`1029`) and `poweroff()`
+  (`kmain.mx:3245`-`3263`) both end in an infinite `hlt` loop with no `iret`
+  — control never returns to `power_activate()`. Done 2026-09-30: added a
+  new paragraph to `docs/architecture.md`'s overlay-state-machine section,
+  right after the existing box-save/restore-desktop contrast, covering all
+  of the above, cited. Doc-only change, no kernel logic touched. Verified
+  every new `file:line` citation by reading the exact cited line(s) against
+  current source, and ran a citation-range + link-resolution check across
+  `README.md` + all of `docs/*.md`: 546 citations checked, 0 out of range;
+  72 links checked, 0 broken.
