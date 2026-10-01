@@ -216,6 +216,28 @@ pair, dispatched by the `if g_app == N` chain in `on_key()` above. `F12`
 opens the power menu as a modal overlay from any app (`g_overlay`,
 `kmain.mx:3498-3499`); overlays intercept the keyboard ahead of app routing.
 
+The desktop's pixel layout is mostly fixed, not derived from the actual
+framebuffer size. `draw_desktop()`'s window frame is a hardcoded
+`fill_rect(180, 160, 664, 456, ...)` (`kmain.mx:492`) — x:180-844, y:160-616
+regardless of `g_fb_w`/`g_fb_h` — and `window_title()` (`kmain.mx:476-479`)
+and `clear_window()` (`kmain.mx:482-484`) are similarly absolute (x:182-842
+and x:184-840). Only the top bar tracks the real width: it's filled
+`fill_rect(0, 0, g_fb_w, 24, ...)` (`kmain.mx:468`) and two of its three
+labels are right-aligned off `g_fb_w` (`g_fb_w - 290`/`g_fb_w - 190`,
+`kmain.mx:470-471`) — the window frame beneath it is not. `fb_init()`
+(`kmain.mx:340-355`) sets `g_gfx = true` whenever the multiboot info reports
+32-bpp direct-RGB (`bpp == 32 && kind == 1`) with no check that `g_fb_w`/
+`g_fb_h` are actually large enough for this fixed 664x456 frame to fit —
+it works today only because the one bootloader that ever supplies a linear
+framebuffer, Limine on the ISO path, honors the exact `1024x768` mode the
+multiboot header requests (`boot.s:28-29`), a fact `test_gfx.py` asserts
+directly (`test_gfx.py:105`) rather than the kernel itself ever checking.
+A bootloader granting a smaller (but still 32-bpp direct-RGB) mode would
+pass `fb_init`'s two checks and still corrupt the display: `fill_rect`/
+`put_pixel` compute every pixel address from `g_fb_pitch` with no
+width/height bound anywhere (`kmain.mx:357-358`, `362-373`), so writes past
+the real row width spill into the next scanline instead of being clipped.
+
 ### The overlay state machine
 
 `g_overlay` (`kmain.mx:56`) is actually a five-way state, though its own

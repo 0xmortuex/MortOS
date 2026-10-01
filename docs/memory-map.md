@@ -117,3 +117,9 @@ hands back `blk + 8`, i.e. the address right after the header.
 - The colored `0x00RRGGBB` values used throughout the framebuffer renderer
   (e.g. `kmain.mx:401-416`) are pixel colors, not memory addresses, and are
   intentionally left out of this table.
+- **The linear framebuffer's base address and pitch are dynamic, but the
+  desktop drawn on top of it is not**: `fb_init()` only checks the pixel
+  format (32-bpp direct-RGB) before enabling graphics mode, never that
+  `g_fb_w`/`g_fb_h` are large enough for the desktop's fixed-size window
+  frame. See [`docs/architecture.md`](architecture.md#the-desktop--window-manager)
+  for the full trace.

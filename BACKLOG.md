@@ -650,3 +650,46 @@ behavior, add a backlog item describing it and stop.
   current source, and ran a citation-range + link-resolution check across
   `README.md` + all of `docs/*.md`: 546 citations checked, 0 out of range;
   72 links checked, 0 broken.
+
+## Doc quality (found 2026-10-01, not yet done)
+- [x] Every remaining unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure change (re-read
+  `BACKLOG.md` in full to confirm — matches every prior daily pass's
+  finding), and a fresh `fn`-call-site-vs-every-doc name search across
+  `kmain.mx`+`net/*.mx` turned up nothing not already covered by an
+  existing entry or already-known small-accessor false positives, so this
+  pass read the graphics bring-up path (`fb_init`, `kmain.mx:340-355`) end
+  to end against the fixed-pixel desktop it enables, since `docs/
+  architecture.md`'s desktop section described *what* each app draws but
+  never the coordinate system itself. Found a real, previously-undocumented
+  gap: `fb_init()` only validates the multiboot framebuffer's pixel format
+  (`bpp == 32 && kind == 1`) before setting `g_gfx = true` — it never checks
+  that `g_fb_w`/`g_fb_h` are large enough for the desktop actually drawn on
+  top, which is almost entirely hardcoded pixel geometry, not derived from
+  the real framebuffer size: `draw_desktop()`'s window frame is a literal
+  `fill_rect(180, 160, 664, 456, ...)` (`kmain.mx:492`, x:180-844,
+  y:160-616), and `window_title()`/`clear_window()`
+  (`kmain.mx:476-479`/`482-484`) are equally absolute — only the top bar
+  itself tracks `g_fb_w` (`kmain.mx:468`, `470-471`). Traced why this works
+  today anyway: the only bootloader that ever supplies a linear framebuffer,
+  Limine on the ISO path, honors the exact `1024x768` mode the multiboot
+  header requests (`boot.s:28-29`) — confirmed not just by inference but by
+  `test_gfx.py`'s own direct assertion of that resolution
+  (`test_gfx.py:105`). Confirmed the failure mode is real, not
+  hypothetical, by reading `fill_rect`/`put_pixel`
+  (`kmain.mx:357-358`/`362-373`): both compute every pixel address from
+  `g_fb_pitch` with no width/height bound anywhere, so a hypothetical
+  smaller (but still 32-bpp direct-RGB) mode would pass `fb_init`'s two
+  checks and then silently spill fixed-geometry writes into the next
+  scanline instead of being clipped or rejected. Done 2026-10-01: added a
+  new paragraph to `docs/architecture.md`'s desktop/window-manager section
+  (right after the existing `g_app`/`switch_app` paragraph, before "The
+  overlay state machine") with the full trace, and a shorter cross-linked
+  bullet to `docs/memory-map.md`'s Notes section pointing at it, since that
+  table's own framebuffer row already calls the base address "dynamic"
+  without this caveat. Doc-only change, no kernel/boot.s logic touched.
+  Verified every new `file:line` citation by reading the exact cited
+  line(s) against current source, confirmed the new `architecture.md`
+  anchor link resolves, and ran a citation-range + link-resolution check
+  across `README.md` + all of `docs/*.md`: 560 citations checked, 0 out of
+  range.
