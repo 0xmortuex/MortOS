@@ -693,3 +693,42 @@ behavior, add a backlog item describing it and stop.
   anchor link resolves, and ran a citation-range + link-resolution check
   across `README.md` + all of `docs/*.md`: 560 citations checked, 0 out of
   range.
+
+## Doc quality (found 2026-10-02, not yet done)
+- [x] `docs/shell.md` documented every command's own behavior in detail but
+  never explained what `run_command_impl`'s returned `bool` actually
+  controls, even though its own `clear` row and the "a command opened an
+  overlay" comment it quotes (from `docs/architecture.md`) both depend on
+  it. Found 2026-10-02: every unchecked backlog item was still an
+  explicitly out-of-scope code/build.py/QEMU-test/repo-structure change
+  (re-read `BACKLOG.md` in full to confirm — matches every prior daily
+  pass's finding; `git log` showed no non-doc commits since the 2026-10-01
+  pass), and the usual `fn`-call-site-vs-every-doc name search across
+  `kmain.mx`+`net/*.mx` turned up nothing beyond already-known small-
+  accessor false positives, so this pass read `on_key`'s Enter handler
+  (`kmain.mx:3551`-`3568`) end to end against `run_command_impl`
+  (`kmain.mx:2104`-`2606`), the one control-flow link between the command
+  table and the terminal's redraw behavior that no prior pass had traced.
+  Found a genuinely surprising, previously-undocumented fact: of
+  `run_command_impl`'s roughly 45 dispatch branches, exactly one returns
+  `true` (`return true;` occurs once in the whole function, confirmed by
+  grep: `kmain.mx:2588`, inside `clear`) — every other branch, including
+  every error path, `exec`, `run`, `su`/`sudo` failures, and even the
+  unreachable lines after `reboot`/`poweroff`'s `hlt` loops, returns
+  `false`. The returned `bool` isn't a general success/failure signal; its
+  only real effect is suppressing the post-command `feed()`
+  (`kmain.mx:3561`-`3563`) specifically for `clear`, since `clear_screen()`
+  already blanked the console and reset `g_row` to `0` itself
+  (`kmain.mx:2586`-`2587`) — an unconditional `feed()` right after would
+  scroll the freshly blanked screen and misplace the next prompt at row 1.
+  Also traced the separate `g_overlay != 0` early-return
+  (`kmain.mx:3558`-`3560`) that skips `feed()`/redraw entirely for
+  `power`/`lock`/`sleep` in graphics mode, and confirmed it's independent
+  of the `bool` (checked first, before the `cleared` branch even runs).
+  Done 2026-10-02: added a new "After Enter: feed, redraw, or leave it
+  alone" section to `docs/shell.md` right before `$VAR` expansion, covering
+  both branches, cited as above. Doc-only change, no kernel logic touched.
+  Verified every new `file:line` citation by reading the exact cited
+  line(s) against current source, and ran a citation-range check (0 out of
+  range) and link-resolution check (0 broken) across `README.md` + all of
+  `docs/*.md`.

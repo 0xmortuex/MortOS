@@ -52,6 +52,36 @@ attached or its filesystem didn't parse.
 | *(anything else)* | | Tried as a program name on `$PATH` (`try_exec_path`, `kmain.mx:2060`): as typed, as `/bin/<name>`, as `<name>.bin`, then `/bin/<name>.bin`, each checked with `exec_if_program`. Falls through to `unknown command` if none match. | `kmain.mx:2600` |
 | *(empty line)* | | No-op. | `kmain.mx:2105` |
 
+## After Enter: feed, redraw, or leave it alone
+
+`run_command` (`kmain.mx:2099`-`2102`) returns whatever `run_command_impl`
+returns, and `on_key`'s Enter handler (`kmain.mx:3551`-`3568`) uses that
+`bool` — plus `g_overlay` — to decide what happens to the screen next:
+
+- **A command opened an overlay** (`g_overlay != 0` after the call, e.g.
+  `power`/`lock`/`sleep` in graphics mode): `on_key` returns immediately
+  (`kmain.mx:3558`-`3560`) with no `feed()` and no prompt redraw. The
+  overlay repaints the whole screen itself, so the terminal's `g_row`/
+  `g_col` are left exactly as they were and the prompt reappears unchanged
+  once the overlay closes.
+- **Otherwise**, the returned `bool` decides whether `feed()`
+  (`kmain.mx:596`-`602`) runs before the next prompt is drawn
+  (`kmain.mx:3561`-`3563`). Despite the name suggesting a general
+  "did this command finish cleanly" signal, it has exactly one real use:
+  `clear` (`kmain.mx:2585`-`2589`) is the *only* branch in all of
+  `run_command_impl`'s roughly 45-way dispatch that returns `true` —
+  confirmed by grep, there is exactly one `return true` in the whole
+  function (`kmain.mx:2588`), and every other path, including every error
+  message, `exec`, `run`, `su`/`sudo` failures, and even the unreachable
+  lines after `reboot`/`poweroff`'s `hlt` loops, returns `false`. `clear`
+  returning `true` suppresses the post-command `feed()` specifically
+  because `clear_screen()` already blanked the console and reset `g_row`
+  to `0` itself (`kmain.mx:2586`-`2587`); an unconditional `feed()` right
+  after would scroll the freshly blanked screen by one line and misplace
+  the next prompt at row 1 instead of row 0. Every other command relies on
+  that same `feed()` call to both separate its own output from the next
+  prompt and perform the actual line-advance/scroll.
+
 ## `$VAR` expansion
 
 Every command — typed at the prompt, run from a script via `run`, or the
