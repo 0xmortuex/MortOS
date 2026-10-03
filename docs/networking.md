@@ -28,7 +28,7 @@ for the PCI/USB/audio side.
 | DHCP | `net/dhcp.mx` | RFC 2131 client (DORA exchange): `dhcp_build_discover`/`dhcp_build_request` (`net/dhcp.mx:50`-`73`) and `dhcp_find_option`/`dhcp_msg_type` (`net/dhcp.mx:76`-`104`) to parse OFFER/ACK. `dhcp_find_option` is only ever called for option 53 (message type) and option 54 (server id) — see "DHCP asks for a gateway and DNS server, then discards them" below. |
 | DNS | `net/dns.mx` | RFC 1035 resolver client for A records — `dns_build_query` (`net/dns.mx:58`) and `dns_first_a` (`net/dns.mx:98`), including compression-pointer-aware name skipping (`dns_skip_name`, `net/dns.mx:73`). **Implemented and host-testable but not currently called from anywhere in the kernel** — no shell command or `net/netapp.mx` code path invokes it (verified by grep for `dns_` outside this file). It resolves no hostnames at runtime today. |
 | TCP | `net/tcp.mx` | RFC 793 segment format and checksum only — `tcp_build` (`net/tcp.mx:55`). Per the file's own header comment (`net/tcp.mx:4`-`6`), the connection state machine (handshake, sequence tracking, teardown) is deliberately kept out of this file so the wire format stays host-testable; that state machine lives inline in `net_httpd` (see below). `tcp_verify` (`net/tcp.mx:76`), `tcp_window` (`net/tcp.mx:38`), and `tcp_payload` (`net/tcp.mx:39`) are all unused — `net_httpd`'s own state machine reads what it needs (flags, sequence numbers, header length) through other accessors instead. `TCP_RST` (`net/tcp.mx:18`) is defined but never used anywhere: `httpd_xmit` (`net/netapp.mx:153`-`173`) never sends it, and `net_httpd`'s flag checks (`net/netapp.mx:206`-`247`) never test for it on a received segment — see the "httpd has no reset handling" note below. |
-| HTTP | `net/http.mx` | A minimal HTTP/1.1 response builder — `http_build_response` (`net/http.mx:63`) writes a `200 OK` with a correct `Content-Length`, and `http_is_get` (`net/http.mx:82`) checks for a `GET ` request line. `http_is_get` reads only the first 4 bytes of the request (`net/http.mx:83`-`87`) — it never looks at the request path or any header, so there is no routing and no 404: every `GET` to any path (`/`, `/favicon.ico`, anything) gets the same `200 OK` page back. |
+| HTTP | `net/http.mx` | A minimal HTTP/1.1 response builder — `http_build_response` (`net/http.mx:63`) writes a `200 OK` with a correct `Content-Length`, and `http_is_get` (`net/http.mx:82`) checks for a `GET ` request line. `http_is_get` reads only the first 4 bytes of the request (`net/http.mx:83`-`87`) — it never looks at the request path or any header, so there is no routing and no 404: every `GET` to any path (`/`, `/favicon.ico`, anything) gets the same `200 OK` page back. Neither it nor anything downstream checks a destination buffer size — see "The send path has no size bound either" below. |
 | Dispatch | `net/netcfg.mx` | `net_handle_frame` (`net/netcfg.mx:35`) is a pure frame-in/frame-out function: given a received Ethernet frame, it decides whether to answer (an ARP reply, or an ICMP echo reply) and builds the whole response. No hardware I/O, which is what makes it testable on the host against captured packets. |
 | Kernel bridge | `net/netapp.mx` | Wires the stack above to the kernel's shell and NIC driver — see below. |
 
@@ -140,6 +140,35 @@ correct checksums on every packet it *sends* (via `ip_build_header`,
 real checksum), but trusts every field of a packet it *receives* — the
 `*_verify` functions exist, and match their protocol's RFC, but nothing in
 `kmain.mx` or `net/*.mx` ever calls them.
+
+## The send path has no size bound either
+
+The three buffers the outbound path copies through — `g_net_tx`
+(`net/netapp.mx:12`, 1024 bytes), `g_net_resp` (`net/netapp.mx:14`, 1024
+bytes), and `g_rtl_txbuf` (`net/rtl8139.mx:27`, 2048 bytes, the one the NIC
+actually DMAs from) — are all fixed-size, and nothing in the chain that
+fills them ever checks a length against the buffer it is writing into.
+`http_strlen`/`http_strcopy` (`net/http.mx:9`-`34`) only know when to stop
+by a NUL terminator; `http_build_response` (`net/http.mx:63`-`79`) takes no
+destination-size argument at all. `httpd_xmit`'s own copy loop
+(`net/netapp.mx:158`-`162`) writes `data_len` bytes into `g_net_tx`
+starting at `tcp + 20` with no bound check, and `net_send`'s copy loop
+(`net/netapp.mx:19`-`23`) does the same into `g_rtl_txbuf` for whatever
+length it's given.
+
+Today this never bites: the only body ever handed to `httpd_xmit` is the
+fixed page from `net_page` (`net/netapp.mx:141`-`143`), and
+`http_build_response`'s output for it — the HTTP headers plus the page's
+626-byte HTML literal (counted directly from the source, unescaping its
+`\"` sequences) — comes to 728 bytes. `httpd_xmit` writes that starting at
+byte 54 of `g_net_tx` (`net/netapp.mx:154`-`161`: 14 bytes of Ethernet
+header + 20 of IP + 20 of TCP), ending at byte 781 — about 242 bytes short
+of `g_net_tx`'s 1024-byte end, and `net_send`'s resulting 782-byte copy
+into the 2048-byte `g_rtl_txbuf` has far more room still. But that margin
+is incidental, not enforced: nothing stops a longer `net_page()` body, or
+any future caller that hands `httpd_xmit` a size it didn't anticipate,
+from writing straight past the end of `g_net_tx` into whatever follows it
+in memory — there is no check anywhere in the chain that would catch it.
 
 ## Not covered by automated tests
 

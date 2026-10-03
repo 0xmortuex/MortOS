@@ -732,3 +732,43 @@ behavior, add a backlog item describing it and stop.
   line(s) against current source, and ran a citation-range check (0 out of
   range) and link-resolution check (0 broken) across `README.md` + all of
   `docs/*.md`.
+
+## Doc quality (found 2026-10-03, not yet done)
+- [x] `docs/networking.md`'s "Unverified receive path" section documented
+  that the stack checksum-verifies nothing it receives, but never covered
+  the mirror-image gap on the send side: none of the buffers the outbound
+  path copies through are ever bound-checked either. Found 2026-10-03:
+  reconciled a detached-`HEAD`/stale-local-`main` state at the start of
+  this pass (two unpushed commits from the 2026-10-01/02 runs sitting on a
+  detached `HEAD`, already present on `origin/main` by the time this pass
+  fetched — fast-forwarded local `main` to match, same reconciliation
+  prior passes have needed, e.g. 2026-09-25/29/30). Then confirmed every
+  unchecked backlog item was still an explicitly out-of-scope
+  code/build.py/QEMU-test/repo-structure change (re-read `BACKLOG.md` in
+  full), and a fresh `fn`-call-site-vs-every-doc name search across
+  `kmain.mx`+`net/*.mx` (322 functions checked) turned up `net_send` among
+  70 unmentioned names — most were small accessors already known to be
+  false positives from prior passes, but `net_send` stood out since
+  `rtl_transmit` (the actual NIC-level transmit) was already documented
+  while the wrapper every real caller actually goes through was not. Read
+  `net_send` (`net/netapp.mx:17`-`24`), `httpd_xmit`
+  (`net/netapp.mx:153`-`168`), `http_build_response`/`http_strlen`/
+  `http_strcopy` (`net/http.mx:9`-`79`), and the three fixed-size buffers
+  they write into — `g_net_tx`/`g_net_resp` (`net/netapp.mx:12`/`14`, 1024
+  bytes each) and `g_rtl_txbuf` (`net/rtl8139.mx:27`, 2048 bytes) — and
+  confirmed none of them take or check a destination size anywhere in the
+  chain; only a NUL terminator ends `http_strcopy`'s copy, and both
+  `httpd_xmit`'s and `net_send`'s own copy loops write exactly the byte
+  count they're given with no bound. Computed the actual margin by reading
+  `net_page`'s HTML literal directly (626 bytes, unescaping its `\"`
+  sequences) plus `http_build_response`'s fixed header text (102 bytes):
+  today's one real response is 728 bytes, landing at byte 781 of
+  `g_net_tx`'s 1024 — about 242 bytes of incidental headroom that nothing
+  in the code actually enforces. Done 2026-10-03: added a new "The send
+  path has no size bound either" section to `docs/networking.md` right
+  after "Unverified receive path", with a cross-link from the HTTP table
+  row. Doc-only change, no kernel/net logic touched. Verified every new
+  `file:line` citation by reading the exact cited line(s) against current
+  source, and ran a citation-range check (576 citations, 0 out of range)
+  and link-resolution check (61 links, 0 broken) across `README.md` + all
+  of `docs/*.md`.
