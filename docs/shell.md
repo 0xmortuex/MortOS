@@ -22,7 +22,7 @@ attached or its filesystem didn't parse.
 | `pwd` | | Prints the current working directory path (`g_cwdpath`). | `kmain.mx:2143` |
 | `cd [dir]` | disk | Changes directory; no argument goes to `/home/<user>`. Errors: `no such directory`, `not a directory`. | `kmain.mx:2148` |
 | `ls [dir]` | disk | Lists entries in the current directory (or `dir`): type (`d`/`-`), octal mode, name, size, owning uid. Prints `(empty)` if nothing matches. | `kmain.mx:2174` |
-| `mkdir <dir>` | disk | Creates a directory. Errors: `parent directory does not exist`, `already exists`. | `kmain.mx:2226` |
+| `mkdir <dir>` | disk | Creates a directory. Errors: `parent directory does not exist`, `already exists` — plus a mislabeled second message for several other failures, see below. | `kmain.mx:2226` |
 | `rmdir <dir>` | disk | Removes an empty directory. Errors: `no such directory`, `not a directory`, `directory not empty`. | `kmain.mx:2239` |
 | `cat <file>` | disk | Reads the file into `FILEBUF` (`0x00810000`) and prints its contents. Errors: `not found: <name>`, `cat: is a directory`. | `kmain.mx:2262` |
 | `write <file> <text>` | disk | Appends `<text>` as a line to `<file>`, creating it (in the resolved parent directory) if it doesn't exist. Silent on success. Errors: `usage: write <name> <text>`, `write: is a directory`, `permission denied`, `write: parent directory does not exist`, `file full (max 64 KB)`. | `kmain.mx:2282` |
@@ -51,6 +51,60 @@ attached or its filesystem didn't parse.
 | `echo <text>` | | Prints `<text>` (everything after `echo `). | `kmain.mx:2595` |
 | *(anything else)* | | Tried as a program name on `$PATH` (`try_exec_path`, `kmain.mx:2060`): as typed, as `/bin/<name>`, as `<name>.bin`, then `/bin/<name>.bin`, each checked with `exec_if_program`. Falls through to `unknown command` if none match. | `kmain.mx:2600` |
 | *(empty line)* | | No-op. | `kmain.mx:2105` |
+
+## `mkdir`'s "parent directory does not exist" is often a lie
+
+`fs_mkdir` (`kmain.mx:1597`-`1607`) returns a single `u32` with three
+meanings overloaded onto it: `65` for "already exists", a resolved slot
+index on success, and `64` for every failure case. The `mkdir` dispatch
+(`kmain.mx:2226`-`2238`) only distinguishes two of those:
+
+```
+let r: u32 = fs_mkdir((cmd as u32 + 6) as u64);
+if r == 64 {
+    feed();
+    print_string("mkdir: parent directory does not exist", g_row, 12);
+}
+if r == 65 {
+    feed();
+    print_string("mkdir: already exists", g_row, 12);
+}
+```
+
+`64` is accurate when `fs_parent_of` (`kmain.mx:1448`-`1490`) itself
+returns `64` because the parent component doesn't resolve or isn't a
+directory (`kmain.mx:1481`-`1487`) — `fs_mkdir` passes that straight
+through (`kmain.mx:1600`-`1602`). But once the parent *does* resolve,
+`fs_mkdir` hands it to `fs_create_full` (`kmain.mx:1533`-`1584`), whose own
+four failure branches — name too long (`kmain.mx:1535`-`1538`), permission
+denied (`kmain.mx:1540`-`1543`), file table full (`kmain.mx:1546`-`1549`),
+and disk full (`kmain.mx:1568`-`1572`) — all `return 64` too, each after
+printing its *own*, correct error message first. `fs_mkdir` passes that
+`64` straight through as well (`kmain.mx:1606`), so the `mkdir` dispatch
+can't tell the two cases apart: it always treats `64` as "parent missing"
+and prints that message *in addition to* whichever real message
+`fs_create_full` already printed. A concrete, reachable case: `/etc` (one
+of the four directories `fs_ensure_layout` seeds at boot, `kmain.mx:1617`-
+`1625`) is created while `g_uid` is still `0`, before `login_default()`
+switches the session to the normal user (see
+[`docs/accounts.md`](accounts.md#the-seeded-hellotxt-belongs-to-root-not-to-you)
+for the same root-owned-at-boot pattern), so it ends up root-owned, mode
+`0755` — owner-write only, no `0002` other-write bit (`can_write`,
+`kmain.mx:2978`-`2986`). `cd /etc` as the default `mortuex` user, then
+`mkdir foo`, prints `permission denied` immediately followed by the false
+`mkdir: parent directory does not exist`, even though `/etc` resolved
+just fine. The same double message fires for a 24+ character name and for a full
+64-entry file table.
+
+Contrast with `write`'s otherwise-identical create path
+(`kmain.mx:2306`-`2316`): it checks `fs_parent_of`'s result on its own
+first and only *then* calls `fs_create_full`, trusting that call's own
+error message with no second message tacked on (`kmain.mx:2314`-`2315`,
+`// prints its own error`) — the asymmetry is in `fs_mkdir`'s wrapper, not
+in `fs_create_full` itself. See `BACKLOG.md`'s "Code follow-ups" section
+for the one-line fix (give `fs_mkdir` its own sentinel for "parent
+missing" distinct from `fs_create_full`'s generic failure) a human can
+make with a local QEMU boot test.
 
 ## After Enter: feed, redraw, or leave it alone
 

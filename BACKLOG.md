@@ -772,3 +772,64 @@ behavior, add a backlog item describing it and stop.
   source, and ran a citation-range check (576 citations, 0 out of range)
   and link-resolution check (61 links, 0 broken) across `README.md` + all
   of `docs/*.md`.
+
+## Doc quality (found 2026-10-04, not yet done)
+- [x] `docs/shell.md`'s `mkdir` row only ever listed two possible errors
+  (`parent directory does not exist`, `already exists`), but `fs_mkdir`
+  (`kmain.mx:1597`-`1607`) overloads its `64` failure return across five
+  different causes. Found 2026-10-04: every unchecked backlog item was
+  still an explicitly out-of-scope code/build.py/QEMU-test/repo-structure
+  change (re-read `BACKLOG.md` in full to confirm — matches every prior
+  daily pass's finding), and a fresh `fn`-call-site-vs-every-doc name
+  search across `kmain.mx`+`net/*.mx` (322 functions) turned up only
+  already-known small-accessor false positives, so this pass read the
+  filesystem creation path end to end instead, since `fs_mkdir`/
+  `fs_dir_empty`/`fs_ensure_dir` (surfaced by that same search) had not
+  been traced line-by-line before. Found a real, reproducible bug in the
+  shell's error reporting, not just a doc gap: `fs_mkdir` returns `64` both
+  when `fs_parent_of` says the parent is genuinely missing
+  (`kmain.mx:1600`-`1602`) *and* whenever it hands a resolved parent to
+  `fs_create_full` (`kmain.mx:1533`-`1584`) and that call fails for an
+  unrelated reason — name too long, permission denied, file table full, or
+  disk full (each its own `return 64` at `kmain.mx:1538`/`1543`/`1549`/
+  `1572`) — passed straight through at `kmain.mx:1606`. The `mkdir`
+  dispatch (`kmain.mx:2226`-`2238`) can't tell these apart: it always
+  prints `mkdir: parent directory does not exist` on `64`, so every one of
+  those four unrelated failures prints its own correct message
+  immediately followed by a false one. Confirmed a concretely reachable
+  case by tracing `can_write`/`dir_mode` (`kmain.mx:2978`-`2986`,
+  `:2993`-`2995`): `/etc` (root-owned `0755`, seeded by `fs_ensure_layout`
+  before login switches `g_uid` off `0` — same pattern `docs/accounts.md`
+  already documented for `hello.txt`) rejects the default `mortuex` user's
+  `mkdir` with `permission denied` *and* the false parent-missing message,
+  since mode `0755` has no `0002` other-write bit. Contrasted with `write`'s
+  otherwise-identical create path (`kmain.mx:2306`-`2316`), which checks
+  `fs_parent_of` on its own first and lets `fs_create_full`'s own message
+  stand with nothing tacked on — confirming the asymmetry is in
+  `fs_mkdir`'s wrapper, not `fs_create_full` itself. Done 2026-10-04: fixed
+  the `mkdir` row in `docs/shell.md` and added a new section explaining
+  the overload, the four reachable double-message cases, the `/etc`
+  example, and the contrast with `write`, all cited; cross-linked to
+  `docs/accounts.md`'s existing `hello.txt` section. Left `fs_mkdir`/the
+  `mkdir` dispatch itself untouched (kernel logic, out of scope) — added a
+  follow-up below for the one-line fix a human can make with a local QEMU
+  boot test. Doc-only change. Verified every new `file:line` citation by
+  reading the exact cited line(s) against current source, and ran a
+  citation-range check (592 citations, 0 out of range) and link-resolution
+  check (62 links, 0 broken) across `README.md` + all of `docs/*.md`.
+
+## Code follow-ups (found 2026-10-04, needs a local QEMU boot test)
+- [ ] `fs_mkdir` (`kmain.mx:1597`-`1607`) returns the same `64` sentinel
+  for "parent directory missing" and for every unrelated `fs_create_full`
+  failure (name too long, permission denied, file table full, disk full),
+  so the `mkdir` dispatch (`kmain.mx:2226`-`2238`) prints a false "parent
+  directory does not exist" on top of `fs_create_full`'s own, correct
+  message in all four of those cases (see `docs/shell.md`'s new
+  `mkdir`-error section for the full trace and a concrete repro: `cd /etc`
+  then `mkdir foo` as the default user). A human could give `fs_mkdir` its
+  own distinct sentinel (e.g. `66`) for the genuine parent-missing case at
+  `kmain.mx:1600`-`1602`, leaving `fs_create_full`'s `64` to mean only
+  "create itself failed," and update the `mkdir` dispatch to stop printing
+  the parent-missing message for plain `64`. Needs a QEMU boot to confirm
+  `mkdir`'s other call sites and messages are unaffected. Found 2026-10-04
+  while documenting the shell's error messages.
