@@ -833,3 +833,57 @@ behavior, add a backlog item describing it and stop.
   the parent-missing message for plain `64`. Needs a QEMU boot to confirm
   `mkdir`'s other call sites and messages are unaffected. Found 2026-10-04
   while documenting the shell's error messages.
+
+## Doc quality (found 2026-10-05, not yet done)
+- [x] Syscall 4 (read line, documented in `docs/programs.md`'s syscall ABI
+  table) never said what happens when the typed answer is long — a gap next
+  to code already covered by this doc, not a rehash. Found 2026-10-05: every
+  unchecked backlog item was still an explicitly out-of-scope
+  code/build.py/QEMU-test/repo-structure change (re-read `BACKLOG.md` in full
+  to confirm — matches every prior daily pass's finding), and the usual
+  dead-code `fn`-call-site grep across `kmain.mx`+`net/*.mx` turned up
+  nothing new beyond what's already flagged, so this pass read the three
+  keyboard-polling line readers side by side (`read_line`, `kmain.mx:1810`-
+  `1858`; `print_inline`, `kmain.mx:1788`-`1803`; `kread_line`,
+  `kmain.mx:2935`-`2973`) looking for a behavior gap between siblings in the
+  same file, the same technique that previously found the `export`-cap and
+  `mkdir`-sentinel bugs. Found a real asymmetry: `print_inline` (syscalls 1/2's
+  print path) wraps to a fresh line once `g_pcol >= 80` (`kmain.mx:1795`-
+  `1798`), and `kread_line` (the shell's `su`/`passwd` reader) sidesteps the
+  same problem by capping input at 60 characters (`kmain.mx:2961`) — safely
+  under the 80-column console width even with a prompt already on the line —
+  but `read_line` (syscall 4's own line reader) has neither: it only caps at
+  120 characters (`kmain.mx:1844`), never checks `g_pcol` against 80 at all.
+  Traced the concrete effect through `put_cell_at`/`put_index`
+  (`kmain.mx:505`-`517`, `499`-`503`): text mode computes a bare
+  `row * 80 + col` with no bounds check, so column 80 lands at column 0 of
+  the row below instead of scrolling there, silently overwriting whatever
+  was drawn on that line; graphics mode just draws the glyph further right
+  past the console's edge (`draw_glyph` at `x = 192 + col*8`, `kmain.mx:513`).
+  Confirmed this is reachable with the shipped `ask.bin` sample, not just a
+  theoretical bound: `exec_file` resets `g_pcol` to `0` right before entering
+  a program (`kmain.mx:1921`-`1922`), `ask.mx`'s prompt
+  (`"what is your name? "`, `programs/ask.mx:25`) is 19 characters, so typing
+  a name of 62 characters or more places the 62nd character at column 80.
+  Done 2026-10-05: added a new "Typing a long answer to syscall 4 corrupts
+  the row below it" section to `docs/programs.md` right after the syscall
+  ABI table, cited as above, and cross-linked a one-line note from the
+  `0x009F0100` row in `docs/memory-map.md`. Doc-only change, no kernel logic
+  touched. Verified every new `file:line` citation by reading the exact
+  cited line(s) against current source and ran a citation-range check (604
+  citations, 0 out of range) and link-resolution check (63 links; the one
+  flagged anchor, `architecture.md#the-desktop--window-manager` in
+  `docs/memory-map.md`, is a pre-existing double-hyphen slug from an em dash
+  in that heading, not introduced by this pass and not touched by it) across
+  `README.md` + all of `docs/*.md`.
+
+## Code follow-ups (found 2026-10-05, needs a local QEMU boot test)
+- [ ] `read_line()` (`kmain.mx:1810`-`1858`, syscall 4's line reader) has no
+  80-column wrap check, unlike its sibling `print_inline()`
+  (`kmain.mx:1795`-`1798`) — see the doc-quality item above for the full
+  trace and a concrete repro (`exec ask.bin`, type a name of 62+ characters).
+  A human could add the same `if g_pcol >= 80 { feed(); g_pcol = 0; }` guard
+  `print_inline` already uses, inside `read_line`'s character-accepted branch
+  (`kmain.mx:1844`-`1850`). Needs a QEMU boot to confirm the wrapped line
+  still echoes correctly and `ask.bin`'s greeting still reads back the full
+  typed name afterward. Found 2026-10-05 while documenting syscall 4.

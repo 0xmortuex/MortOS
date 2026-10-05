@@ -23,7 +23,7 @@ boot and vary by machine/bootloader.
 | `0x009F0004` | 4 B | syscall arg0 | fixed | `kmain.mx:1782`, read at `kmain.mx:1867`, `1873` |
 | `0x009F000C` | 4 B | syscall return value (kernel → program) | fixed | `kmain.mx:1783`, written at `kmain.mx:1877`, `1882` |
 | `0x009F0010` | 4 B | loaded program's entry address (kernel-internal) | fixed | `kmain.mx:1783`, written at `kmain.mx:1920`, called through at `kmain.mx:1891` (`exec_enter`) |
-| `0x009F0100` | 120 usable bytes + NUL | syscall #4 input line buffer, filled by `read_line` | fixed | `kmain.mx:1805-1809`, returned at `kmain.mx:1882` |
+| `0x009F0100` | 120 usable bytes + NUL | syscall #4 input line buffer, filled by `read_line` (echoes with no 80-column wrap check — see [`docs/programs.md`](programs.md#typing-a-long-answer-to-syscall-4-corrupts-the-row-below-it)) | fixed | `kmain.mx:1805-1809`, returned at `kmain.mx:1882` |
 | `0x00A00000` (10 MiB) | 64 KiB (zeroed then filled) | program load base — where `exec <name>` copies a flat binary and calls into it | fixed | `kmain.mx:1779`, `1890-1919`; also `programs/prog.ld:4` (`. = 0x00A00000;`) on the program-build side |
 | `0x01000000` (16 MiB) | up to `top - base` | kernel heap base (`g_heap_base`), first byte handed out by `kmalloc` | fixed | `kmain.mx:1043`, in `heap_init` (`kmain.mx:1041-1059`) |
 | `0x04000000` (64 MiB) | — | heap top **fallback**, used only if the multiboot mem-lower/upper flag (bit 0) is absent | fixed | `kmain.mx:1044` |
