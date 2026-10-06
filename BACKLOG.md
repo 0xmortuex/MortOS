@@ -887,3 +887,53 @@ behavior, add a backlog item describing it and stop.
   (`kmain.mx:1844`-`1850`). Needs a QEMU boot to confirm the wrapped line
   still echoes correctly and `ask.bin`'s greeting still reads back the full
   typed name afterward. Found 2026-10-05 while documenting syscall 4.
+
+## Doc quality (found 2026-10-06, not yet done)
+- [x] `fs_resolve` (path string -> index) has a documented-nowhere counterpart,
+  `path_of` (index -> path string, for `pwd`/`$PWD`/the prompt), that writes
+  into its output buffer with no length check anywhere in the function.
+  Found 2026-10-06: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure change (re-read
+  `BACKLOG.md` in full to confirm — matches every prior daily pass's
+  finding), and a fresh `fn`-call-site-vs-every-doc name search across
+  `kmain.mx`+`net/*.mx` (322 functions checked) turned up `path_of` among the
+  usual small-accessor false positives — but unlike those, it's a recursive,
+  non-trivial function right next to the already-documented `fs_resolve`, so
+  this pass read it in full (`kmain.mx:1425`-`1443`). It recurses up the
+  `parent` chain first, then appends the current directory's own name,
+  writing straight into whatever buffer the caller passes — no bound
+  anywhere. Both call sites hand it the same fixed 128-byte global,
+  `g_cwdpath` (`kmain.mx:33`): `cd`'s dispatch (`kmain.mx:2171`) and
+  `cwd_init()` (`kmain.mx:2916`-`2931`, which seeds it at login). Computed a
+  concrete repro: `fs_create_full` caps each path component at 23 characters
+  (`kmain.mx:1535`) but nothing caps nesting depth, so `mkdir`+`cd`, six
+  times, each with a full 23-character name (needing only 6 of the 64
+  file-table slots, and only write access to your own home directory), walks
+  `path_of` into writing a 144-byte path (including its NUL) into the
+  128-byte buffer — 17 bytes past the end, with no check anywhere to stop
+  it. Did not try to identify which global actually gets clobbered (depends
+  on the Mort compiler's C output layout, not something a docs-only pass can
+  pin down without a boot test) — documented the overflow itself and its
+  repro, not a guess about the blast radius. Done 2026-10-06: added a new
+  paragraph to `docs/fs-design.md` right after the existing `fs_resolve`/
+  directory paragraph, cited as above, and cross-linked a one-clause pointer
+  from `docs/shell.md`'s `cd` row. Doc-only change, no kernel logic touched.
+  Verified every new `file:line` citation by reading the exact cited line(s)
+  against current source, and ran a citation-range check (608 citations, 0
+  out of range) and link-resolution check (64 links; the one flagged anchor,
+  `architecture.md#the-desktop--window-manager` in `docs/memory-map.md`, is
+  the same pre-existing double-hyphen slug already noted as out of scope by
+  the 2026-10-05 pass, untouched by this one) across `README.md` + all of
+  `docs/*.md`.
+
+## Code follow-ups (found 2026-10-06, needs a local QEMU boot test)
+- [ ] `path_of()` (`kmain.mx:1425`-`1443`) writes a directory's full path into
+  its caller's buffer with no length check anywhere in the function — see the
+  doc-quality item above for the full trace and a concrete repro (`mkdir`+`cd`
+  six levels deep, each directory named with the full 23-character limit,
+  overflows the 128-byte `g_cwdpath` global by 17 bytes). A human could add a
+  buffer-size parameter (or a hardcoded 128 cap matching `g_cwdpath`, since
+  that's `path_of`'s only caller) and stop early rather than overflow — needs
+  a QEMU boot to confirm deeply-nested `cd`/`pwd` still work up to the new
+  cap and pick a sane truncation/error behavior past it. Found 2026-10-06
+  while documenting `path_of`.

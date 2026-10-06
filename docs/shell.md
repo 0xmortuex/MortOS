@@ -20,7 +20,7 @@ attached or its filesystem didn't parse.
 | `net` | | Runs DHCP over the RTL8139 NIC to lease an IP (`net_dhcp`, `net/netapp.mx:46`). | `kmain.mx:2135` |
 | `httpd` | | Serves an HTML page on TCP port 80 (`net_httpd`, `net/netapp.mx:176`). | `kmain.mx:2139` |
 | `pwd` | | Prints the current working directory path (`g_cwdpath`). | `kmain.mx:2143` |
-| `cd [dir]` | disk | Changes directory; no argument goes to `/home/<user>`. Errors: `no such directory`, `not a directory`. | `kmain.mx:2148` |
+| `cd [dir]` | disk | Changes directory; no argument goes to `/home/<user>`. Errors: `no such directory`, `not a directory`. Rebuilds `g_cwdpath` for `pwd` via `path_of`, which has no bound on path length — see [`docs/fs-design.md`](fs-design.md)'s directory section for a concrete overflow. | `kmain.mx:2148` |
 | `ls [dir]` | disk | Lists entries in the current directory (or `dir`): type (`d`/`-`), octal mode, name, size, owning uid. Prints `(empty)` if nothing matches. | `kmain.mx:2174` |
 | `mkdir <dir>` | disk | Creates a directory. Errors: `parent directory does not exist`, `already exists` — plus a mislabeled second message for several other failures, see below. | `kmain.mx:2226` |
 | `rmdir <dir>` | disk | Removes an empty directory. Errors: `no such directory`, `not a directory`, `directory not empty`. | `kmain.mx:2239` |

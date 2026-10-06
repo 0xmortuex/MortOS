@@ -80,6 +80,25 @@ commands (`cd`, `ls`, `mkdir`, `rmdir`, `chmod`, `chown`, plus `pwd`,
 `ls`/`cat`/`write`/`rm`/`run`, was written before any of this existed and is
 not a complete command reference; treat `docs/shell.md` as the current one.
 
+`fs_resolve` turns a path into an index with no bound on how deep it walks,
+and the function that does the reverse — rendering the current directory
+back into a path string for `pwd`/`$PWD`/the prompt — has no bound either.
+`path_of` (`kmain.mx:1425`-`1443`) recurses up the `parent` chain first, then
+appends the current directory's own name, writing straight into whatever
+buffer it's given with no length check anywhere in the function. Both call
+sites hand it the same fixed 128-byte global, `g_cwdpath` (`kmain.mx:33`):
+`cd`'s dispatch (`kmain.mx:2171`) and `cwd_init()` (`kmain.mx:2916`-`2931`),
+which seeds it at login. Since `fs_create_full` caps each path component at
+23 characters (`kmain.mx:1535`) but never caps how many directories deep a
+path can go, nesting six directories named with the full 23 characters each
+(`mkdir`+`cd`, six times, e.g. a 23-`a` name at each level — no permission
+beyond write access to your own home directory is needed, and only 6 of the
+64 file-table slots are spent) builds a path 144 bytes long including its
+NUL — 17 bytes past the end of `g_cwdpath`, written with no bounds check at
+all. What actually gets clobbered depends on the Mort compiler's C output
+layout, not documented here; the point is that `path_of` itself has nothing
+stopping it.
+
 Everything below was designed against the *actual* Mort compiler
 (`typechecker.py`, `codegen.py` in the separate [Mort](https://github.com/0xmortuex/Mort)
 repo this kernel is written in) and the actual kernel (`kmain.mx`, at the
