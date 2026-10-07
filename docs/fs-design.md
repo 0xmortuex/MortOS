@@ -99,6 +99,24 @@ all. What actually gets clobbered depends on the Mort compiler's C output
 layout, not documented here; the point is that `path_of` itself has nothing
 stopping it.
 
+The shell prompt hits a second, shallower version of the same gap through a
+different, smaller buffer. `draw_prompt` (`kmain.mx:709`-`727`) builds the
+displayed path into a local `disp: [u8; 64]` (`kmain.mx:710`): it copies
+`g_cwdpath` into `disp` via the same unbounded `str_copy`
+(`kmain.mx:739`-`748`) — substituting a leading `~` for the home prefix when
+the cwd is under `/home/<user>` (`kmain.mx:714`-`720`), but otherwise with no
+length check at all — then records the written length in `g_prompt_len`
+(`kmain.mx:726`) so the input line starts right after it. Since each path
+component is still capped at 23 characters, nesting just **three**
+`mkdir`+`cd` directories deep under home, each named with the full 23
+characters, builds a displayed path (`"~" `+ three `/`+23-char segments) of
+73 characters — 74 bytes with its NUL — into the 64-byte `disp`, 10 bytes
+past the end. That's reachable with half the nesting the `g_cwdpath`
+overflow above needs (3 levels vs. 6), and corrupts stack memory on every
+subsequent prompt redraw rather than a one-time global write. As with
+`path_of`, what actually gets clobbered depends on the compiler's stack
+layout — not pinned down here, just the overflow and its repro.
+
 Everything below was designed against the *actual* Mort compiler
 (`typechecker.py`, `codegen.py` in the separate [Mort](https://github.com/0xmortuex/Mort)
 repo this kernel is written in) and the actual kernel (`kmain.mx`, at the

@@ -937,3 +937,54 @@ behavior, add a backlog item describing it and stop.
   a QEMU boot to confirm deeply-nested `cd`/`pwd` still work up to the new
   cap and pick a sane truncation/error behavior past it. Found 2026-10-06
   while documenting `path_of`.
+
+## Doc quality (found 2026-10-07, not yet done)
+- [x] The `path_of`/`g_cwdpath` overflow documented 2026-10-06 isn't the only
+  one the same unbounded-nesting root cause reaches — the shell prompt copies
+  `g_cwdpath` into a second, smaller buffer with the same missing bound.
+  Found 2026-10-07: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure change (re-read
+  `BACKLOG.md` in full to confirm — matches every prior daily pass's
+  finding), and a fresh `fn`-call-site-vs-every-doc name search across
+  `kmain.mx`+`net/*.mx` (322 functions checked) turned up nothing new beyond
+  already-known small-accessor false positives and functions already fully
+  covered by existing docs (confirmed by reading `docs/architecture.md`'s
+  Files-app section in full before ruling `files_selected_entry`/`files_up`/
+  `files_down` out — their whole behavior, flat-listing quirk included, was
+  already documented in depth). Re-read yesterday's `path_of` finding
+  looking for an under-traced neighbor instead, and found one right next to
+  it: `draw_prompt` (`kmain.mx:709`-`727`), which redraws the shell prompt on
+  every command and on login, copies `g_cwdpath` into a local
+  `disp: [u8; 64]` (`kmain.mx:710`) via the same unbounded `str_copy`
+  (`kmain.mx:739`-`748`), substituting a leading `~` for the home prefix but
+  with no length check of its own. Computed the exact threshold: since each
+  path component is still capped at 23 characters, nesting three (not six)
+  `mkdir`+`cd` directories deep under home, each named with the full 23
+  characters, builds a displayed path 73 characters long — 74 bytes with its
+  NUL — into the 64-byte `disp`, 10 bytes past the end (verified the
+  arithmetic with a small script, not just by eye). That's reachable with
+  half the nesting depth the already-documented `g_cwdpath` overflow needs,
+  and corrupts stack memory on every subsequent prompt redraw rather than a
+  one-time global write. Did not try to identify what actually gets
+  clobbered (same Mort-compiler-stack-layout caveat as yesterday's finding,
+  not resolvable without a boot test). Done 2026-10-07: added a new
+  paragraph to `docs/fs-design.md` right after the existing `path_of`
+  paragraph, cited as above, and extended `docs/shell.md`'s `cd` row's
+  existing cross-link to cover both overflows. Doc-only change, no kernel
+  logic touched. Verified every new `file:line` citation by reading the
+  exact cited line(s) against current source, and ran a citation-range
+  check (614 citations, 0 out of range) and link-resolution check (64
+  links, 0 broken) across `README.md` + all of `docs/*.md`.
+
+## Code follow-ups (found 2026-10-07, needs a local QEMU boot test)
+- [ ] `draw_prompt()` (`kmain.mx:709`-`727`) copies `g_cwdpath` into a local
+  64-byte `disp` buffer with no length check — see the doc-quality item
+  above for the full trace and a concrete repro (`mkdir`+`cd` three levels
+  deep under home, each directory named with the full 23-character limit,
+  overflows `disp` by 10 bytes). Fixing this needs the same kind of decision
+  as the `path_of`/`g_cwdpath` follow-up above (truncate, grow the buffer, or
+  cap nesting depth at creation time) — and ideally the same human pass
+  should fix both together, since they share one root cause (no depth cap in
+  `fs_create_full`/`fs_mkdir`). Needs a QEMU boot to confirm the shell prompt
+  still renders correctly at the new cap. Found 2026-10-07 while documenting
+  `draw_prompt`.
