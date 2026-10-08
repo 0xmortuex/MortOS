@@ -988,3 +988,69 @@ behavior, add a backlog item describing it and stop.
   `fs_create_full`/`fs_mkdir`). Needs a QEMU boot to confirm the shell prompt
   still renders correctly at the new cap. Found 2026-10-07 while documenting
   `draw_prompt`.
+
+## Doc quality (found 2026-10-08, not yet done)
+- [x] The last three days' overflow findings (`path_of`/`g_cwdpath`,
+  `draw_prompt`/`disp`, `read_line`'s missing 80-column wrap) were all
+  reachable only after several `mkdir`+`cd` levels or a long typed answer.
+  `fs_parent_of` — read in full once already on 2026-09-18, for an unrelated
+  permission-check gap — turned out to have a sharper version of the same
+  bug class: reachable in a single command, no nesting at all. Found
+  2026-10-08: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure change (re-read
+  `BACKLOG.md` in full to confirm — matches every prior daily pass's
+  finding), and a fresh `fn`-call-site grep across `kmain.mx`+`net/*.mx`
+  (322 functions) turned up nothing new beyond already-flagged small-accessor
+  false positives, so this pass looked for other unbounded-write siblings of
+  `path_of`/`draw_prompt` by grepping every fixed-size `[u8; N]` stack buffer
+  in `kmain.mx` and checking each one's write loop for a bound. Found two in
+  one function: `fs_parent_of` (`kmain.mx:1448`-`1490`) writes the path's
+  final component into whatever `leaf` buffer the caller passes — via a
+  fully unbounded `str_copy` for a bare name with no `/` at all
+  (`kmain.mx:1460`), or an unbounded copy loop otherwise
+  (`kmain.mx:1463`-`1469`) — and writes everything *before* the last `/`
+  into a local `ppath: [u8; 64]` (`kmain.mx:1473`-`1479`), also with no
+  bound. Both call sites, `fs_mkdir` (`kmain.mx:1599`) and `write`'s create
+  path (`kmain.mx:2308`), pass a 24-byte `leaf` (`kmain.mx:1598`,
+  `kmain.mx:2307`). Computed the exact thresholds (verified with a small
+  script, not just by eye): a bare name of 24 characters overflows `leaf`
+  by 1 byte, growing with every extra character; a parent-path prefix of 64
+  characters before the final `/` overflows `ppath` the same way at exactly
+  64. `fs_create_full`'s own 23-character name check (`kmain.mx:1534`-
+  `1538`), already documented elsewhere in this backlog, runs on `leaf`
+  *after* `fs_parent_of` has already returned — too late to prevent either
+  overflow. Confirmed both are reachable in one typed line, not just in
+  theory: the shell's own input cap is 76 characters (`MAXLINE`,
+  `kmain.mx:15`, enforced at `kmain.mx:772`-`774`/`kmain.mx:873`), and
+  `mkdir ` + 64 `a`s + `/b` is only 72 characters — no `run <script>`, no
+  repeated `mkdir`+`cd`, just one command. Done 2026-10-08: added a third
+  paragraph to `docs/fs-design.md`'s directory section (right after the
+  `path_of`/`draw_prompt` paragraphs it sits beside), cited as above and
+  cross-linked to the existing `mkdir`-sentinel section in `docs/shell.md`;
+  extended that `docs/shell.md` section to disambiguate this from the
+  already-documented "24+ character name" double-message case (same
+  trigger, different bug: a message-ordering glitch vs. an actual
+  out-of-bounds write that happens first) and added one-clause pointers to
+  the `mkdir`/`write` table rows. Doc-only change, no kernel logic touched.
+  Re-ran the citation-range check (628 citations, 0 out of range) and
+  link-resolution check (66 links; the one flagged anchor,
+  `architecture.md#the-desktop--window-manager` in `docs/memory-map.md`, is
+  the same pre-existing double-hyphen slug already noted as out of scope by
+  the 2026-10-05/06 passes, untouched by this one) across `README.md` + all
+  of `docs/*.md`.
+
+## Code follow-ups (found 2026-10-08, needs a local QEMU boot test)
+- [ ] `fs_parent_of` (`kmain.mx:1448`-`1490`) writes a path's final
+  component and its parent prefix into fixed-size stack buffers (a 24-byte
+  `leaf` at both call sites, a local 64-byte `ppath`) with no length check
+  anywhere in the function — see the doc-quality item above for the full
+  trace and a one-line repro (`mkdir ` + 64 `a`s + `/b`, or a bare 24+
+  character name with no `/` at all). A human could add the same kind of
+  bound `fs_resolve` already uses per-component (`kmain.mx:1383`, capping
+  at 23) to both copies in `fs_parent_of`, truncating or rejecting an
+  over-length component before writing it rather than overflowing — ideally
+  as part of the same pass that addresses the `path_of`/`g_cwdpath` and
+  `draw_prompt`/`disp` follow-ups above, since all four share the same
+  missing-bound root cause in different functions. Needs a QEMU boot to
+  confirm `mkdir`/`write` still behave correctly for ordinary names after
+  the fix. Found 2026-10-08 while documenting `fs_parent_of`.

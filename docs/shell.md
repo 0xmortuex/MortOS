@@ -22,10 +22,10 @@ attached or its filesystem didn't parse.
 | `pwd` | | Prints the current working directory path (`g_cwdpath`). | `kmain.mx:2143` |
 | `cd [dir]` | disk | Changes directory; no argument goes to `/home/<user>`. Errors: `no such directory`, `not a directory`. Rebuilds `g_cwdpath` for `pwd` via `path_of`, which has no bound on path length, and the next prompt redraw copies it into its own smaller, also-unbounded buffer — see [`docs/fs-design.md`](fs-design.md)'s directory section for both concrete overflows. | `kmain.mx:2148` |
 | `ls [dir]` | disk | Lists entries in the current directory (or `dir`): type (`d`/`-`), octal mode, name, size, owning uid. Prints `(empty)` if nothing matches. | `kmain.mx:2174` |
-| `mkdir <dir>` | disk | Creates a directory. Errors: `parent directory does not exist`, `already exists` — plus a mislabeled second message for several other failures, see below. | `kmain.mx:2226` |
+| `mkdir <dir>` | disk | Creates a directory. Errors: `parent directory does not exist`, `already exists` — plus a mislabeled second message for several other failures, see below. A long enough `<dir>` overflows a fixed stack buffer before any of those checks run, see below. | `kmain.mx:2226` |
 | `rmdir <dir>` | disk | Removes an empty directory. Errors: `no such directory`, `not a directory`, `directory not empty`. | `kmain.mx:2239` |
 | `cat <file>` | disk | Reads the file into `FILEBUF` (`0x00810000`) and prints its contents. Errors: `not found: <name>`, `cat: is a directory`. | `kmain.mx:2262` |
-| `write <file> <text>` | disk | Appends `<text>` as a line to `<file>`, creating it (in the resolved parent directory) if it doesn't exist. Silent on success. Errors: `usage: write <name> <text>`, `write: is a directory`, `permission denied`, `write: parent directory does not exist`, `file full (max 64 KB)`. | `kmain.mx:2282` |
+| `write <file> <text>` | disk | Appends `<text>` as a line to `<file>`, creating it (in the resolved parent directory) if it doesn't exist. Silent on success. Errors: `usage: write <name> <text>`, `write: is a directory`, `permission denied`, `write: parent directory does not exist`, `file full (max 64 KB)`. A long enough `<file>` overflows the same fixed stack buffer `mkdir` does, resolving the parent — see `mkdir`'s row above. | `kmain.mx:2282` |
 | `rm <file>` | disk | Removes a file. Errors: `not found: <name>`, `rm: is a directory (use rmdir)`, `permission denied`. | `kmain.mx:2323` |
 | `run <file>` | disk | Reads `<file>` and runs each line as a shell command (`run_file`, `kmain.mx:894`). Refuses to nest (`run: nested run not allowed`) because a script's `run` would clobber the shared `FILEBUF`. | `kmain.mx:2346` |
 | `exec <file>` | disk | Loads a compiled Mort program from `<file>` into the fixed program window at `0x00A00000` and jumps to it (`exec_file`, `kmain.mx:1896`); the program talks back to the kernel via `int 0x80` syscalls. Errors: `not found: <name>`, `empty program`. | `kmain.mx:2351` |
@@ -93,8 +93,20 @@ for the same root-owned-at-boot pattern), so it ends up root-owned, mode
 `kmain.mx:2978`-`2986`). `cd /etc` as the default `mortuex` user, then
 `mkdir foo`, prints `permission denied` immediately followed by the false
 `mkdir: parent directory does not exist`, even though `/etc` resolved
-just fine. The same double message fires for a 24+ character name and for a full
-64-entry file table.
+just fine. The same double message fires for a full 64-entry file table.
+
+A 24+ character name is a sharper case than a double message: `fs_mkdir`
+and `write`'s create path both hand `fs_parent_of` a 24-byte `leaf` buffer
+(`kmain.mx:1598`, `kmain.mx:2307`), and `fs_parent_of` writes the name into
+it with no length check of its own — the 23-character cap above is
+`fs_create_full`'s, enforced only once `fs_parent_of` has already returned.
+A name of 24 characters or more (or, with a `/` in the path, a parent
+prefix of 64 characters or more) overflows that buffer, or a second one
+inside the same function, before any error message prints. See
+[`docs/fs-design.md`](fs-design.md)'s directory section for the full trace
+and the exact one-line repro — the same class of bug as `path_of`'s and
+`draw_prompt`'s overflows documented just above it, but reachable in a
+single `mkdir`/`write` with no nesting needed.
 
 Contrast with `write`'s otherwise-identical create path
 (`kmain.mx:2306`-`2316`): it checks `fs_parent_of`'s result on its own

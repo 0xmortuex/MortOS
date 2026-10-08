@@ -117,6 +117,35 @@ subsequent prompt redraw rather than a one-time global write. As with
 `path_of`, what actually gets clobbered depends on the compiler's stack
 layout — not pinned down here, just the overflow and its repro.
 
+A third, unrelated unbounded write sits right next to the already-documented
+sentinel-overload bug in `fs_parent_of` (`kmain.mx:1448`-`1490`; see
+[`docs/shell.md`](shell.md#mkdirs-parent-directory-does-not-exist-is-often-a-lie)
+for that bug) — and unlike the two above, it needs no nesting at all; one
+`mkdir` or `write` with a long enough argument triggers it on the first try.
+`fs_parent_of` takes the caller's whole path argument and writes two pieces
+of it straight into fixed-size stack buffers with no length check anywhere:
+the final component (everything after the last `/`, or the whole argument
+when there is no `/`) goes into `leaf` via an unbounded `str_copy`
+(`kmain.mx:1460` for the no-slash case, the copy loop at `kmain.mx:1463`-
+`1469` otherwise), and everything *before* the last `/` goes into a local
+`ppath: [u8; 64]` (`kmain.mx:1473`-`1479`). Both call sites —
+`fs_mkdir` (`kmain.mx:1599`) and `write`'s create path
+(`kmain.mx:2308`) — pass a 24-byte `leaf` (`kmain.mx:1598`, `kmain.mx:2307`),
+so a bare name of 24 characters or more (no `/` at all, e.g. `mkdir ` plus 24
+`a`s) overflows `leaf` by 1 byte at exactly 24 characters, growing by one
+byte per extra character; a parent-path prefix of 64 characters or more
+before the final `/` (e.g. `mkdir ` plus 64 `a`s, then `/b`) overflows
+`ppath` the same way at exactly 64. Both are typeable on one line: the
+shell's own input cap is 76 characters (`MAXLINE`, `kmain.mx:15`, enforced
+at `kmain.mx:772`-`774` and `kmain.mx:873`), and `mkdir ` followed by 64
+`a`s, `/`, and `b` is only 72. `fs_create_full`'s own 23-character name
+check (`kmain.mx:1534`-`1538`) runs on `leaf` *after* `fs_parent_of` has
+already returned, so it catches an over-length name too late to prevent the
+overflow that already happened reading it in. As with `path_of` and
+`draw_prompt`, what actually gets clobbered depends on the compiler's stack
+layout — not pinned down here, just the two overflows and their one-line
+repros.
+
 Everything below was designed against the *actual* Mort compiler
 (`typechecker.py`, `codegen.py` in the separate [Mort](https://github.com/0xmortuex/Mort)
 repo this kernel is written in) and the actual kernel (`kmain.mx`, at the
