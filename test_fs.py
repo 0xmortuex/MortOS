@@ -57,10 +57,10 @@ def main():
     h = T.boot(disk_img=IMG)
     try:
         expect(h, "MORT OS", "boot banner")
-        T.type_line(h, "ls")
+        T.type_line(h, "ls /")
         expect(h, "seeded.txt", "ls shows seeded file")
         expect(h, "43 bytes", "ls shows correct size")
-        T.type_line(h, "cat seeded.txt")
+        T.type_line(h, "cat /seeded.txt")
         expect(h, "second line from mkfs", "cat prints seeded content")
 
         T.type_line(h, "write notes.txt remember to feed the kernel")
@@ -76,9 +76,12 @@ def main():
         T.type_line(h, "write onlyname")
         expect(h, "usage: write <name> <text>", "write without text shows usage")
 
-        T.type_line(h, "rm seeded.txt")
-        T.type_line(h, "cat seeded.txt")
-        expect(h, "not found: seeded.txt", "rm removes the file")
+        # seeded files are root-owned (mkfs: uid 0, 0644); the shell runs as
+        # mortuex, so removing one takes sudo (password: mort)
+        T.type_line(h, "sudo rm /seeded.txt")
+        T.type_line(h, "mort")
+        T.type_line(h, "cat /seeded.txt")
+        expect(h, "not found: /seeded.txt", "rm removes the file")
 
         # author a script entirely in-OS, then run it
         T.type_line(h, "write job.txt echo script-says-hi")
