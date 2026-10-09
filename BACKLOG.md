@@ -1054,3 +1054,34 @@ behavior, add a backlog item describing it and stop.
   missing-bound root cause in different functions. Needs a QEMU boot to
   confirm `mkdir`/`write` still behave correctly for ordinary names after
   the fix. Found 2026-10-08 while documenting `fs_parent_of`.
+
+## Doc quality (found 2026-10-09, not yet done)
+- [x] `docs/testing.md`'s `test_fs.py`/`test_exec.py` sections described a
+  shell layout both scripts stopped testing against the same day: commit
+  `265537a` ("Fix test_fs and test_exec for the user/cwd/\$PATH layout",
+  pushed earlier today by a separate human/QEMU session, not this docs-only
+  agent) rewrote both suites for the already-documented but
+  previously-untested-against user/cwd/`$PATH` behavior (`docs/accounts.md`,
+  written 2026-08-24, already covered `login_default`/`cwd_init`/
+  `fs_populate_bin` in full) — a bare `ls`/`cat seeded.txt`/`rm seeded.txt`
+  no longer matches what the scripts type, since the shell now starts in
+  `/home/mortuex` as uid 1, `mkfs.py`'s seeded file is root-owned so a plain
+  `rm` is a no-op requiring `sudo`, and seeded `.bin` programs move to
+  `/bin` on first boot so `exec` needs the full path. Found 2026-10-09 while
+  checking `git log`/`git status` per this routine's own process (step 1)
+  before hunting for a fresh gap — a non-doc commit landed on `main`
+  overnight, so this pass diffed it directly against `docs/testing.md`
+  rather than starting from a blind source re-read. Done 2026-10-09: read
+  the current `test_fs.py`/`test_exec.py` in full and rewrote both doc
+  sections' command sequences and error strings to match exactly (`ls /`,
+  `cat /seeded.txt`, `sudo rm /seeded.txt` + the `mortuex` account's
+  password, `ls /bin`, `exec /bin/hello.bin`, etc.), citing the new test
+  line ranges, the commit, and cross-linking `docs/accounts.md`'s existing
+  boot-sequence section and `docs/shell.md`'s `sudo` row rather than
+  re-explaining either. Doc-only change (`docs/testing.md`), no kernel/test
+  logic touched. Verified every `file:line` citation across `README.md` +
+  all of `docs/*.md` (632 citations, 0 out of range) and every markdown
+  link (69 links, 0 broken reported by this pass's own checker — the
+  2026-10-05/06/08 passes' one flagged double-hyphen anchor in
+  `docs/memory-map.md` is a pre-existing slugger-convention quirk, already
+  noted out of scope, not touched by this pass).

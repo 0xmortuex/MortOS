@@ -38,14 +38,24 @@ VGA text screen — the `MORT OS` boot banner, that `help` lists commands
 
 Runs the kernel through four separate boot sessions against three fixture
 images (a `mkfs.py`-seeded disk, a 16 MiB zeroed non-MortFS image, and no
-disk at all):
+disk at all). As of 2026-10-09 (`265537a`) the suite was rewritten for the
+user/cwd/`$PATH` layout — the shell now auto-logs-in as `mortuex` and starts
+in `/home/mortuex` rather than `/` (`login_default`/`cwd_init`,
+`kmain.mx:2910`/`2916`, see [`docs/accounts.md`](accounts.md)), so a bare
+`ls`/`cat <name>` no longer sees root-level files:
 
-1. **Session 1** (seeded disk): `ls`/`cat` against the seeded file, `write`
-   to create a file, a second `write` to the same name (append), `cat` on a
-   missing file (`not found: <name>`), `write` with no text (usage
-   message), `rm` then `cat` (removed), authoring a two-line script with
-   `write` and running it with `run`, and a nested `run` (`run` inside a
-   script) being rejected while the outer script keeps going.
+1. **Session 1** (seeded disk): `ls /`/`cat /seeded.txt` against the
+   root-level seeded file (`test_fs.py:60`-`64`), `write` to create a file
+   in the cwd (`/home/mortuex`), a second `write` to the same name
+   (append), `cat` on a missing file (`not found: <name>`), `write` with no
+   text (usage message), `sudo rm /seeded.txt` then the `mortuex` account's
+   password (`mort`) then `cat /seeded.txt` (removed) — `mkfs.py` seeds
+   `seeded.txt` owned by uid 0 (`mode 0644`), so removing it as the normal
+   user needs `sudo` (`test_fs.py:79`-`84`; see
+   [`docs/shell.md`](shell.md)'s `sudo` row for the prompt/auth mechanics) —
+   authoring a two-line script with `write` and running it with `run`, and
+   a nested `run` (`run` inside a script) being rejected while the outer
+   script keeps going.
 2. **Session 2** (reboot, same image): re-boots the *same* disk image and
    checks the file written in session 1 and its content survived —
    MortFS's actual persistence guarantee, not just an in-memory one.
@@ -58,11 +68,18 @@ disk at all):
 
 Compiles every file `build._program_sources()` finds under `programs/` to a
 flat binary, seeds them onto a fresh image via `mkfs.py`, boots, and drives
-`exec`: `ls` shows the seeded `.bin` files; `exec hello.bin` prints its
+`exec`. As of 2026-10-09 (`265537a`) this suite was also rewritten for the
+user/cwd/`$PATH` layout: `fs_populate_bin` moves every seeded `.bin` from
+`/` into `/bin` on first boot (`kmain.mx:1641`-`1653`, see
+[`docs/accounts.md`](accounts.md)), so the test checks `ls /bin` (not a
+bare `ls`) for the seeded binaries and `exec`s them by full path
+(`exec /bin/hello.bin`, not `exec hello.bin`, `test_exec.py:56`-`72`):
+`ls /bin` shows the seeded `.bin` files; `exec /bin/hello.bin` prints its
 syscall output and the shell is still alive afterward (`echo` works); `exec
-count.bin` prints `one` and `three`; `exec ask.bin` (the interactive sample)
-prompts, reads a typed name via the read-line syscall, and greets it; `exec
-nope.bin` reports `not found: nope.bin`; and the shell survives cleanly
+/bin/count.bin` prints `one` and `three`; `exec /bin/ask.bin` (the
+interactive sample) prompts, reads a typed name via the read-line syscall,
+and greets it; `exec nope.bin` (deliberately a bare, non-existent name, not
+under `/bin`) reports `not found: nope.bin`; and the shell survives cleanly
 after an interactive program returns. See
 [`docs/programs.md`](programs.md) for what these sample programs actually
 do and the syscall ABI they use.
