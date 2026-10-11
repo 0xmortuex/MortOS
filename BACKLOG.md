@@ -1085,3 +1085,39 @@ behavior, add a backlog item describing it and stop.
   2026-10-05/06/08 passes' one flagged double-hyphen anchor in
   `docs/memory-map.md` is a pre-existing slugger-convention quirk, already
   noted out of scope, not touched by this pass).
+
+## Doc quality (found 2026-10-11, not yet done)
+- [x] `rm`'s row in `docs/shell.md` listed its error messages but never
+  mentioned its single biggest gotcha: it does not free the removed file's
+  disk space. Found 2026-10-11: no non-doc commit had landed since
+  `265537a`/`924bbd3` (checked `git log`/`git status` per step 1 — nothing
+  new to diff against), and every unchecked backlog item was still an
+  explicitly out-of-scope code/build.py/QEMU-test change (re-read
+  `BACKLOG.md` in full to confirm), so this pass re-read README's own
+  Roadmap section for a fresh angle and noticed its "v1 leaks the extent"
+  bullet used version language that contradicts a fact this backlog
+  already established on 2026-08-08 (MortFS moved to v2). Traced
+  `fs_create_full`'s extent allocator (`kmain.mx:1566`-`1576`, bumping
+  `next_free_sector` by 128 sectors per file with no version branching)
+  and `fs_remove` (`kmain.mx:1735`-`1743`, which only clears `used` and
+  decrements `file_count`) to confirm the leak is identical in both the v1
+  and v2 on-disk formats — v2 only added the directory/permission/ownership
+  metadata documented elsewhere in this backlog, nothing about allocation.
+  Also found that `docs/fs-design.md`'s own Section 4.4 (historical design
+  prose, kept as-is) had flagged this as a to-do in 2026 drafting ("Reminder
+  in help/docs: space is not reclaimed") that was apparently never carried
+  into the live `docs/shell.md` once the shell commands got their own
+  table. Done 2026-10-11: (1) fixed the stale "(v1 limitation)" framing in
+  both `kmain.mx:1735`'s comment and README's Roadmap bullet — one-line
+  changes, kept `kmain.mx`'s comment at exactly one line so no citation
+  below it shifted (verified: `wc -l kmain.mx` is still 3629 before and
+  after); (2) extended `docs/shell.md`'s `rm` row with the real behavior,
+  cited to `fs_remove`, the bump allocator, and the kernel's own
+  `"disk full (rm does not reclaim; re-run mkfs)"` message
+  (`kmain.mx:1571`), cross-linked to `docs/fs-design.md`'s existing
+  Section 2.6 for the 255-creates-before-full math on a default 16 MiB
+  image. Doc/comment-only change, no kernel logic touched. Re-ran the
+  citation-range check (0 out of range) and a from-scratch link-resolution
+  check, including the new `fs-design.md#26-deletion--documented-limitation`
+  anchor (double hyphen, matching the em-dash-removal slug the memory-map.md
+  quirk above also hits) — 70 links, 0 broken.

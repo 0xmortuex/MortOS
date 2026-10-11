@@ -189,7 +189,7 @@ Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) an
 ## Roadmap
 
 - [x] Everything above (multi-app desktop, ATA driver, MortFS, `exec`-ing real programs)
-- [ ] Space reclamation for `rm` (v1 leaks the extent; re-mkfs to compact)
+- [ ] Space reclamation for `rm` (the fixed-extent bump allocator never reclaims, in v1 or v2; re-mkfs to compact)
 - [ ] More syscalls (file I/O from programs, spawn) and a richer program ABI
 - [ ] A mouse (PS/2 IRQ12) and clickable window chrome — a real GUI
 

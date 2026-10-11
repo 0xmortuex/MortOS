@@ -1732,7 +1732,7 @@ fn fs_append_line(i: u32, text: *u8) -> bool {
     return fs_sync();
 }
 
-// Mark `name` unused. The extent is NOT reclaimed (v1 limitation).
+// Mark `name` unused. The extent is NOT reclaimed -- unchanged from v1 to v2.
 fn fs_remove(name: *u8) -> bool {
     let i: u32 = fs_find(name);
     if i == 64 {
