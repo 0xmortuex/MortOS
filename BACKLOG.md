@@ -1121,3 +1121,44 @@ behavior, add a backlog item describing it and stop.
   check, including the new `fs-design.md#26-deletion--documented-limitation`
   anchor (double hyphen, matching the em-dash-removal slug the memory-map.md
   quirk above also hits) — 70 links, 0 broken.
+
+## Doc quality (found 2026-10-12, not yet done)
+- [x] README's "Running programs" section misattributed what seeds a
+  program onto the disk: its lead sentence said "`build.py disk` compiles
+  them and seeds them onto the image", but the very next thing a reader
+  was told to run was `python build.py prog` — and the Note three lines
+  below already states `prog` "never touches the disk image". Found
+  2026-10-12: `git fetch`/`git log` showed no non-doc commit since
+  `265537a`/`924bbd3`/`6da38b8` (confirmed origin/main matched the local
+  detached HEAD this session inherited — a stale local `main` ref was the
+  only drift, reconciled with no lost work), and every unchecked backlog
+  item was still an explicitly out-of-scope code/build.py-behavior/
+  QEMU-test/repo-structure change (re-read `BACKLOG.md` in full to
+  confirm — matches every prior daily pass's finding). So this pass read
+  `build.py` end to end looking for a doc gap in the one top-level command
+  (`disk`) that, unlike `build`/`check`/`run`/`window`/`iso`/`run-iso`/
+  `prog`, had never been traced against its own README section. Confirmed
+  by reading `ensure_disk()` (`build.py:341`-`365`) and `disk()`
+  (`build.py:368`-`374`): `ensure_disk()` — called by `run`/`window`
+  (via `_run`, `build.py:403`-`405`), `run_iso()` (`build.py:379`), and
+  `disk()` itself, every one of them "iff `build/disk.img` is missing" — is
+  what actually compiles every `programs/*.mx` via `build_program()` and
+  seeds the resulting binaries onto the image via `mkfs.make()`. `prog()`
+  (`build.py:331`-`338`) is a different, unrelated command: it only
+  (re)writes loose `build/*.bin` files and is never called by `ensure_disk`
+  or vice versa (confirmed by grep: `prog`'s body calls only
+  `build_program`, never `mkfs`). So a reader who ran `python build.py
+  prog` *before* ever creating `build/disk.img` would get loose binaries
+  that `exec` cannot see at all — the demonstrated command didn't do what
+  the prose immediately above it claimed. Done 2026-10-12: rewrote the
+  section's lead paragraph to correctly credit `ensure_disk()` (named,
+  cited, and tied to all four commands that trigger it) with the seeding,
+  moved `exec hello.bin`/`exec ask.bin` to follow that explanation directly
+  rather than the `prog` command, and added a new sentence clarifying what
+  `python build.py prog` is actually for (inspecting the compiled binary,
+  not seeding the disk) right before the pre-existing Note that already
+  said as much — so the paragraph no longer contradicts its own Note three
+  lines down. Doc-only change (`README.md`), no kernel/build.py logic
+  touched. Re-ran the citation-range check (636 citations, 0 out of range)
+  and link-resolution check (70 links, 0 broken) across `README.md` + all
+  of `docs/*.md`.

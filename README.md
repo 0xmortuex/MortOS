@@ -113,15 +113,23 @@ clean (add `--add host.txt:name.txt` to seed files). Try it:
 ### Running programs
 
 MORT OS runs real compiled programs, not just shell scripts. Sources live in
-[`programs/`](programs/); `build.py disk` compiles them and seeds them onto the
-image, so from the shell:
+[`programs/`](programs/). The first time any disk-creating command runs —
+`run`, `window`, `disk`, or `run-iso` — `ensure_disk()` (`build.py:341`-`365`)
+compiles every `programs/*.mx` and seeds the resulting binaries onto
+`build/disk.img`, so after your first `python build.py run` the shell can
+already see them:
 
-```bash
-python build.py prog      # compile programs/*.mx -> build/*.bin
-```
 ```
 > exec hello.bin          # a real Mort program prints via syscall, then returns
 > exec ask.bin            # an interactive program: it asks your name and greets you
+```
+
+`python build.py prog` compiles `programs/*.mx` into loose `build/*.bin`
+files for inspection, but — as the note below explains — it never touches
+`disk.img`, so it's not what makes `exec` able to find a program:
+
+```bash
+python build.py prog      # compile programs/*.mx -> build/*.bin
 ```
 
 Note: program binaries are seeded onto `build/disk.img` only once, when
