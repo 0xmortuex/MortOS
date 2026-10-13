@@ -47,7 +47,14 @@ Both are shell commands dispatched in `run_command_impl`
   (`net/netapp.mx:108`-`113`, guarded by a `requested` flag so a later
   duplicate OFFER can't trigger a second REQUEST), finishing when an ACK
   lands — at which point `net_set_ip` records the leased address and prints
-  it. There is no retry and no fallback: the spin loop (30,000,000 iterations,
+  `DHCP: bound to <ip>` (`net/netapp.mx:96`-`100`). The dotted-decimal
+  formatting behind `<ip>` is its own small helper, `net_ip_to_str`
+  (`net/netapp.mx:28`-`42`), which writes each octet via `u32_to_dec`
+  (`net/http.mx:37`-`59` — the same decimal formatter `http_build_response`
+  uses for `Content-Length`) into the 20-byte `g_ipstr` buffer
+  (`net/netapp.mx:15`), comfortably large enough for the 15-character
+  `"255.255.255.255"` plus its NUL. There is no retry and no fallback: the
+  spin loop (30,000,000 iterations,
   `net/netapp.mx:77`) runs to completion regardless of whether an OFFER was
   ever seen, so `net` prints the same `DHCP: no response (timeout)` message
   and returns false for two different failures — no OFFER ever arriving, or
@@ -65,7 +72,14 @@ Both are shell commands dispatched in `run_command_impl`
   is no routing and no 404. It only tracks one connection's state
   (`g_h_mac`/`g_h_ip`/`g_h_port`/`g_h_snd`/`g_h_rcv`, `net/netapp.mx:146`-`151`)
   at a time, and requires `net` to have already leased an address
-  (`g_net_up`, checked at `net/netapp.mx:177`).
+  (`g_net_up`, checked at `net/netapp.mx:177`). Before entering that loop it
+  reformats the already-leased address through the same `net_ip_to_str` and
+  prints the one line that tells a user what to actually type into a
+  browser: `httpd: serving on http://<ip>/  (reboot to stop)`
+  (`net/netapp.mx:182`-`187`) — unconditionally, with no `g_net_quiet` check
+  around it (unlike every `net_dhcp` print above), since nothing in the
+  source ever calls `net_httpd` from a quiet/GUI context the way
+  `net/settings.mx:541` calls `net_dhcp`.
 
 ### DHCP asks for a gateway and DNS server, then discards them
 

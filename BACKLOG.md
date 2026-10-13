@@ -1162,3 +1162,39 @@ behavior, add a backlog item describing it and stop.
   touched. Re-ran the citation-range check (636 citations, 0 out of range)
   and link-resolution check (70 links, 0 broken) across `README.md` + all
   of `docs/*.md`.
+
+## Doc quality (found 2026-10-13, not yet done)
+- [x] `docs/networking.md`'s "What `net` and `httpd` actually do" section
+  said `net` "records the leased address and prints it" and that `httpd`
+  "requires `net` to have already leased an address", but never named the
+  actual formatting/print code behind either — and the function that does
+  the formatting, `net_ip_to_str` (`net/netapp.mx:28`-`42`), plus the
+  decimal-digit helper it calls, `u32_to_dec` (`net/http.mx:37`-`59`), were
+  cited in no doc at all (confirmed by grepping every `.md` file for both
+  names and for `g_ipstr`/`ipstr`: zero hits anywhere before this pass).
+  Found 2026-10-13: `git log`/`git status` showed no non-doc commit since
+  `265537a` (nothing new to diff against), and every unchecked backlog item
+  was still an explicitly out-of-scope code/build.py/QEMU-test/repo-structure
+  change (re-read `BACKLOG.md` in full to confirm, same finding as every
+  prior daily pass). So this pass re-read `net/http.mx` (88 lines) end to
+  end for a fresh angle on an already-well-covered doc and noticed
+  `u32_to_dec` (`net/http.mx:37`-`59`) has a second call site outside the
+  file docs/networking.md already traces in detail — `net/netapp.mx:33`,
+  inside `net_ip_to_str` — which led to both DHCP-address print sites.
+  Done 2026-10-13: expanded the `net` bullet to name `net_ip_to_str`/
+  `u32_to_dec`/`g_ipstr` (`net/netapp.mx:15`, 20 bytes — sized the actual
+  worst case, `"255.255.255.255"` plus NUL, by hand to confirm no overflow)
+  and the exact `DHCP: bound to <ip>` print site (`net/netapp.mx:96`-`100`).
+  Expanded the `httpd` bullet with a previously-undocumented, genuinely
+  useful fact for anyone trying to actually browse to the server: before
+  its serve loop, `net_httpd` reformats the same leased address and prints
+  the ready-to-use URL, `httpd: serving on http://<ip>/  (reboot to stop)`
+  (`net/netapp.mx:182`-`187`) — and, tracing `g_net_quiet`'s only two call
+  sites (`net/netapp.mx:48`/`60`/`97`/`116` guard every `net_dhcp` print;
+  `net/settings.mx:541` is the only place that sets it, wrapping a quiet
+  `net_dhcp` call from the Settings Ethernet page), confirmed `net_httpd`'s
+  print is unconditional because nothing ever calls `net_httpd` itself from
+  a quiet/GUI context. Doc-only change (`docs/networking.md`), no kernel
+  logic touched. Re-ran the citation-range check (642 citations, 0 out of
+  range) and link-resolution check (70 links, 0 broken, unchanged since no
+  new links were added) across `README.md` + all of `docs/*.md`.
