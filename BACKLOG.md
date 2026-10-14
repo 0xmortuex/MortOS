@@ -1198,3 +1198,39 @@ behavior, add a backlog item describing it and stop.
   logic touched. Re-ran the citation-range check (642 citations, 0 out of
   range) and link-resolution check (70 links, 0 broken, unchanged since no
   new links were added) across `README.md` + all of `docs/*.md`.
+
+## Doc quality (found 2026-10-14, not yet done)
+- [x] `docs/testing.md`'s "The harness API" table was the one table in this
+  doc set with no `file:line` citations at all — every row named a
+  `test.py` function by signature only. Found 2026-10-14: `git fetch`/
+  `git log` showed no non-doc commit since `6f2a57d` (nothing new to diff
+  against), and every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure change (re-read
+  `BACKLOG.md` in full to confirm, same finding as every prior daily pass).
+  So this pass read `test.py` end to end (355 lines, the one source file
+  with heavier doc coverage than line-cited detail) looking for a fresh
+  angle, and found two things worth fixing together: the table's missing
+  citations, and a genuinely undocumented gotcha one level below the
+  table's one-line description of `screen_text`'s `memsave`-then-`xp`
+  fallback. Traced `_dump_vga_memsave` (`test.py:251`-`271`) in full: it
+  returns `None` — silently triggering the `_dump_vga_xp` fallback
+  (`test.py:274`-`291`) — in three cases, the first of which the doc never
+  named: the dump path (`tempfile.gettempdir()`-based) contains a space,
+  checked at `test.py:254`-`255` *before* the `memsave` command even runs,
+  because "monitor filename args don't survive spaces" per the function's
+  own comment. That's not just a Windows-username edge case — it's
+  whatever the host's temp directory happens to be, on every run. Done
+  2026-10-14: added `test.py:`-cited line ranges to all five rows of the
+  harness API table (`boot`/`type_line`/`screen_text`/`wait_for`/
+  `shutdown`, plus `key_name` inline in the `type_line` row), and a new
+  paragraph after the table tracing `_dump_vga_memsave`'s three `None`
+  conditions and `_dump_vga_xp`'s hand-parsed `xp` fallback — including
+  that the fallback `raise`s on a short parse rather than returning `None`
+  like its primary counterpart, so a parse failure there fails the test
+  outright. Doc-only change (`docs/testing.md`), no test/kernel logic
+  touched. Verified every new `file:line` citation by reading the exact
+  cited line(s) against current source. Re-ran the citation-range check
+  (652 citations, 0 out of range) and link-resolution check (70 links, 0
+  broken — the same two pre-existing double-hyphen-slug anchors already
+  flagged out of scope by the 2026-10-05/06/08/11 passes, untouched by
+  this one) across `README.md` + all of `docs/*.md`.

@@ -120,16 +120,35 @@ API exported by `test.py`:
 
 | Function | What it does |
 |---|---|
-| `boot(disk_img=None, kernel_elf=ELF)` | Launches `qemu-system-i386 -display none -monitor stdio -kernel <elf>` (plus `-hda <disk_img>` if given) and waits for the first monitor prompt. |
-| `type_line(handle, text)` | Sends each character as a QEMU `sendkey` monitor command (`key_name()` maps it to QEMU's key names, including `shift-`-prefixed symbols), then `ret`. |
-| `screen_text(handle)` | Dumps `0xB8000`..`0xB8FA0` (the 80x25 VGA text buffer) via the monitor's `memsave`, falling back to parsing `xp` hex output if `memsave` fails, and returns it as 25 newline-joined lines. |
-| `wait_for(handle, substring, timeout_s=10)` | Polls `screen_text()` every 0.25s until `substring` appears or the timeout elapses. |
-| `shutdown(handle)` | Sends monitor `quit`, kills the process if it lingers, and cleans up the temp VGA dump file. Never raises. |
+| `boot(disk_img=None, kernel_elf=ELF)` (`test.py:161`-`182`) | Launches `qemu-system-i386 -display none -monitor stdio -kernel <elf>` (plus `-hda <disk_img>` if given) and waits for the first monitor prompt. |
+| `type_line(handle, text)` (`test.py:185`-`191`) | Sends each character as a QEMU `sendkey` monitor command (`key_name()`, `test.py:57`-`67`, maps it to QEMU's key names, including `shift-`-prefixed symbols), then `ret`. |
+| `screen_text(handle)` (`test.py:194`-`204`) | Dumps `0xB8000`..`0xB8FA0` (the 80x25 VGA text buffer) via the monitor's `memsave`, falling back to parsing `xp` hex output if `memsave` fails, and returns it as 25 newline-joined lines. |
+| `wait_for(handle, substring, timeout_s=10)` (`test.py:207`-`215`) | Polls `screen_text()` every 0.25s until `substring` appears or the timeout elapses. |
+| `shutdown(handle)` (`test.py:218`-`246`) | Sends monitor `quit`, kills the process if it lingers, and cleans up the temp VGA dump file. Never raises. |
 
 `sendkey` holds each key down for `KEY_HOLD_MS` (40ms) with a `KEY_GAP_S`
 (0.07s) pause after — the comment at `test.py:35`-`39` notes the gap must
 exceed the hold time, since a faster next key would land while a `shift-`
 sendkey is still releasing.
+
+`screen_text`'s `memsave`-first, `xp`-fallback split is two private
+helpers: `_dump_vga_memsave` (`test.py:251`-`271`) asks QEMU to write the
+4000-byte VGA text region straight to a host file at `handle._dump` (a
+`tempfile.gettempdir()` path) via the monitor's `memsave` command, then
+reads that file back. It returns `None` — silently falling through to
+`_dump_vga_xp` — in three cases: the dump path contains a space, since
+"monitor filename args don't survive spaces" (`test.py:254`-`255`, checked
+*before* even trying the command); the file wasn't written or isn't
+exactly 4000 bytes; or the monitor's own reply contains `"could not"` or
+`"error"`. The space check matters beyond Windows usernames with a space
+in them — the default on any host is whatever `tempfile.gettempdir()`
+returns, which runs through `memsave` unmodified except for `os.sep`
+normalization (`test.py:261`). `_dump_vga_xp` (`test.py:274`-`291`) takes
+the slower path instead: it parses the monitor's `xp /2000wx 0xb8000` text
+output (hex words, one VGA cell pair per nibble group) by hand, and unlike
+the primary path it `raise`s rather than returning `None` if it parses
+fewer than 4000 bytes — a parse failure here fails the test outright
+instead of falling back further.
 
 ## Not covered by any of the four scripts
 
