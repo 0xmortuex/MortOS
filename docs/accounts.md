@@ -135,6 +135,32 @@ IRQ1 keyboard path isn't running (`kmain.mx:2933`-`2934`).
   the saved uid (`kmain.mx:2451`-`2454`). If you are already root it runs the
   command with no prompt at all.
 
+### `sudo`'s password prompt can overflow past column 79, unlike `su`'s or `passwd`'s
+
+[`docs/programs.md`](programs.md#typing-a-long-answer-to-syscall-4-corrupts-the-row-below-it)
+traces `kread_line()` (`kmain.mx:2935`-`2973`, the same masked-input reader
+behind `su`, `sudo`, and `passwd`) and finds it safe for `su`/`passwd`
+specifically, because their prompts are a fixed length that leaves 60
+characters of headroom under the console's 80-column width. `sudo`'s prompt
+isn't fixed, and that safety margin doesn't carry over to it: `"[sudo]
+password for "` is 20 characters (`kmain.mx:2442`), followed by the
+*current username* (`kmain.mx:2443`-`2444`) and `": "` (`kmain.mx:2445`),
+so the password's starting column is `22 + len(username)`
+(`kmain.mx:2446`). Root never reaches this prompt at all — `g_uid == 0`
+short-circuits `sudo` straight to the command with no password check
+(`kmain.mx:2437`-`2439`) — so the *only* username this prompt can ever show
+in a running kernel is the default `mortuex` (7 characters; the only other
+account, `root`, is exactly the one this branch excludes). That puts the
+password's start at column 29. Typing the 52nd character of a password
+lands at column 80 — well inside `kread_line`'s own 60-character cap
+(`kmain.mx:2961`) — and overflows exactly the way `docs/programs.md`
+documents for syscall 4's `read_line()`: text mode wraps into column 0 of
+the row below instead of scrolling, silently overwriting whatever was
+there; graphics mode just draws the glyph further right past the console's
+edge. The corruption happens during echo, before the password is checked,
+so it reproduces with any wrong 52-character-or-longer guess — no
+privileges or special setup needed.
+
 ## What the permission bits actually do
 
 Every MortFS v2 entry carries an owner and a mode in its metadata bytes —

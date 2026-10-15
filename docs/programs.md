@@ -135,7 +135,11 @@ to a fresh line whenever `g_pcol >= 80` (`kmain.mx:1795`-`1798`), and
 for `su`/`passwd`) sidesteps the problem by capping input at 60 characters
 (`kmain.mx:2961`) — comfortably under 80 even with a prompt already on the
 line. `read_line()` has neither a wrap check nor a cap low enough to make
-one unnecessary.
+one unnecessary. That margin is specific to `su`/`passwd`'s fixed-length
+prompts, though — `sudo` reuses the same `kread_line()` behind a
+variable-length prompt and reopens this exact overflow; see
+[`docs/accounts.md`](accounts.md#sudos-password-prompt-can-overflow-past-column-79-unlike-sus-or-passwds)
+for the concrete repro.
 
 The effect once `g_pcol` reaches 80: `put_cell_at()` (`kmain.mx:505`-`517`)
 computes a plain `put_index(row * 80 + col, ...)` in VGA text mode

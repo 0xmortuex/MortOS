@@ -34,7 +34,7 @@ attached or its filesystem didn't parse.
 | `env` | | Prints `USER`, `HOME`, `PATH`, `PWD`, then every variable set via `export`. | `kmain.mx:2384` |
 | `unset NAME` | | Removes a variable set via `export` (no-op if unset). | `kmain.mx:2396` |
 | `su [user]` | | Prompts for a password and, if it matches, switches the session uid/username to `user` (default `root`). Error: `su: no such user`, `su: authentication failure`. | `kmain.mx:2410` |
-| `sudo <cmd>` | | Prompts for the current user's password, then runs `<cmd>` once with uid 0 if it matches. No-op prompt if already root. Error: `sudo: authentication failure`. | `kmain.mx:2435` |
+| `sudo <cmd>` | | Prompts for the current user's password, then runs `<cmd>` once with uid 0 if it matches. No-op prompt if already root. Error: `sudo: authentication failure`. A password of 52+ characters overflows the prompt's row — see [`docs/accounts.md`](accounts.md#sudos-password-prompt-can-overflow-past-column-79-unlike-sus-or-passwds). | `kmain.mx:2435` |
 | `passwd` | | Prompts for a new password and updates it for the current account, for this boot session only (not persisted to disk). | `kmain.mx:2461` |
 | `chmod <octal> <path>` | disk | Sets a file/directory's octal permission bits. Only the owner or root may do this (`chmod: not permitted`). Error: `usage: chmod <octal> <path>`, `chmod: not found`. | `kmain.mx:2475` |
 | `chown <uid> <path>` | disk | Changes a file/directory's owning uid; root only (`chown: not permitted (root only)`). Error: `usage: chown <uid> <path>`, `chown: not found`. | `kmain.mx:2508` |

@@ -1234,3 +1234,71 @@ behavior, add a backlog item describing it and stop.
   broken — the same two pre-existing double-hyphen-slug anchors already
   flagged out of scope by the 2026-10-05/06/08/11 passes, untouched by
   this one) across `README.md` + all of `docs/*.md`.
+
+## Doc quality (found 2026-10-15, not yet done)
+- [x] The 2026-10-05 pass's own doc fix (`docs/programs.md`'s "Typing a long
+  answer to syscall 4 corrupts the row below it" section) stated that
+  `kread_line()` — the shared masked-input reader behind `su`, `sudo`, and
+  `passwd` — "sidesteps" the missing-80-column-wrap bug it documented for
+  `read_line()`, by capping input at 60 characters, "comfortably under 80
+  even with a prompt already on the line." That claim is only true for
+  `su`/`passwd`, whose prompts are a fixed length; it does not hold for
+  `sudo`, whose prompt length depends on the current username, and no doc
+  said so. Found 2026-10-15: `git fetch`/`git log` showed no non-doc commit
+  since `2c74aa1` (nothing new to diff against), and every unchecked
+  backlog item was still an explicitly out-of-scope code/build.py/
+  QEMU-test/repo-structure change (re-read `BACKLOG.md` in full to
+  confirm, same finding as every prior daily pass). So this pass re-read
+  every fixed-size stack buffer declared in `kmain.mx` for one not yet
+  traced for a bound (the same technique that previously found the
+  `path_of`/`draw_prompt`/`fs_parent_of` overflows), and noticed `su`'s,
+  `sudo`'s, and `passwd`'s `pw: [u8; 64]` buffers (`kmain.mx:2424`,
+  `kmain.mx:2447`, `kmain.mx:2465`) all funnel through the same
+  `kread_line()` the 2026-10-05 pass had already marked "safe" — worth
+  re-checking given that pass's own caveat ("even with a prompt already on
+  the line") singled out `su`/`passwd` by name, not `sudo`. Traced `sudo`'s
+  prompt byte-for-byte (`kmain.mx:2435`-`2460`): `"[sudo] password for "`
+  is exactly 20 characters (confirmed with `len()`, matching the hardcoded
+  column 20 the username is printed at, `kmain.mx:2442`-`2444`), followed
+  by `": "` (`kmain.mx:2445`), so the password's start column is
+  `22 + len(username)` (`kmain.mx:2446`). Confirmed via `acct_find`'s exact
+  `streq` match (`kmain.mx:2891`-`2901`) and the already-documented fact
+  that `acct_add` has no live caller besides `acct_init` (see the
+  `net/dns.mx`-style dead-code entries above) that the *only* username
+  reachable at this prompt in a running kernel is the default `mortuex`
+  (7 characters) — `root` never reaches it at all, since `g_uid == 0`
+  short-circuits `sudo` straight to the command with no password check
+  (`kmain.mx:2437`-`2439`). That puts the password's start at column 29,
+  so its 52nd character — still well inside `kread_line`'s own
+  60-character cap (`kmain.mx:2961`) — lands at column 80 and overflows
+  exactly like `read_line()` does, reproducible with any wrong 52+
+  character guess, no privileges needed. Done 2026-10-15: added a new
+  "`sudo`'s password prompt can overflow past column 79, unlike `su`'s or
+  `passwd`'s" section to `docs/accounts.md` right after the existing `su`/
+  `sudo` bullets, with the full trace and citations above; added a
+  one-sentence caveat to `docs/programs.md`'s existing section narrowing
+  its "comfortably under 80" claim to `su`/`passwd` and cross-linking the
+  new section; and a one-clause pointer from `docs/shell.md`'s `sudo` row.
+  Doc-only change, no kernel logic touched. Verified every new citation by
+  reading the exact cited line(s) against current source. Re-ran the
+  citation-range check (660 citations, 0 out of range) and a from-scratch
+  link/anchor-resolution check, including both new anchors — 63 links
+  checked by this pass's own simplified slugger (the two pre-existing
+  double-hyphen-slug anchors other passes flagged use a GitHub-specific
+  em-dash-removal rule this checker doesn't model and were not touched by
+  this change; 0 bad under this run).
+
+## Code follow-ups (found 2026-10-15, needs a local QEMU boot test)
+- [ ] `sudo`'s password prompt (`kmain.mx:2435`-`2460`) can overflow past
+  column 79 when the current user's name is long enough — reachable today
+  with the default `mortuex` account and a 52+ character password guess;
+  see the doc-quality item above for the full trace. A human could give
+  `kread_line()` (`kmain.mx:2935`-`2973`) the same kind of guard
+  `print_inline()` already uses (wrap or stop accepting input once the
+  starting column plus typed length would reach 80), or simplest: have the
+  three `su`/`sudo`/`passwd` call sites pass their prompt's starting column
+  so `kread_line` can cap length itself instead of using one fixed `60` for
+  all three. Needs a QEMU boot to confirm the fix doesn't change the
+  already-correct `su`/`passwd` behavior and that a wrapped/capped `sudo`
+  password still authenticates correctly. Found 2026-10-15 while
+  documenting `sudo`'s prompt.
