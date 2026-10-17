@@ -1302,3 +1302,27 @@ behavior, add a backlog item describing it and stop.
   already-correct `su`/`passwd` behavior and that a wrapped/capped `sudo`
   password still authenticates correctly. Found 2026-10-15 while
   documenting `sudo`'s prompt.
+
+## Doc quality (found 2026-10-17, not yet done)
+- [x] `docs/architecture.md`'s boot-chain section cited `boot.s:48-51` for
+  "`_start` does `cli; hlt` in a loop rather than running off into undefined
+  memory", but the real `cli` instruction the sentence describes is at
+  `boot.s:47`, and line 51 is `.size _start, . - _start` — an assembler
+  directive for the linker's symbol table, not part of the hang loop. The
+  correct range for `cli; hlt; jmp .Lhang` is `boot.s:47-50`. Found
+  2026-10-17: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test follow-up (re-confirmed by scanning
+  the full file), and the usual dead-code `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx` turned up nothing new (still 322 functions, same
+  count as the 2026-08-26 pass), so this pass checked `boot.s`/`idt.s`
+  comments against their own code directly — a surface prior citation-drift
+  audits hadn't covered, since those focused on `kmain.mx`/`build.py`
+  citations. `idt.s`, `runtime.c`, and `linker.ld` were also read in full
+  this pass and found accurate; no drift found there. Done 2026-10-17:
+  fixed the one-citation range in `docs/architecture.md:40`. Verified by
+  reading `boot.s:35`-`51` directly against the doc's exact wording.
+  Doc-only change, no kernel/assembly logic touched. Re-ran the
+  citation-range check (660 citations across `README.md` + all `docs/*.md`,
+  0 out of range — note this particular drift was *in* range and only a
+  direct line-content read caught it, same lesson as prior citation-drift
+  passes) and the link-resolution check (73 links, 0 broken).

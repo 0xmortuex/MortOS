@@ -37,7 +37,7 @@ From `_start` (`boot.s:39-51`):
 3. `push %ebx; call mort_kmain` hands the multiboot info pointer (left in
    `%ebx` by the bootloader) to `kmain(mbinfo)` in `kmain.mx:3593`.
 4. If `kmain` ever returns, `_start` does `cli; hlt` in a loop rather than
-   running off into undefined memory (`boot.s:48-51`).
+   running off into undefined memory (`boot.s:47-50`).
 
 `linker.ld` places `.multiboot` first (so it lands in the required first
 8 KiB) and everything else after, with the whole image based at 1 MiB
