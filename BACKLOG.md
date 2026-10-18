@@ -1326,3 +1326,36 @@ behavior, add a backlog item describing it and stop.
   0 out of range — note this particular drift was *in* range and only a
   direct line-content read caught it, same lesson as prior citation-drift
   passes) and the link-resolution check (73 links, 0 broken).
+
+## Doc quality (found 2026-10-18, not yet done)
+- [x] `docs/shell.md`'s `memtest` row (and `docs/memory-map.md`'s heap-allocator
+  section) stated that `memtest`'s closing `kfree(b); kfree(c)` calls
+  "confirm coalescing" — true that they exercise `kfree`'s forward-coalescing
+  path, but not true that anything checks the result. Found 2026-10-18: every
+  unchecked backlog item was still an explicitly out-of-scope code/build.py/
+  QEMU-test/repo-structure follow-up (re-confirmed by scanning the full file),
+  and the usual dead-code `fn`-call-site grep turned up nothing new, so this
+  pass read `memtest` (`kmain.mx:971`-`1021`) line by line instead and traced
+  exactly what its three `pass = false` checks cover: (1) the two allocations'
+  writes don't clobber each other, (2) `kfree(a)` + `kmalloc(50)` reuses `a`'s
+  slot by first-fit, (3) `b`'s data survived all of that. Traced the heap
+  state through the final `kfree(b); kfree(c)` (`kmain.mx:1003`-`1004`) by
+  hand: `kmalloc(50)`'s first-fit split of `a`'s freed 112-byte block
+  (`kmain.mx:1074`-`1079`) leaves a free 56-byte remainder between `c` and
+  `b`; freeing `b` then `c` walks `kfree`'s forward-coalescing loop
+  (`kmain.mx:1105`-`1117`) across that remainder and into `b`'s block,
+  merging all three into one — so the coalescing code path genuinely does
+  run, confirming `docs/memory-map.md`'s existing byte-math trace of this is
+  correct. But nothing after that point reads the merged block's size or
+  tries an allocation that would only succeed if the merge were correct — the
+  printed `PASS`/`FAIL` (`kmain.mx:1016`-`1020`) depends only on the `pass`
+  variable, which the three checks above already finished setting before the
+  final `kfree` calls run. A coalescing bug that merged into a wrong (but
+  still non-hanging) size would still print `PASS`. Done 2026-10-18: reworded
+  both docs to say `memtest` *exercises* the coalescing path rather than
+  *confirms* it, and spelled out exactly which three checks the PASS/FAIL
+  actually reflects. Doc-only change, no kernel logic touched. Re-ran the
+  citation-range check (662 citations, 0 out of range) and the link-resolution
+  check (73 links, 0 broken — the same two pre-existing GitHub em-dash-slug
+  anchors flagged by prior passes' simplified checker, untouched by this
+  change).

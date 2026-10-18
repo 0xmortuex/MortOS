@@ -71,7 +71,11 @@ hands back `blk + 8`, i.e. the address right after the header.
   infrastructure `heap_init`'s own comment describes as being for "the
   shell, the package manager, and the rest" (`kmain.mx:1033-1034`), not yet
   used by any shipped feature. See `docs/shell.md`'s `memtest` row for what
-  that command actually verifies.
+  that command actually verifies — notably, its closing `kfree(b); kfree(c);`
+  (`kmain.mx:1003-1004`) does run the forward-coalescing path described
+  above, but `memtest` never asserts on the result afterward, so a
+  coalescing bug that merges blocks into a wrong (but non-hanging) size
+  would still print `PASS`.
 - **The Settings app's "Heap used"/"Heap allocated" fields display
   `g_heap_brk`, not `heap_used()`** — Storage's "Heap used"
   (`net/settings.mx:233-234`) and Diagnostics' "Heap allocated"
