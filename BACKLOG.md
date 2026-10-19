@@ -1359,3 +1359,33 @@ behavior, add a backlog item describing it and stop.
   check (73 links, 0 broken — the same two pre-existing GitHub em-dash-slug
   anchors flagged by prior passes' simplified checker, untouched by this
   change).
+
+## Doc quality (found 2026-10-19, not yet done)
+- [x] `docs/settings.md`'s "Navigation state machine" section claimed the
+  `g_settings_view` field comment (`net/settings.mx:11`) "only lists the
+  first three values — a stale leftover from before views 3-5 were added."
+  That was false as of this pass: the comment already reads `// 0 sidebar,
+  1 personalization, 2 clock, 3 accessibility, 4 hardware, 5 network` — all
+  six values. Tracing the history (`BACKLOG.md`'s own 2026-08-13 entry for
+  "A `docs/settings.md` reference"), the comment was fixed *in that same
+  pass* that first wrote this sentence — the sentence describes the
+  pre-fix state and was simply never updated afterward to say so, so it's
+  been quietly wrong in the published doc since the day it was written (no
+  citation-range or link-resolution script would ever catch a prose claim
+  like this; only reading the cited line's actual content does). Found
+  2026-10-19: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure follow-up (re-scanned
+  the full file to confirm), and the usual `fn`-call-site-vs-every-doc-name
+  grep across `kmain.mx`+`net/*.mx` turned up nothing new, so this pass
+  instead re-read `net/settings.mx` end to end against `docs/settings.md`
+  looking for prose claims (not just citations) that might have drifted —
+  this is the first "doc says 'stale'/'wrong' about something source-side
+  that's since been fixed" case found in any pass so far, a drift direction
+  the standard citation/link checks structurally can't catch. Done
+  2026-10-19: rewrote the sentence to state the comment is already correct
+  and dates when it was fixed, rather than silently deleting the historical
+  note. Doc-only change, no kernel logic touched (did not re-touch
+  `net/settings.mx:11`, which needed no further change). Re-ran the
+  citation-range check and link-resolution check across `README.md` + all
+  of `docs/*.md`: 73 links, 0 broken (citations unchanged by this edit, so
+  not re-counted — no `file:line` citation in this fix's own diff).

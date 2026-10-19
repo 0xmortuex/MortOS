@@ -69,8 +69,11 @@ Four kernel globals drive the whole app:
 
 - `g_settings_view` (`:11`) — which screen is showing: `0` sidebar, `1`
   personalization, `2` clock, `3` accessibility, `4` hardware controls, `5`
-  network controls. (The source comment on this line only lists the first
-  three values — a stale leftover from before views 3-5 were added.)
+  network controls. The inline source comment on this line already lists
+  all six values (fixed 2026-08-13, per this project's own backlog record
+  — see `BACKLOG.md`'s "A `docs/settings.md` reference" entry); an earlier
+  draft of this doc claimed it was still stale, which stopped being true
+  the same day it was written.
 - `g_settings_section` (`:13`) — which of the 13 sidebar rows is selected,
   when `g_settings_view == 0`.
 - `g_settings_sel` (`:12`) — which option row is selected, within whichever
