@@ -1389,3 +1389,32 @@ behavior, add a backlog item describing it and stop.
   citation-range check and link-resolution check across `README.md` + all
   of `docs/*.md`: 73 links, 0 broken (citations unchanged by this edit, so
   not re-counted — no `file:line` citation in this fix's own diff).
+
+## Doc quality (found 2026-10-20, not yet done)
+- [x] `net/netcfg.mx:3`'s header comment called `net_handle_frame()` "the
+  heart of M2" — an internal development-milestone label left over from
+  before DHCP (M3) and the rest of the stack existed. Found 2026-10-20:
+  every unchecked backlog item was still an explicitly out-of-scope
+  code/build.py/QEMU-test/repo-structure follow-up (re-scanned the full
+  file to confirm, same as every prior daily pass), so this pass grepped
+  the whole tree for the `M1`/`M2`/`M3` milestone shorthand that earlier
+  passes (2026-08-01's `net/rtl8139.mx` fix, 2026-08-23's `net/netcfg.mx`
+  `g_our_ip`/`net_set_ip` comment fix) had already found and removed
+  elsewhere — `net/netcfg.mx:3` was the one surviving hit in the entire
+  repo (`net/*.mx`, `docs/*.md`, `README.md`), so "M2" is now an undefined
+  term nothing else in the codebase explains or even mentions again. The
+  rest of the same comment (`net/netcfg.mx:3`-`8`) already correctly
+  describes what the function does — pure frame-in/frame-out dispatch for
+  ARP and ICMP, called from the kernel's RX loop (`net_handle_frame`,
+  `net/netapp.mx:197`) — and that description matches
+  `docs/networking.md:32`'s existing, already-accurate paraphrase of it, so
+  only the dangling milestone label needed fixing, not the substance. Done
+  2026-10-20: reworded the opening clause to "is the core of the receive
+  path" — same meaning, no invented behavior, and the replacement is the
+  exact same length so no line numbers shifted (`wc -l net/netcfg.mx`:
+  85 lines before and after this edit). Comment-only change, no kernel
+  logic touched. Checked every doc for a direct quote of this comment's
+  old wording ("heart of M2") before editing: none found, so no `docs/*.md`
+  file needed a matching update. `file:line` citations are unaffected
+  (file length unchanged); did not re-run the full citation/link scripts
+  since this diff touches no citation and adds no link.

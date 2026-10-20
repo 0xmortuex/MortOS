@@ -1,6 +1,6 @@
 // net/netcfg.mx — our identity on the wire, and the frame dispatcher.
 //
-// net_handle_frame() is the heart of M2: hand it a received frame and it decides
+// net_handle_frame() is the core of the receive path: hand it a received frame and it decides
 // whether we owe a reply — an ARP answer or an ICMP echo reply — and if so
 // builds the whole response (Ethernet + ARP, or Ethernet + IPv4 + ICMP) into the
 // tx buffer. It is pure: frame in, frame out, no hardware. That is exactly what
