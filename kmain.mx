@@ -2839,7 +2839,7 @@ fn terminal_activate() {
     move_cursor(g_row, g_col);
 }
 
-// Switch the active app: highlight its tab and redraw its window.
+// Switch the active app: set g_app, redraw the top bar (no tab highlighting -- draw_tab() above is unused), then redraw the newly active app's window.
 fn switch_app(app: u32) {
     g_app = app;
     draw_topbar();

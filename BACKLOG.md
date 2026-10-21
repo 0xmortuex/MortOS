@@ -1418,3 +1418,44 @@ behavior, add a backlog item describing it and stop.
   file needed a matching update. `file:line` citations are unaffected
   (file length unchanged); did not re-run the full citation/link scripts
   since this diff touches no citation and adds no link.
+
+## Doc quality (found 2026-10-21, not yet done)
+- [x] `switch_app()`'s own header comment (`kmain.mx:2842`, "Switch the
+  active app: highlight its tab and redraw its window") claimed behavior
+  that doesn't exist — the exact same stale-comment pattern already fixed
+  once in `draw_topbar()` (2026-08-05 entry above) and once in
+  `net/netcfg.mx` (2026-10-20 entry above), just never caught in this
+  third spot. Found 2026-10-21: every unchecked backlog item was still an
+  explicitly out-of-scope code/build.py/QEMU-test/repo-structure follow-up
+  (re-scanned the full file to confirm, same as every prior daily pass),
+  and the usual `fn`-call-site grep across `kmain.mx`+`net/*.mx` (322
+  functions, same count as every pass since 2026-08-26) turned up nothing
+  new — every zero-caller function it found is already a documented
+  dead-code entry (`heap_used`, `fs_create`, `fs_mtime`, `arp_build_request`,
+  the `net/dns.mx`/`net/endian.mx`/`net/eth.mx`/`net/icmp.mx`/`net/ip.mx`/
+  `net/tcp.mx`/`net/udp.mx` unused helpers, `rtl_send_hello`); `on_tick`/
+  `on_exception`/`on_syscall`/`on_key` also show as zero-caller under a
+  Mort-source-only grep but are false positives — they're called from
+  `idt.s` by their `mort_`-prefixed names (`idt.s:141`/`151`/`172`/`223`),
+  confirmed by reading `idt.s`'s `ISR_STUB`/IRQ handlers directly. With that
+  avenue exhausted again, this pass re-read `switch_app()`
+  (`kmain.mx:2843`-`2854`) itself while cross-checking `docs/testing.md`'s
+  existing trace of `draw_tab()`/`draw_topbar()` being unused/tab-less
+  (2026-08-31 and earlier passes), and noticed `switch_app`'s own comment
+  one line above its `fn` line had never been corrected to match: its body
+  only sets `g_app`, calls the tab-less `draw_topbar()`, and redraws the
+  one newly active app — it does not and cannot "highlight its tab", since
+  nothing in `draw_topbar()` paints tabs at all (confirmed again by reading
+  `kmain.mx:465`-`473`). Checked every doc for a direct quote of the old
+  wording ("highlight its tab", "Switch the active app") before editing:
+  zero hits, so no `docs/*.md` file needed a matching update —
+  `docs/architecture.md:210`'s own paraphrase of `switch_app()` ("just sets
+  `g_app`, redraws") was already accurate and is what this comment should
+  have matched all along. Done 2026-10-21: reworded the comment in place to
+  describe the real three-step behavior and name `draw_tab()` as the unused
+  helper, kept to one line so the file's line count is unchanged
+  (`wc -l kmain.mx`: 3629 lines before and after this edit, confirmed) —
+  every `kmain.mx:` citation across `README.md`+`docs/*.md` below this
+  point is therefore unaffected. Comment-only change, no kernel logic
+  touched. Did not re-run the full citation/link scripts since this diff
+  touches no citation and adds no link.
