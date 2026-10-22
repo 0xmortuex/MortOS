@@ -1459,3 +1459,46 @@ behavior, add a backlog item describing it and stop.
   point is therefore unaffected. Comment-only change, no kernel logic
   touched. Did not re-run the full citation/link scripts since this diff
   touches no citation and adds no link.
+
+## Doc quality (found 2026-10-22, not yet done)
+- [x] `docs/networking.md`'s DNS row named `dns_first_a` (`net/dns.mx:98`)
+  as the answer-parsing function but never said which fields of an answer
+  record it actually checks before accepting it. Found 2026-10-22: every
+  unchecked backlog item was still an explicitly out-of-scope
+  code/build.py/QEMU-test/repo-structure follow-up (re-read the full file
+  to confirm — matches every prior daily pass's finding), so this pass
+  spent most of its time re-verifying existing citations rather than
+  hunting dead code again: spot-checked `README.md`'s boot-sequence and
+  `docs/accounts.md`'s account-table citations line-by-line against
+  current `kmain.mx` (every one — `kmain.mx:25`-`31`, `2864`-`2872`,
+  `2874`-`2889`, `2891`-`2901`, `2904`-`2913`, and more — still matches
+  exactly), and read `boot.s`, `idt.s`, `runtime.c`, `programs/pstart.s`,
+  `programs/prog.ld`, `mkfs.py`, `net/http.mx`, `net/tcp.mx`, and
+  `net/dhcp.mx` end to end looking for anything not already covered by
+  `docs/architecture.md`/`docs/accounts.md`/`docs/programs.md`/
+  `docs/fs-design.md`/`docs/networking.md` — found nothing new in any of
+  them (all already documented in as much depth as the source supports).
+  `net/dns.mx` was the one file in that list with an actual gap: reading
+  `dns_first_a` (`net/dns.mx:98`-`126`) closely, its per-record check at
+  `net/dns.mx:110`-`113` loads only TYPE (`net/dns.mx:110`) and RDLENGTH
+  (`net/dns.mx:111`) — it never loads the 2-byte CLASS field sitting right
+  next to TYPE (at the offset TYPE's load skips past), and never compares
+  the record's own NAME (skipped, not inspected, by the
+  `dns_skip_name` call at `net/dns.mx:109`) against the question. It
+  accepts the first record in answer order with TYPE A and RDLENGTH 4
+  (`net/dns.mx:113`-`119`), and skips anything else purely by RDLENGTH
+  (`net/dns.mx:120`-`122`), with no CNAME-specific handling anywhere in
+  the function — which still resolves correctly through a leading CNAME
+  in practice, since a CNAME's RDATA is a domain name and essentially
+  never exactly 4 bytes. Confirmed this function (like the rest of
+  `net/dns.mx`) is still unreachable at runtime, same as every prior pass
+  found (`dns_` has no caller outside its own file). Done 2026-10-22:
+  added this to the DNS row in `docs/networking.md`, cited as above.
+  Doc-only change, no kernel logic touched. Re-ran the citation-range
+  check (665 citations across `README.md`+`docs/*.md`, 0 out of range)
+  and link-resolution check (73 links; the 2 that a naive slugifier flags
+  — `fs-design.md#26-deletion--documented-limitation` and
+  `architecture.md#the-desktop--window-manager` — are both correct
+  GitHub-style double-hyphen anchors for headings containing "2.6" and
+  "/", confirmed by hand against the actual heading text; 0 genuinely
+  broken).
