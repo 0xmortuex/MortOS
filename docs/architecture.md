@@ -159,6 +159,43 @@ other hardware IRQ can reach the CPU even if the (fully masked) slave PIC
 raised one, and nothing in the source executes a software `int` in that
 range. It's a safety net for a case the rest of the source never triggers.
 
+### A shell command runs inside the keyboard ISR, interrupts off
+
+`load_idt` installs every gate — the 32 exception vectors, the keyboard
+gate, the timer gate, and the syscall gate — through the same `set_gate`
+helper, which always writes type byte `0x8E` (`idt.s:73`): present, ring 0,
+32-bit **interrupt gate**, never a trap gate. An interrupt gate clears the
+CPU's IF flag on entry and only restores it via the saved `EFLAGS` when the
+handler reaches `iret`. `keyboard_isr` (`idt.s:137`-`145`) never re-enables
+it early — it calls `mort_on_key` (`on_key()`) first and only sends the PIC
+its end-of-interrupt, then `iret`s, *after* that call returns
+(`idt.s:142`-`145`). Pressing Enter runs the typed command inside that same,
+still-uninterruptible call: `on_key()`'s Enter branch calls `run_command()`
+directly (`kmain.mx:3557`), which reaches `run_command_impl()`'s dispatch
+(e.g. the `net`/`httpd` rows, `kmain.mx:2135`-`2140`) with no `asm("sti")`
+anywhere in between — the only two `sti`/`cli` calls in the whole kernel are
+`kmain()`'s one-time boot `sti` (`kmain.mx:3625`) and `poweroff()`'s `cli`
+(`kmain.mx:3259`). Two commands make this observable:
+
+- **`net` freezes the clock and the keyboard for its whole DHCP wait.**
+  `net_dhcp()`'s receive-poll loop (`net/netapp.mx:77`,
+  `while spins < 30000000`) runs with IF cleared throughout, so IRQ0 can't
+  tick the top-bar clock and IRQ1 can't call `on_key()` again until the loop
+  ends and the Enter keystroke's original call finally returns — any key
+  pressed in that window isn't serviced until then. Settings' Ethernet page
+  "Connect" action calls the same `net_dhcp()` from its own key handler
+  (`net/settings.mx:541`), so the GUI freezes the same way.
+- **`httpd` never gives the keyboard back.** `net_httpd()`'s serve loop
+  (`net/netapp.mx:193`-`259`) is an unconditional `while true` with no exit,
+  so the `on_key()` call that started it never returns — `keyboard_isr`
+  never reaches its EOI or `iret`, and IF stays cleared for good. From then
+  on, no IRQ1 (keystrokes — including `F12`'s power menu, or typing
+  `reboot`) and no IRQ0 (the clock) can fire again. `net_httpd`'s own
+  printed `"(reboot to stop)"` (`net/netapp.mx:182`-`187`, see
+  [`docs/networking.md`](networking.md)) therefore means a physical reset
+  or power-cycle — the shell's own `reboot` command (`kmain.mx:1024`-`1029`)
+  can't run, since the shell can no longer read a keystroke to launch it.
+
 Every text-entry point funnels raw scancodes through the same
 `scancode_to_ascii(sc, shift)` (`kmain.mx:606-641`): a fixed, hand-built
 US-QWERTY table covering only the alphabetic keys, the digit row (with its

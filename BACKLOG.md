@@ -1502,3 +1502,58 @@ behavior, add a backlog item describing it and stop.
   GitHub-style double-hyphen anchors for headings containing "2.6" and
   "/", confirmed by hand against the actual heading text; 0 genuinely
   broken).
+
+## Doc quality (found 2026-10-23, not yet done)
+- [x] No doc anywhere explained that a shell command runs synchronously
+  *inside* the keyboard interrupt handler, with CPU interrupts off for the
+  whole command — a fact with real, previously-undocumented consequences
+  for `net` and `httpd`. Found 2026-10-23: every unchecked backlog item was
+  still an explicitly out-of-scope code/build.py/QEMU-test/repo-structure
+  follow-up (re-read `BACKLOG.md` in full, then spot-checked a sample of
+  already-audited citations across `docs/networking.md`/`docs/shell.md` —
+  all still exact, no new drift), and a fresh `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx` (the same technique that previously found
+  `fs_create`/`draw_tab`/`heap_used`/`font_data.mxinc`/`net/dns.mx`) turned
+  up nothing new — every zero/one-caller function is already flagged in an
+  existing entry (including `fs_mtime`, already covered by the
+  write-only-mtime finding). So this pass instead traced `idt.s`'s gate
+  setup end to end: `set_gate` (`idt.s:68`-`76`) writes type byte `0x8E` for
+  *every* gate `load_idt` installs — exceptions, keyboard, timer, and
+  syscall alike (`idt.s:73`) — present, ring 0, 32-bit **interrupt gate**,
+  which clears the CPU's IF flag on entry and only restores it at `iret`.
+  `keyboard_isr` (`idt.s:137`-`145`) calls `mort_on_key` *before* sending
+  the PIC its end-of-interrupt, with no `sti` anywhere in the stub.
+  Confirmed by reading the whole dispatch chain that nothing re-enables
+  interrupts between a keystroke and a shell command actually running:
+  `on_key()`'s Enter branch calls `run_command()` directly
+  (`kmain.mx:3557`) straight into `run_command_impl()`'s dispatch
+  (`kmain.mx:2135`-`2140`), and grepping `sti`/`cli` across every `.mx` file
+  turns up exactly two hits in the whole kernel — `kmain()`'s one-time boot
+  `sti` (`kmain.mx:3625`) and `poweroff()`'s `cli` (`kmain.mx:3259`) — so no
+  command execution path re-enables interrupts along the way. Two concrete,
+  previously-undocumented consequences follow: `net`'s DHCP busy-wait
+  (`net/netapp.mx:77`, `while spins < 30000000`) and Settings' Ethernet
+  "Connect" button (which calls the same `net_dhcp()` from its own key
+  handler, `net/settings.mx:541`) freeze the top-bar clock and the keyboard
+  for the whole wait, since IRQ0/IRQ1 literally cannot be serviced while
+  IF is clear; and `httpd`'s serve loop (`net/netapp.mx:193`-`259`, an
+  unconditional `while true` with no exit) never lets `keyboard_isr` reach
+  its `iret`, so IF never comes back — meaning `net_httpd`'s own printed
+  `"(reboot to stop)"` (`net/netapp.mx:182`-`187`) can only mean a physical
+  reset, since the shell's own `reboot` command (`kmain.mx:1024`-`1029`)
+  needs a keystroke it can now never receive. Done 2026-10-23: added a new
+  "A shell command runs inside the keyboard ISR, interrupts off" section to
+  `docs/architecture.md`'s execution-model section (grounded as above, with
+  both consequences as sub-bullets), and cross-linked a short correcting
+  note from `docs/networking.md`'s existing `"(reboot to stop)"` discussion
+  rather than duplicating the full mechanism there. Doc-only change, no
+  kernel/assembly logic touched. Verified every new `file:line` citation by
+  reading the exact cited line(s) directly (not just range-checking,
+  learning from the `kmain.mx:1023`-`1028` off-by-one this pass caught in
+  its own draft before committing — the real range is `1024`-`1029`) and
+  re-ran the citation-range check and link-resolution check across
+  `README.md` + all of `docs/*.md`: 0 citations out of range; the only two
+  links a naive slugifier flags are the same two pre-existing false
+  positives noted in the 2026-10-22 entry above, confirmed by hand; the new
+  `architecture.md#a-shell-command-runs-inside-the-keyboard-isr-interrupts-off`
+  anchor resolves correctly.
