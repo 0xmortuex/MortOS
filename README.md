@@ -139,6 +139,20 @@ inside a running OS, since `prog` never touches the disk image. Delete
 `build/disk.img` to get a rebuilt program back onto disk; see
 [`docs/programs.md`](docs/programs.md#build-pipeline) for the details.
 
+`python build.py disk` (`disk()`, `build.py:368`-`374`) creates and seeds
+`build/disk.img` the same way `run`/`window`/`run-iso` do, but without
+building the kernel or starting QEMU — the standalone way to get (or
+rebuild, after deleting it) the disk image on its own:
+
+```bash
+python build.py disk      # create build/disk.img (seeded with programs) without booting
+```
+
+If the image already exists, it prints a one-line notice and leaves it
+alone rather than overwriting it, pointing at `python mkfs.py build/disk.img`
+as the explicit wipe path (`build.py:369`-`372`) — the same no-clobber
+behavior `ensure_disk()` has everywhere else.
+
 See [`docs/programs.md`](docs/programs.md) for the syscall ABI and how to
 write your own program.
 

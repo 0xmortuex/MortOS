@@ -1557,3 +1557,43 @@ behavior, add a backlog item describing it and stop.
   positives noted in the 2026-10-22 entry above, confirmed by hand; the new
   `architecture.md#a-shell-command-runs-inside-the-keyboard-isr-interrupts-off`
   anchor resolves correctly.
+
+## Doc quality (found 2026-10-24, not yet done)
+- [x] README never gave `python build.py disk` its own command-block entry.
+  Found 2026-10-24: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py-behavior/QEMU-test/repo-structure follow-up
+  (re-read `BACKLOG.md` in full to confirm), and a fresh zero/one-caller
+  `fn`-call-site grep across `kmain.mx`+`net/*.mx`+`programs/*.mx` (the
+  same technique prior passes used to find `fs_create`/`draw_tab`/
+  `heap_used`/`font_data.mxinc`/`net/dns.mx`) turned up nothing new —
+  `on_tick`/`on_exception` looked like fresh zero-caller hits at first
+  since the grep only covers `.mx`/`.py` text, but both are called from
+  `idt.s` under their Mort-compiler-mangled names (`mort_on_tick`,
+  `idt.s:151`; `mort_on_exception`, `idt.s:223`) — false positives, not a
+  new finding — and every other zero/one-caller function is already
+  flagged in an existing entry. So this pass instead diffed `build.py`'s
+  `COMMANDS` dict (`build.py:432`-`433`: `build`/`check`/`run`/`window`/
+  `iso`/`run-iso`/`disk`/`prog`) against every `python build.py <cmd>`
+  invocation actually shown in a README code block. Seven of the eight
+  commands have one; `disk` (`disk()`, `build.py:368`-`374` — creates and
+  seeds `build/disk.img` via `ensure_disk()` without building the kernel or
+  starting QEMU) was only ever named in prose, as one of "`run`, `window`,
+  `disk`, or `run-iso`" (the four disk-creating commands, `README.md:116`-
+  `117` before this fix), never given its own explained invocation the way
+  `check`/`run`/`window`/`iso`/`run-iso`/`prog` all were. Done 2026-10-24:
+  added a short paragraph and code block for `python build.py disk` to
+  README's "Running programs" section, right after the existing
+  `ensure_disk()`-reseed note it naturally follows, citing the real
+  function (`build.py:368`-`374`) and quoting the already-exists notice it
+  prints instead of overwriting an existing image (`build.py:369`-`372`).
+  Doc-only change, no kernel/build.py logic touched. Re-ran the citation-
+  range check across `README.md` + all of `docs/*.md`: 0 citations out of
+  range. Re-ran the link-resolution check: 0 genuinely broken — the 4
+  flagged by the naive slugifier are pre-existing false positives from
+  headings containing `/` or backticked `kmalloc`/`kfree` (confirmed by
+  hand against the actual heading text, same pattern as the two
+  false positives noted in the 2026-10-22/23 entries above):
+  `architecture.md#the-desktop--window-manager`,
+  `memory-map.md#the-kernel-heap-allocator-kmallockfree` (flagged twice,
+  from `docs/settings.md` and `docs/shell.md`), and
+  `hardware.md#surfaced-in-settings-netsettingsmx`.
