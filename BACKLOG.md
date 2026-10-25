@@ -1597,3 +1597,48 @@ behavior, add a backlog item describing it and stop.
   `memory-map.md#the-kernel-heap-allocator-kmallockfree` (flagged twice,
   from `docs/settings.md` and `docs/shell.md`), and
   `hardware.md#surfaced-in-settings-netsettingsmx`.
+
+## Doc quality (found 2026-10-25, not yet done)
+- [x] `docs/networking.md`'s `httpd` coverage never mentioned that
+  `net_httpd` prints a live, incrementing request counter to the console.
+  Found 2026-10-25: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py/QEMU-test/repo-structure follow-up (re-read
+  `BACKLOG.md` in full to confirm), a fresh zero/one-caller `fn`-call-site
+  grep across `kmain.mx`+`net/*.mx` (the same technique prior passes used
+  to find `fs_create`/`draw_tab`/`heap_used`/`font_data.mxinc`/
+  `net/dns.mx`/the `net/endian.mx`+transport-layer cluster) turned up
+  nothing new, and a direct line-by-line re-verification of every
+  `file:line` citation in the five docs this pass's method hadn't yet
+  covered this way (`docs/programs.md`, `docs/memory-map.md`,
+  `docs/hardware.md`, `docs/settings.md`, `docs/testing.md` — 161
+  citations total, each checked by reading the actual cited source line(s)
+  rather than just range-checking) found zero drift. So this pass instead
+  read `net/netapp.mx`'s `net_httpd` end to end looking for behavior no
+  prior pass had traced, and found one: inside the "serve the page" branch
+  (the same `!responded && http_is_get(...)` guard the existing "httpd has
+  no reset handling" section already describes), the loop increments a
+  `served` counter and prints `served request #<n>` to the console
+  (`served = served + 1; feed(); print_string("served request #", g_row,
+  10); num_to_str(served, g_numbuf); print_at(g_numbuf, g_row, 16, 11);`,
+  `net/netapp.mx:240`-`244`) — confirmed the 16-character label leaves no
+  gap before the number (`len("served request #") == 16`, matching the
+  `print_at` column exactly). Traced two consequences no prior pass had
+  stated: `served` (declared once at `net/netapp.mx:191`, before the loop)
+  is a running total across every connection served since `httpd` started,
+  not per-connection, since only `responded` (reset to `false` on each new
+  SYN, `net/netapp.mx:219`) is per-connection; and because the print goes
+  through the same `feed()`/`scroll_up()` console path as ordinary shell
+  output, after 24 served requests the one-time startup banner (`httpd:
+  serving on http://<ip>/  (reboot to stop)`, already quoted earlier in
+  this doc) scrolls off the top of the console with nothing re-printing
+  it — a genuinely surprising interaction for anyone reloading the test
+  page repeatedly in one session. Done 2026-10-25: added a new "`httpd`
+  prints a running request counter, which scrolls its own banner
+  off-screen" subsection to `docs/networking.md`, grounded and cited as
+  above, between the existing "httpd has no reset handling" section and
+  the hardcoded-`g_our_ip` paragraph it already had. Doc-only change, no
+  kernel logic touched. Re-ran the citation-range check across `README.md`
+  + all of `docs/*.md`: 681 citations, 0 out of range. Re-ran the
+  link-resolution check: 0 broken (same pre-existing false-positive
+  anchors noted in the 2026-10-22/23/24 entries above, unchanged by this
+  pass).

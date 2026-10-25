@@ -138,6 +138,32 @@ any prior doc pass called out:
   any client until the kernel is rebooted, even though the loop is still
   running and polling the NIC.
 
+### `httpd` prints a running request counter, which scrolls its own banner off-screen
+
+Every time `net_httpd` actually serves a page (the same `!responded &&
+http_is_get(...)` branch described above), it increments a counter and
+prints a line to the console: `served = served + 1;` then `feed()` (advance
+one console line, scrolling if already on the bottom row) then
+`print_string("served request #", g_row, 10)` followed by the count via
+`num_to_str`/`print_at` at column 16 in light cyan (color `11`)
+(`net/netapp.mx:240`-`244`) — `"served request #"` is exactly 16 characters,
+so the number lands immediately after the `#` with no gap, reading e.g.
+`served request #1`. `served` is declared once, before the loop
+(`let served: u32 = 0;`, `net/netapp.mx:191`), and is never reset — unlike
+`responded`, which *is* reset to `false` on every new SYN
+(`net/netapp.mx:219`) and gates at most one counted request per connection —
+so it is a running total across every connection `httpd` has completed
+since the command was typed, not a per-connection count.
+
+Because this goes through `feed()` just like ordinary shell output, it is
+subject to the same 24-row scroll every other console line uses. So after
+24 served requests, the startup line printed once before the loop —
+`httpd: serving on http://<ip>/  (reboot to stop)` (see above) — has
+scrolled off the top of the console, and nothing in the loop ever reprints
+it: a user who reloads the page more than two dozen times in one session
+and wants to recheck the URL has no on-screen way to do so without
+rebooting.
+
 Note that `net/netcfg.mx` initializes `g_our_ip` to a hardcoded
 `10.0.2.15` (`net/netcfg.mx:18`) — QEMU's default SLIRP guest address — but
 `net_dhcp` immediately zeroes it (`net/netapp.mx:58`) and then overwrites it
