@@ -80,6 +80,21 @@ turns the Mort source into the multiboot ELF that the boot chain loads:
    header to confirm it's a valid 32-bit multiboot image before reporting
    success (`check()`, `build.py:158-190`).
 
+`check()` does more than a one-line magic-number check. Its internal
+`require()` closure raises via `sys.exit` rather than `assert`, specifically
+so the checks can't be silently skipped by running under `python -O`
+(`build.py:163`-`166`). It confirms the ELF magic bytes, that the ELF class
+is 32-bit (`ELFCLASS32`, `data[4] == 1`), and that `e_machine` is `EM_386`
+(`0x03`, `build.py:168`-`171`); then it scans every 4-byte-aligned offset in
+the first 8 KiB of the file for the multiboot magic `0x1BADB002` — the
+alignment and 8 KiB bound are what the multiboot spec itself requires, and
+once a candidate is found it validates the *whole* 12-byte header rather
+than just the magic word: `flags` must be exactly `0x7`
+(`ALIGN|MEMINFO|GRAPHICS`, the same three bits `boot.s:8`-`11` sets) and
+`magic + flags + checksum` must wrap to zero mod 2^32 (`build.py:173`-`187`).
+It prints the file offset the header was found at, then suggests
+`python build.py run`.
+
 `programs/*.mx` go through the same four-step recipe but linked
 differently (a fixed load address, no kernel symbols) — see
 [`docs/programs.md`](programs.md)'s build pipeline section for that path.

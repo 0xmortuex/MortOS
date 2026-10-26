@@ -1642,3 +1642,38 @@ behavior, add a backlog item describing it and stop.
   link-resolution check: 0 broken (same pre-existing false-positive
   anchors noted in the 2026-10-22/23/24 entries above, unchanged by this
   pass).
+
+## Doc quality (found 2026-10-26, not yet done)
+- [x] `docs/architecture.md`'s build-pipeline section gave `check()` a single
+  summarizing clause ("re-parses that ELF's header to confirm it's a valid
+  32-bit multiboot image") even though the function validates considerably
+  more than that. Found 2026-10-26: every unchecked backlog item was still
+  an explicitly out-of-scope code/build.py-behavior/QEMU-test/repo-structure
+  follow-up (re-read `BACKLOG.md` in full to confirm), a fresh zero/one-caller
+  `fn`-call-site grep across `kmain.mx`+`net/*.mx`+`programs/*.mx` (the same
+  technique prior passes used to find `fs_create`/`draw_tab`/`heap_used`/
+  `font_data.mxinc`/`net/dns.mx`/the `net/endian.mx` cluster) and the same
+  grep's `.py`-file variant (across `build.py`/`mkfs.py`/`test*.py`) both
+  turned up nothing new, and `kmain.mx`'s only commit since the last citation
+  audit (`ccb6165`, `switch_app`'s stale tab-highlight comment, 2026-10-21)
+  was confirmed line-count-neutral (single line swapped for single line) so
+  no citation drift followed from it. Read `check()` (`build.py:158`-`190`)
+  in full instead: its `require()` closure raises via `sys.exit` rather than
+  `assert`, specifically so `python -O` can't silently skip validation
+  (`build.py:163`-`166`); it checks the ELF magic bytes, `ELFCLASS32`, and
+  `e_machine == EM_386` (`build.py:168`-`171`) before even looking for a
+  multiboot header; and the multiboot check itself scans every 4-byte-aligned
+  offset in the first 8 KiB (the exact bound+alignment the multiboot spec
+  requires) rather than assuming the header sits at offset 0, then validates
+  the *whole* 12-byte header — `flags == 0x7` and a wrapping checksum, not
+  just the magic word (`build.py:173`-`187`) — cross-checked against
+  `boot.s:8`-`11`'s `ALIGN|MEMINFO|GRAPHICS` flag bits, which are exactly
+  what `flags == 0x7` requires. Done 2026-10-26: expanded the build-pipeline
+  section with a new paragraph covering all of this, grounded and cited.
+  Doc-only change, no kernel/build.py logic touched. Verified every new
+  `file:line` citation by reading the exact cited line(s) directly against
+  current source (not just range-checking) and re-ran the citation-range
+  check (686 citations, 0 out of range) and link-resolution check (75
+  links, 2 broken — the same two pre-existing false-positive anchors noted
+  in the 2026-10-22/23/24 entries above, unchanged by this pass) across
+  `README.md` + all of `docs/*.md`.
