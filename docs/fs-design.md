@@ -16,6 +16,21 @@ originally cited here, is now dead code — every real creation path, including
 `write`'s, calls `fs_create_full` directly; see its own updated comment and
 the "Code follow-ups" backlog item below.)
 
+Two bits of Section 5.1 undersell what `mkfs.py` actually does today. First,
+the "round-trip self-check (recommended, ~10 lines)" callout near the end of
+that section is not a left-as-future-work suggestion — `make()` always runs
+it, unconditionally, on every image it writes (`_self_check`, `mkfs.py:140`-
+`167`, called at `mkfs.py:132`): it re-opens the file, re-parses the
+superblock and every table entry, and compares each file's on-disk content
+byte-for-byte against what was meant to be written, exiting with
+`mkfs self-check FAILED: ...` if anything differs. Second, `make()`'s name
+validation is stricter than Section 5.1's "NAME ≤ 23 ASCII chars" bullet
+says: a name must also be printable — not just ASCII — so an embedded
+control character is rejected (`mkfs.py:83`-`86`), and a name reused across
+`--add`/`--add-bin` (even seeding two different host files under the same
+on-disk name) is rejected outright as a duplicate (`mkfs.py:87`-`89`).
+Neither check is in the original spec.
+
 The sections below are kept as-is as a historical record of the design
 rationale and on-disk format — most of it (Sections 0-5) still accurately
 describes the v1 format as originally built. Section 6 ("Implementation

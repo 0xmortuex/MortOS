@@ -1677,3 +1677,36 @@ behavior, add a backlog item describing it and stop.
   links, 2 broken — the same two pre-existing false-positive anchors noted
   in the 2026-10-22/23/24 entries above, unchanged by this pass) across
   `README.md` + all of `docs/*.md`.
+
+## Doc quality (found 2026-10-27, not yet done)
+- [x] `docs/fs-design.md`'s "Status: implemented" note said `mkfs.py` and
+  `build.py disk` integration were built, but didn't say that two specific
+  details from Section 5.1's original spec actually shipped stricter (or
+  more real) than drafted. Found 2026-10-27: every unchecked backlog item
+  was still an explicitly out-of-scope code/build.py-behavior/QEMU-test/
+  repo-structure follow-up (re-read `BACKLOG.md` in full, top to bottom, to
+  confirm — every remaining `- [ ]` names a kernel/assembly/build.py change
+  needing a local QEMU boot), and a fresh zero/one-caller `fn`-call-site
+  grep across `kmain.mx`+`net/*.mx` (the same technique prior passes used to
+  find `fs_create`/`draw_tab`/`heap_used`/`font_data.mxinc`/`net/dns.mx`/the
+  `net/endian.mx` cluster) turned up nothing not already flagged. So this
+  pass read `mkfs.py` end to end instead, looking for shipped behavior
+  Section 5.1's design prose doesn't fully describe. Found two things: (1)
+  Section 5.1 calls the "round-trip self-check" a ~10-line *recommendation*,
+  but `make()` actually runs it unconditionally on every image it writes
+  (`_self_check`, `mkfs.py:140`-`167`, called at `mkfs.py:132`) — it isn't
+  optional infrastructure left for later, it's load-bearing today, exiting
+  with `mkfs self-check FAILED: ...` if the re-parsed image doesn't match
+  what was meant to be written; (2) Section 5.1's validate bullet says only
+  "NAME ≤ 23 ASCII chars", but `make()` also requires the name be *printable*
+  (rejecting embedded control characters, `mkfs.py:83`-`86`) and rejects a
+  name reused across `--add`/`--add-bin` as a duplicate (`mkfs.py:87`-`89`)
+  — neither check is in the original spec. Done 2026-10-27: added a new
+  paragraph to `docs/fs-design.md`'s top status note covering both, cited
+  to the exact lines above. Doc-only change, no kernel/build.py logic
+  touched. Verified both new citations by reading the exact cited lines
+  directly against current `mkfs.py`, and re-ran the citation-range check
+  (689 citations, 0 out of range) and link-resolution check (75 links, 2
+  broken — the same two pre-existing false-positive anchors noted in the
+  2026-10-22/23/24 entries above, unchanged by this pass) across
+  `README.md` + all of `docs/*.md`.
