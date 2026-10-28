@@ -121,6 +121,7 @@ already see them:
 
 ```
 > exec hello.bin          # a real Mort program prints via syscall, then returns
+> exec count.bin          # a second program, proving more than one builds and runs
 > exec ask.bin            # an interactive program: it asks your name and greets you
 ```
 

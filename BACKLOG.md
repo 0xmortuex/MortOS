@@ -1710,3 +1710,45 @@ behavior, add a backlog item describing it and stop.
   broken — the same two pre-existing false-positive anchors noted in the
   2026-10-22/23/24 entries above, unchanged by this pass) across
   `README.md` + all of `docs/*.md`.
+
+## Doc quality (found 2026-10-28, not yet done)
+- [x] README's "Running programs" quickstart demo block only showed
+  `exec hello.bin` and `exec ask.bin`, never `exec count.bin` — the third of
+  the three sample programs in `programs/` (`hello.mx`, `count.mx`,
+  `ask.mx`), fully documented in `docs/programs.md` (which already
+  describes all three as "print-only, multiple prints, and interactive
+  input" at `docs/programs.md:181`-`184`, and cites `count.mx:17` alongside
+  the other two at `docs/programs.md:96`) but never demoed in the README
+  a reader sees first. Found 2026-10-28: every unchecked backlog item was
+  still an explicitly out-of-scope code/build.py-behavior/QEMU-test/
+  repo-structure follow-up (re-read `BACKLOG.md` in full, top to bottom, to
+  confirm — every remaining `- [ ]` names a kernel/assembly/build.py change
+  needing a local QEMU boot), and a fresh zero/one-caller `fn`-call-site
+  grep across `kmain.mx`+`net/*.mx`+`programs/*.mx` (the same technique
+  every prior pass used to find `fs_create`/`draw_tab`/`heap_used`/
+  `font_data.mxinc`/`net/dns.mx`/the `net/endian.mx` cluster) turned up
+  nothing not already flagged. A direct read of `test.py` end to end (the
+  shared test harness, not yet read in full by name in any prior entry)
+  also turned up nothing undocumented — `docs/testing.md`'s "harness API"
+  section already covers `key_name`'s shift-symbol mapping, the
+  `KEY_HOLD_MS`/`KEY_GAP_S` timing requirement, and the `memsave`/`xp`
+  screendump fallback, all verified still accurate against current
+  `test.py`. Re-read `test_gfx.py` end to end too and re-verified
+  `docs/testing.md`'s existing note that its per-app tab-highlight
+  assertions (`test_gfx.py:105`-`140`) don't match any current
+  `draw_topbar()` behavior (`kmain.mx:467`-`473`, `draw_tab()` still
+  unused at `kmain.mx:452`-`462`, `switch_app()`'s call site still
+  `kmain.mx:2845`) — still accurate, no new drift. With those avenues
+  exhausted, this pass instead diffed README's example commands against
+  `programs/`'s actual file listing and found the `count.bin` gap above.
+  Done 2026-10-28: added one line to the quickstart's `exec` demo block,
+  between `hello.bin` and `ask.bin` (matching their build order from
+  `_program_sources()`'s glob and the ordering already used in
+  `docs/programs.md:96`'s three-way citation), with a comment taken
+  directly from `count.mx`'s own header ("proving more than one program
+  builds and runs", `programs/count.mx:1`) rather than inventing new
+  wording. Doc-only change (`README.md`'s demo code block), no kernel/
+  build.py logic touched. Re-ran the citation-range check across
+  `README.md` + all of `docs/*.md`: 690 citations, 0 out of range (this
+  change adds no new citation or link, so the link-resolution check was
+  not re-run — unchanged from the 2026-10-27 pass's count).
