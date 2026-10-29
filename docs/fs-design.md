@@ -31,6 +31,29 @@ control character is rejected (`mkfs.py:83`-`86`), and a name reused across
 on-disk name) is rejected outright as a duplicate (`mkfs.py:87`-`89`).
 Neither check is in the original spec.
 
+`--add`/`--add-bin`'s `HOST[:NAME]` spec parsing (`_parse_add`, `mkfs.py:43`-
+`56`) has two edge cases its own docstring doesn't mention — both confirmed
+by running the function directly against the example specs below. The
+docstring says "a colon at index 1 is a Windows drive letter... not a
+separator", to keep
+`--add C:\foo\bar.txt` from being misread as host `C` / name
+`\foo\bar.txt`; but the `idx > 1` check behind that also catches any
+one-character `HOST`, Windows or not — `--add x:y` is *not* split into host
+`x` / name `y`, since `"x:y".rfind(":")` is `1`. The whole string `x:y` is
+treated as both the host path to open and (via the `basename` fallback) the
+on-disk name, so it fails with `mkfs: cannot read x:y: ...` unless a file
+literally named `x:y` exists. Conversely, a `HOST` longer than one
+character that itself contains a colon anywhere past index 1 — legal in a
+Unix filename, just not a Windows drive letter — *is* split on it: `--add
+sub:dir/host.txt` parses as host `sub` / name `dir/host.txt`, not a file
+named `sub:dir/host.txt` as a reader might expect from the docstring's
+"colon separates HOST from NAME" framing. Neither case is reachable from
+anything `build.py` runs itself — `ensure_disk()`'s one call into
+`mkfs.make()` passes `adds`/`bins` as `(host, name)` tuples
+(`build.py:365`), which `make()`'s loop uses directly without going through
+`_parse_add` at all (`mkfs.py:82`) — so both only matter to someone typing
+`--add`/`--add-bin` directly at the command line with an unusual filename.
+
 The sections below are kept as-is as a historical record of the design
 rationale and on-disk format — most of it (Sections 0-5) still accurately
 describes the v1 format as originally built. Section 6 ("Implementation

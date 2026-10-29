@@ -1752,3 +1752,54 @@ behavior, add a backlog item describing it and stop.
   `README.md` + all of `docs/*.md`: 690 citations, 0 out of range (this
   change adds no new citation or link, so the link-resolution check was
   not re-run — unchanged from the 2026-10-27 pass's count).
+
+## Doc quality (found 2026-10-29, not yet done)
+- [x] `docs/fs-design.md`'s mkfs.py coverage already documented the
+  self-check and the stricter-than-spec name validation (2026-10-27 entry
+  above) but never looked at `--add`/`--add-bin`'s own `HOST[:NAME]` spec
+  parser, `_parse_add` (`mkfs.py:43`-`56`) — a real function with a
+  docstring that only states its intent, not its edge cases. Found
+  2026-10-29: every unchecked backlog item was still an explicitly
+  out-of-scope code/build.py-behavior/QEMU-test/repo-structure follow-up
+  (re-read `BACKLOG.md` in full, top to bottom, to confirm — every
+  remaining `- [ ]` names a kernel/assembly/build.py change needing a local
+  QEMU boot), and a fresh zero/one-caller `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx` (the same technique prior passes used to find
+  `fs_create`/`draw_tab`/`heap_used`/`font_data.mxinc`/`net/dns.mx`/the
+  `net/endian.mx` cluster) turned up only `fs_mtime`, already covered by
+  the 2026-09-06 entry — nothing new there. So this pass read `mkfs.py` end
+  to end instead (the host-side script, not yet read fully for undocumented
+  quirks beyond its CLI/self-check/validation surface, already covered).
+  `_parse_add`'s own docstring says only "a colon at index 1 is a Windows
+  drive letter (C:\...), not a separator, so only a later colon splits" —
+  read as a spec of intent, not a list of what it actually does on
+  unusual input. Ran the function directly (not just read it) against a
+  handful of specs to confirm two edge cases it does not warn about: (1) a
+  one-character `HOST` followed by a colon (e.g. `x:y`) is *not* split —
+  `"x:y".rfind(":")` is `1`, and the `idx > 1` guard meant only to exempt a
+  Windows drive letter also excludes this, so `--add x:y` tries to open a
+  host file literally named `x:y` rather than host `x` seeded as `y`; (2) a
+  `HOST` longer than one character that itself contains a colon anywhere
+  past index 1 — legal in a Unix filename, not a Windows drive letter — *is*
+  split on it, so `--add sub:dir/host.txt` parses as host `sub` / name
+  `dir/host.txt`, not a file named `sub:dir/host.txt`. Also traced that
+  neither case is reachable from anything `build.py` runs itself:
+  `ensure_disk()`'s one call into `mkfs.make()` passes `adds`/`bins` as
+  `(host, name)` tuples (`build.py:365`), and `make()`'s loop uses a tuple
+  directly without going through `_parse_add` at all (`mkfs.py:82`) — so
+  both quirks only matter to someone typing `--add`/`--add-bin` directly at
+  the command line with an unusual filename. Done 2026-10-29: added a new
+  paragraph to `docs/fs-design.md`'s mkfs.py coverage, right after the
+  existing self-check/validation paragraph, cited as above. Considered also
+  expanding `_parse_add`'s own docstring in `mkfs.py` (comment-only, in
+  scope) but reverted that edit after noticing it would add 3 lines to the
+  docstring, shifting every citation to `mkfs.py` below line 48 in this doc
+  and possibly elsewhere by +3 — not worth the drift risk for a
+  comment-only clarification already covered in the doc; left the source
+  untouched. Doc-only change (`docs/fs-design.md`), no kernel/build.py
+  logic touched. Re-ran the citation-range check across `README.md` + all
+  of `docs/*.md`: 692 citations, 0 out of range. Re-ran the link-resolution
+  check: 75 links, 2 broken (the same two pre-existing false-positive
+  anchors noted in the 2026-10-22/23/24 entries above — `fs-design.md`'s
+  own `#26-deletion--documented-limitation` slug and
+  `architecture.md#the-desktop--window-manager` — unchanged by this pass).
