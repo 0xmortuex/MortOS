@@ -1803,3 +1803,42 @@ behavior, add a backlog item describing it and stop.
   anchors noted in the 2026-10-22/23/24 entries above — `fs-design.md`'s
   own `#26-deletion--documented-limitation` slug and
   `architecture.md#the-desktop--window-manager` — unchanged by this pass).
+
+## Doc quality (found 2026-10-30, not yet done)
+- [x] `docs/settings.md`'s "Read-only sections only display kernel state"
+  paragraph and its "Three rows worth calling out as not-quite-live-data"
+  follow-up (PS/2 keyboard, Power, Heap) never covered Privacy & security
+  (`settings_privacy`, `net/settings.mx:258`-`267`), which turns out to be
+  the biggest exception of all. Found 2026-10-30: re-read `BACKLOG.md` in
+  full top to bottom (every remaining `- [ ]` is still an explicitly
+  out-of-scope kernel/assembly/build.py/repo-structure change needing a
+  local QEMU boot), re-ran the zero/one-caller `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx`+`programs/*.mx` (nothing new beyond the cluster
+  already flagged in prior entries), and checked the two links the
+  2026-10-22/23/24/27/29 passes kept logging as "pre-existing false
+  positives" — confirmed both really are false positives by computing
+  GitHub's own slug rule by hand against the current headers (`## 2.6
+  Deletion — documented limitation` and `## The desktop / window manager`);
+  nothing to fix there. With those avenues exhausted, read `net/settings.mx`
+  end to end looking for a section the existing per-page audits (hardware,
+  accounts, architecture) hadn't individually checked against its own doc's
+  general claims, and found `settings_privacy()`: of its six displayed
+  rows, only "File permissions" reads a real global (`g_fs_ok`, `:261`) —
+  "Camera access", "Microphone access", and "Location services"
+  (`:262`-`264`) are hardcoded literal strings with no probe behind them at
+  all (confirmed by grepping the whole repo for `camera`/`microphone`/
+  `location`: zero driver code anywhere). The microphone row is the
+  concrete, demonstrable case: it always prints `"No audio device"` even
+  when `g_hw_audio` is `true`, which the Hardware page's own "Audio
+  controller" row (`net/settings.mx:296`) shows as "Yes" the moment
+  `hw_scan_pci()` PCI-detects a real AC'97 controller (`net/hardware.mx:28`)
+  — so Settings' own two pages can disagree about whether this machine has
+  audio hardware, depending which one you read. Done 2026-10-30: rewrote
+  `docs/settings.md`'s "Three rows" paragraph to "Four rows" and added this
+  one, cited as above, right where the doc already lists the other
+  not-quite-live-data exceptions to its own "read-only means kernel state"
+  claim. Doc-only change, no kernel/build.py logic touched. Re-ran the
+  citation-range check across `README.md` + all of `docs/*.md`: 694
+  citations, 0 out of range (no new links added, so link-resolution count
+  is unchanged from the 2026-10-29 pass: 75 links, 2 broken — the same two
+  confirmed false positives above).

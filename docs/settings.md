@@ -49,19 +49,31 @@ for `type == 1`), Diagnostics reads `g_ticks` and the heap bounds
 sections in the "opens sub-page" column above (`settings_enter()`,
 `net/settings.mx:498`-`506`).
 
-Three rows worth calling out as not-quite-live-data: `settings_hardware()`
+Four rows worth calling out as not-quite-live-data: `settings_hardware()`
 displays the PS/2 keyboard row as a hardcoded literal `"Ready"`
 (`:283`) rather than probing for a device — see
 [`docs/hardware.md`](hardware.md) for that and the rest of the Hardware page.
 Power's four actions (Lock/Sleep/Restart/Shut down) are described but not
 triggerable from this page at all; the real controls are the global `F12`
 power menu or the matching shell commands (`net/settings.mx:276`,
-`docs/shell.md`). And Storage's "Heap used" / Diagnostics' "Heap allocated"
+`docs/shell.md`). Storage's "Heap used" / Diagnostics' "Heap allocated"
 (`:233`, `:325`, the latter under a subtitle that literally says "Live
 kernel health") read `g_heap_brk`, a high-water mark that in this kernel's
 own practice never moves off `0 KiB` — see
 [`docs/memory-map.md`](memory-map.md#the-kernel-heap-allocator-kmallockfree)
-for the full byte-by-byte trace.
+for the full byte-by-byte trace. And Privacy & security (`settings_privacy`,
+`:258`-`267`) is mostly not reading kernel state at all, unlike every other
+read-only section listed above: of its six rows, only "File permissions"
+reads a real global (`g_fs_ok`, `:261`); "Camera access", "Microphone
+access", and "Location services" (`:262`-`264`) are hardcoded literals —
+`"No camera device"`, `"No audio device"`, `"Not present"` — with no probe
+behind them (there is no camera, microphone, or location code anywhere in
+this kernel; confirmed by grep). The microphone row is the sharpest case:
+it unconditionally prints `"No audio device"` even when `g_hw_audio` is
+`true`, which the Hardware page's own "Audio controller" row (`:296`) would
+show as "Yes" right after a real AC'97 controller is PCI-detected
+(`hw_scan_pci`, `net/hardware.mx:28`) — so the two pages can disagree about
+whether this machine has audio hardware, depending which one you read.
 
 ## Navigation state machine
 
