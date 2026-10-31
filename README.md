@@ -207,6 +207,19 @@ MORT OS -- written in Mort, a language built from scratch
 ~ $
 ```
 
+`run-iso`'s QEMU window also behaves differently from `run`/`window`'s, which
+this README never pointed out: `_run()` (`build.py:403`-`421`), used by both
+`run` and `window`, always passes `-display gtk,zoom-to-fit=on,show-menubar=off`
+(`build.py:410`-`412`) — a borderless window that scales the console to fit —
+and adds `-full-screen` for `run` specifically (`build.py:413`-`414`).
+`run_iso()` (`build.py:377`-`384`) passes neither: its QEMU invocation is just
+`[qemu, "-cdrom", ISO, "-hda", DISK]` (`build.py:384`), with no `-display`
+argument at all, so it boots in QEMU's own default display backend and
+window size, menu bar included, and never fullscreen. `test_gfx.py` boots
+the same ISO a third way — headless, with its own `-display none` (see
+[`docs/testing.md`](docs/testing.md)) — so this gap only affects a human
+running `python build.py run-iso` directly.
+
 Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) and it boots on real hardware.
 
 ## Roadmap

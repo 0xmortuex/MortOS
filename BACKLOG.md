@@ -1842,3 +1842,46 @@ behavior, add a backlog item describing it and stop.
   citations, 0 out of range (no new links added, so link-resolution count
   is unchanged from the 2026-10-29 pass: 75 links, 2 broken — the same two
   confirmed false positives above).
+
+## Doc quality (found 2026-10-31, not yet done)
+- [x] README's "A real bootable ISO" section never mentioned that
+  `python build.py run-iso`'s QEMU window behaves differently from
+  `run`/`window`'s. Found 2026-10-31: re-read `BACKLOG.md` in full top to
+  bottom (every remaining `- [ ]` is still an explicitly out-of-scope
+  kernel/assembly/build.py-behavior/QEMU-test/repo-structure change needing
+  a local QEMU boot — confirmed again, matching every prior daily pass's
+  finding), re-ran the zero/one-caller `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx`+`programs/*.mx` (nothing new beyond the cluster
+  already flagged in prior entries, including the two accessors inside the
+  already-dead `net/dns.mx` — `dns_id`/`dns_ancount`, both unused even by
+  the file's own `dns_first_a`, which re-reads `ancount` inline instead of
+  calling `dns_ancount` — too thin on its own to be worth a doc change), and
+  spot-checked a sample of already-audited citations across
+  `docs/networking.md`/`docs/settings.md`/`docs/hardware.md` (all still
+  exact, no new drift). With those avenues exhausted, read `build.py` end
+  to end instead — the one file whose individual functions (`build`,
+  `check`, `iso`, `build_program`, `ensure_disk`, `disk`, `_run`, `run_iso`)
+  have each been covered by name in prior passes, but never diffed against
+  each other side by side. Found that `_run(fullscreen)` (`build.py:403`-
+  `421`, used by both `run` and `window`) always passes `-display
+  gtk,zoom-to-fit=on,show-menubar=off` (`build.py:410`-`412`) and adds
+  `-full-screen` for `run` specifically (`build.py:413`-`414`), but
+  `run_iso()` (`build.py:377`-`384`) passes neither — its QEMU invocation
+  is exactly `[qemu, "-cdrom", ISO, "-hda", DISK]` (`build.py:384`), no
+  `-display` argument at all — so `run-iso` boots in QEMU's own default
+  display backend and window size, menu bar included, and is never
+  fullscreen, unlike `run`. Confirmed `test_gfx.py` is unaffected and
+  doesn't share this gap: it calls `build.iso()` directly (not
+  `run_iso()`) and launches its own separate, already-documented
+  `-display none -monitor stdio` headless QEMU invocation
+  (`test_gfx.py:63`, cited in `docs/testing.md`). Done 2026-10-31: added a
+  new paragraph to README's ISO section, right after the existing boot
+  transcript, citing all of the above and cross-linking to
+  `docs/testing.md` for the third, headless QEMU path. Doc-only change
+  (`README.md`), no kernel/build.py logic touched. Re-ran the
+  citation-range check across `README.md` + all of `docs/*.md`: 699
+  citations, 0 out of range. Re-ran the link-resolution check: 76 links, 0
+  missing targets (the new `docs/testing.md` link added by this pass
+  resolves; anchor-level resolution for the two previously-confirmed
+  false-positive slugs was not re-verified this pass since neither doc
+  touched by this change).
