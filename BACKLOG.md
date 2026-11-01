@@ -1885,3 +1885,36 @@ behavior, add a backlog item describing it and stop.
   resolves; anchor-level resolution for the two previously-confirmed
   false-positive slugs was not re-verified this pass since neither doc
   touched by this change).
+
+## Doc quality (found 2026-11-01, not yet done)
+- [x] `docs/settings.md`'s "Four rows worth calling out as not-quite-live-data"
+  paragraph covered row-level exceptions to its own "read-only sections only
+  display kernel state" claim (PS/2 keyboard, Power, Heap, Privacy's three
+  device rows) but missed two sidebar sections that are exceptions at the
+  *whole-section* level. Found 2026-11-01: re-read `BACKLOG.md` in full top
+  to bottom (every remaining `- [ ]` is still an explicitly out-of-scope
+  kernel/assembly/build.py/repo-structure change needing a local QEMU boot —
+  confirmed again), re-ran the zero/one-caller `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx`+`programs/*.mx` (same technique as every prior pass;
+  turned up nothing beyond the already-flagged cluster), and read `mkfs.py`
+  end to end for anything past the `--add`/`--add-bin` parser already
+  covered (2026-10-29) — nothing new there either. With those avenues
+  exhausted, read `net/settings.mx` end to end section by section (the same
+  method the 2026-10-30 pass used to find the Privacy page) and found
+  `settings_apps()` (`:248`-`256`) and `settings_update()` (`:300`-`309`)
+  read no kernel state at all: every line in both is a `settings_text()` call
+  on a literal string constant (Apps' "F1 command shell"/"Install/uninstall:
+  Not supported yet"; Update & About's "Version: 1.0 development"/
+  "Architecture: x86 32-bit"/etc.) — confirmed by reading every line of both
+  functions for a `g_`-prefixed read; the only one found is `g_accent` in
+  `settings_update()` (`:302`), which only colors the "MORT OS" heading, not
+  any displayed value. This is a sharper exception than Privacy's (which
+  still had one real field, `g_fs_ok`): it contradicts
+  `settings_diagnostics()`'s own closing line, "All values are read directly
+  from kernel state." (`:330`), one screen over in the same sidebar. Done
+  2026-11-01: added a new paragraph to `docs/settings.md` right after the
+  existing "Four rows" paragraph, cited as above. Doc-only change
+  (`docs/settings.md`), no kernel/build.py logic touched. Re-ran the
+  citation-range check across `README.md` + all of `docs/*.md`: 698
+  citations, 0 out of range. Re-ran the link-resolution check (path-level
+  only, not anchor-level): 76 links, 0 broken.

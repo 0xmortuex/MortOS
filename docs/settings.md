@@ -75,6 +75,20 @@ show as "Yes" right after a real AC'97 controller is PCI-detected
 (`hw_scan_pci`, `net/hardware.mx:28`) — so the two pages can disagree about
 whether this machine has audio hardware, depending which one you read.
 
+Two sections go further than any row-level exception above: they read *no*
+kernel state at all. `settings_apps()` (`:248`-`256`) and `settings_update()`
+(`:300`-`309`) are each a block of `settings_text()` calls on literal string
+constants — Apps' "F1  command shell"/"F2  MortFS browser"/.../"Install/
+uninstall: Not supported yet", Update & About's "Version: 1.0 development"/
+"Architecture: x86 32-bit"/"Update service: Manual builds"/etc. Neither
+function reads a single `g_`-prefixed global; the only one either touches is
+`g_accent` in `settings_update()` (`:302`), and that only picks the heading's
+color, not any displayed value. That sits oddly next to
+`settings_diagnostics()`'s own closing line, "All values are read directly
+from kernel state." (`:330`) — true for Diagnostics, but the literal opposite
+of what the Apps and Update & About pages do one screen over in the same
+sidebar.
+
 ## Navigation state machine
 
 Four kernel globals drive the whole app:
