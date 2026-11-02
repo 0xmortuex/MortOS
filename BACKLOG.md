@@ -1918,3 +1918,68 @@ behavior, add a backlog item describing it and stop.
   citation-range check across `README.md` + all of `docs/*.md`: 698
   citations, 0 out of range. Re-ran the link-resolution check (path-level
   only, not anchor-level): 76 links, 0 broken.
+
+## Doc quality (found 2026-11-02, not yet done)
+- [x] `net/netcfg.mx:10`-`16`'s header comment, directly above
+  `g_our_mac`'s declaration, misattributed `g_our_ip`'s initializer to
+  `g_our_mac`. Found 2026-11-02: re-read `BACKLOG.md` in full (every
+  remaining `- [ ]` is still an out-of-scope kernel/assembly/build.py/
+  repo-structure change needing a local QEMU boot, matching every prior
+  day's finding), re-ran the zero/one-caller `fn`-call-site grep across
+  `kmain.mx`+`net/*.mx`+`programs/*.mx` with a small Python script instead
+  of ad hoc greps (confirmed the exact same already-flagged cluster —
+  `heap_used`, `fs_create`, the `net/dns.mx` quartet, `swap16`/`hton*`/
+  `ntoh*`, `arp_build_request`, `mac_eq`/`eth_dst`, `rtl_send_hello`, and
+  the four `*_verify` functions plus `icmp_build_echo_request`/
+  `tcp_window`/`tcp_payload`/`udp_src_port` — nothing new), wrote a Python
+  citation-range checker (every `` `path:N` ``/`` `path:N`-`M` `` in
+  `README.md`+`docs/*.md`+`BACKLOG.md` against each source file's real line
+  count) instead of doing it by eye — 1252 citations, 0 out of range — and
+  a matching link-resolution checker — 76 links, 0 missing — both clean.
+  Re-read `docs/hardware.md` (untouched since 2026-09-27, the stalest doc)
+  and `docs/testing.md`/`docs/programs.md`/`docs/memory-map.md` end to end
+  against current source; all citations and claims still held exactly,
+  including the `settings_storage`/`settings_update` 0 KiB heap fields and
+  the shell command table's 40-command dispatch chain (re-diffed against
+  `run_command_impl`'s actual `if streq`/`starts_with` chain, line by
+  line — exact match, nothing added or removed since). With all of that
+  turning up nothing new, read every `net/*.mx` file end to end once more,
+  file by file, specifically looking at header/declaration comments rather
+  than function bodies (the angle not yet tried this way). Found that
+  `net/netcfg.mx`'s header comment for `g_our_mac`/`g_our_ip` (added
+  2026-08-23 to replace stale "M3 milestone" language, see that date's
+  entry above) opens "Our MAC is learned from the card at init (rtl_mac).
+  This initializer is QEMU's default SLIRP guest address" — but
+  `g_our_mac`'s actual initializer, one line below, is `[0; 6]` (all
+  zero); the SLIRP-guest-address fact (`10.0.2.15`) belongs to
+  `g_our_ip`'s initializer on the *next* line, not `g_our_mac`'s. Confirmed
+  `g_our_mac` really does stay all-zero until `net_dhcp()` runs: `rtl_mac`/
+  `net_set_mac` are called nowhere except `net/netapp.mx:55`-`56`, inside
+  `net_dhcp()` itself (not at `kmain()` boot), so `g_our_mac` is `[0; 6]`
+  both at boot and until the shell runs `net` or Settings' network page
+  reconnects. `docs/networking.md:167`-`168` already states the SLIRP-
+  address fact correctly, attributed to `g_our_ip` with the right line
+  citation (`net/netcfg.mx:18`) — only the source comment itself had the
+  misattribution, and it doesn't quote that comment, so this bug never
+  reached the docs. Done 2026-11-02: rewrote `net/netcfg.mx:10`-`16` to
+  state each global's real initializer and lifecycle separately (kept it
+  at exactly 7 lines, so `g_our_mac`/`g_our_ip` stay at `:17`/`:18` and
+  `net_handle_frame` stays at `:35`, matching every existing citation to
+  this file in `docs/networking.md` and `BACKLOG.md`); added the new
+  `net/netapp.mx:55`-`56` citation for where `g_our_mac` is actually set.
+  Comment-only change (`net/netcfg.mx`), no kernel logic touched — the
+  `let` initializers themselves are untouched. Re-ran both checker scripts
+  after the edit: 1252 citations (same count, since this was a comment
+  rewrite with no net citation added/removed in `docs/*.md`/`README.md`/
+  `BACKLOG.md` — the new citation is inside the fixed comment itself), 0
+  out of range; 76 links, 0 missing.
+
+### Follow-ups found but not actioned (still doc-shaped work, left for tomorrow)
+- [ ] None found today beyond the fix above — every other avenue checked
+  this pass (citation/link automation, `hardware.md`/`testing.md`/
+  `programs.md`/`memory-map.md` re-reads, the shell dispatch re-diff, the
+  unused-function re-scan) came back clean. If tomorrow's pass also comes
+  up empty after re-trying all of the above, the next untried angle is
+  reading every remaining `net/*.mx` file's *inline* (mid-function)
+  comments the same way this pass read header/declaration comments, since
+  that's the one category not yet swept this systematically.
