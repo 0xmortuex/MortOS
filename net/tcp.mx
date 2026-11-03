@@ -2,7 +2,7 @@
 //
 // This file is the format layer — build a segment, read its fields, check its
 // checksum. The connection state machine (handshake, sequence tracking,
-// teardown) lives in the demo, which drives these against a real peer; keeping
+// teardown) lives in net_httpd, which drives these against a real peer; keeping
 // the format pure makes it host-testable with golden segments.
 //
 // Header (20 bytes, no options): src port (2) | dst port (2) | seq (4) |

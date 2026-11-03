@@ -1983,3 +1983,44 @@ behavior, add a backlog item describing it and stop.
   reading every remaining `net/*.mx` file's *inline* (mid-function)
   comments the same way this pass read header/declaration comments, since
   that's the one category not yet swept this systematically.
+
+## Doc quality (found 2026-11-03, not yet done)
+- [x] `net/tcp.mx:5`'s header comment said the TCP connection state machine
+  "lives in the demo" — but there is no entity named "the demo" anywhere in
+  the source (confirmed by grepping `demo` across every `*.mx`/`*.py`/`*.md`
+  file; the only other hits are an unrelated `rtl8139.mx` comment about
+  promiscuous mode and the `crash` shell command's exception-reporting demo).
+  Found 2026-11-03 following up on the 2026-11-02 entry's suggested next
+  angle (every remaining `- [ ]` item re-confirmed as an out-of-scope
+  kernel/build.py/QEMU-test change; read every `net/*.mx` file end to end
+  looking at both header and inline comments). The state machine the comment
+  means actually lives in `net_httpd` (`net/netapp.mx:176`-`260`) — confirmed
+  it's the only caller of `tcp_build`/`tcp_checksum` outside `net/tcp.mx`
+  itself (grep for both names), and that no host-test script
+  (`test.py`/`test_fs.py`/`test_exec.py`/`test_gfx.py`) touches TCP/DHCP/DNS
+  at all — this stack has no Python-side harness, so "the demo" couldn't
+  have meant a test script either. `docs/networking.md:30` already
+  paraphrases this comment correctly ("that state machine lives inline in
+  `net_httpd`"), so the vague wording was source-comment-only and never
+  reached the docs. Done 2026-11-03: changed `net/tcp.mx:5` to name
+  `net_httpd` directly instead of "the demo"; kept the surrounding
+  paragraph's wrapping so lines 3-4 and 6 are untouched and every other line
+  in the file's header comment keeps its line number, matching the existing
+  `net/tcp.mx:4`-`6`/`:18`/`:38`/`:39`/`:55`/`:76` citations in
+  `docs/networking.md`. Comment-only change, no kernel/net logic touched.
+  Ran a citation-range checker (1111 `` `path:line` `` citations across
+  `README.md`+`docs/*.md`+`BACKLOG.md`, each checked against its target
+  file's real line count — one pre-existing false positive, a bare
+  `` `count.mx:17` `` mid-sentence cross-reference in `BACKLOG.md:1720`'s
+  prose rather than a real citation, not introduced by this pass) and a
+  link-resolution checker (66 markdown links across `README.md`+`docs/*.md`,
+  0 broken).
+
+### Follow-ups found but not actioned (still doc-shaped work, left for tomorrow)
+- [ ] The rest of `net/*.mx`'s inline (mid-function) comments are still
+  unswept beyond `net/tcp.mx`'s header — this pass only got through reading
+  every file once for header/declaration-level issues before finding the
+  `net/tcp.mx:5` fix above and stopping (one fix per day). `net/dhcp.mx`,
+  `net/dns.mx`, `net/rtl8139.mx`, `net/settings.mx`, and `net/hci_usb.mx`
+  (the largest, least-recently-touched files) are the best candidates for
+  tomorrow's inline-comment pass.
