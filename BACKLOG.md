@@ -2017,10 +2017,47 @@ behavior, add a backlog item describing it and stop.
   0 broken).
 
 ### Follow-ups found but not actioned (still doc-shaped work, left for tomorrow)
-- [ ] The rest of `net/*.mx`'s inline (mid-function) comments are still
+- [x] The rest of `net/*.mx`'s inline (mid-function) comments are still
   unswept beyond `net/tcp.mx`'s header — this pass only got through reading
   every file once for header/declaration-level issues before finding the
   `net/tcp.mx:5` fix above and stopping (one fix per day). `net/dhcp.mx`,
   `net/dns.mx`, `net/rtl8139.mx`, `net/settings.mx`, and `net/hci_usb.mx`
   (the largest, least-recently-touched files) are the best candidates for
-  tomorrow's inline-comment pass.
+  tomorrow's inline-comment pass. Done 2026-11-04: read `net/dhcp.mx` and
+  `net/dns.mx` end to end (both clean — no fix found) and found a real one
+  in `net/rtl8139.mx`; see the entry below. `net/settings.mx` and
+  `net/hci_usb.mx` are still unswept.
+
+## Doc quality (found 2026-11-04, not yet done)
+- [x] `net/rtl8139.mx:56`-`60`'s register-offset table (above `rtl_init`)
+  mislabeled I/O port `0x30` as a second, garbled copy of the TX descriptor
+  address register ("TSAD0reg 0x20+4*n") when the code at `net/rtl8139.mx:105`
+  actually writes `0x30` as `RBSTART`, the receive-ring start address (see
+  the "Point the card at our receive ring" comment one line above it). The
+  table also listed `0x3E ISR` (interrupt status) even though this driver
+  is polled, not interrupt-driven — a grep for `0x3E`/`ISR`/`IMR` across
+  `net/rtl8139.mx` turns up nothing but that one comment line — while
+  omitting two registers the driver does read/write: `CAPR` at `0x38`
+  (`net/rtl8139.mx:159`, returning a received packet to the card) and `RCR`
+  at `0x44` (`net/rtl8139.mx:111`, receive-mode configuration). Found while
+  sweeping `net/*.mx` inline comments per yesterday's follow-up note (read
+  `net/dhcp.mx` and `net/dns.mx` first; both already accurate, no fix
+  needed there). Done 2026-11-04: rewrote the four-entry table to list the
+  registers the driver actually touches (`IDR0..5`, `TSD0`, `TSAD0`,
+  `RBSTART`, `CR`, `CAPR`, `RCR`, `CONFIG1`), each checked against its real
+  `outb`/`outw`/`outl`/`inb` call site in this file. Kept the replacement at
+  exactly 5 lines (1 header + 4 table rows, same as before) so every
+  citation to code below it — `rtl_init` at `net/rtl8139.mx:63`,
+  `rtl_poll_rx` at `:128`, `rtl_transmit` at `:174`, `rtl_send_hello` at
+  `:196`, all cited from `docs/networking.md` — stayed correct without
+  needing a separate fix. Comment-only change, no kernel/net logic touched.
+  Ran a citation-range checker (698 `` `path:line` `` citations across
+  `README.md`+`docs/*.md`, 0 out of range) and a link-resolution checker (76
+  markdown links across the same files, 0 broken).
+
+### Follow-ups found but not actioned (still doc-shaped work, left for tomorrow)
+- [ ] `net/settings.mx` (623 lines, the largest file in `net/`) and
+  `net/hci_usb.mx` (216 lines) are the two `net/*.mx` files still unswept
+  for inline (mid-function) comment accuracy — this pass only got through
+  `net/dhcp.mx`, `net/dns.mx`, and (finding the fix above) `net/rtl8139.mx`
+  before stopping at one fix for the day.

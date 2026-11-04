@@ -54,10 +54,10 @@ fn pci_write32(bus: u8, slot: u8, func: u8, off: u8, val: u32) {
 }
 
 // ---- RTL8139 registers (offsets from the I/O base) ----
-// 0x00 IDR0..5  MAC address        0x37 CR    command
-// 0x20 TSAD0    TX start address   0x10 TSD0  TX status/command (0x10+4*n)
-// 0x30 TSAD0reg 0x20+4*n           0x52 CONFIG1
-// 0x3E ISR      interrupt status
+// 0x00 IDR0..5  MAC address (6 bytes)     0x37 CR      command
+// 0x10 TSD0     TX status/cmd (0x10+4*n)  0x38 CAPR    RX read pointer
+// 0x20 TSAD0    TX start addr (0x20+4*n)  0x44 RCR     RX configuration
+// 0x30 RBSTART  RX ring start address     0x52 CONFIG1 power config
 
 // Find the card by walking PCI bus 0, and bring it up for transmit.
 fn rtl_init() -> bool {
