@@ -2056,8 +2056,54 @@ behavior, add a backlog item describing it and stop.
   markdown links across the same files, 0 broken).
 
 ### Follow-ups found but not actioned (still doc-shaped work, left for tomorrow)
-- [ ] `net/settings.mx` (623 lines, the largest file in `net/`) and
+- [x] `net/settings.mx` (623 lines, the largest file in `net/`) and
   `net/hci_usb.mx` (216 lines) are the two `net/*.mx` files still unswept
   for inline (mid-function) comment accuracy — this pass only got through
   `net/dhcp.mx`, `net/dns.mx`, and (finding the fix above) `net/rtl8139.mx`
-  before stopping at one fix for the day.
+  before stopping at one fix for the day. Done 2026-11-05: read both files
+  in full. Both are clean — `net/settings.mx` has almost no inline
+  comments to begin with (just the header block and one note above
+  `settings_matches`), and every one of them already matches current
+  source (re-verified the `g_settings_view` 0-5 comment against
+  `settings_draw`'s actual dispatch, `net/settings.mx:444`-`449`, and the
+  `build.py:113`-`121` glue-loop citation in the header against current
+  `build.py`); `net/hci_usb.mx` has only two comments (the file header and
+  the `net/hci_usb.mx:205` "polling until IRQ support is added" line) and
+  both still hold. No fix found in either file.
+
+## Doc quality (found 2026-11-05, not yet done)
+- [x] With no inline-comment drift left in `net/settings.mx`/`net/hci_usb.mx`,
+  this pass widened the search to re-verifying every citation in
+  `docs/hardware.md` against current source (the same file-by-file
+  citation audit used on `docs/shell.md`/`docs/architecture.md`/
+  `docs/accounts.md`/`README.md` in the 2026-08-27/28/29 passes, which
+  explicitly never got to `docs/hardware.md` itself). Found one stale
+  citation, the same recurring +4-line drift: `docs/hardware.md:67` said
+  `usb_boot_init()` is called from `kmain()` at `kmain.mx:3616`, but the
+  real call site (confirmed by reading `kmain.mx:3620` directly, and by
+  grep — the only other call to `usb_boot_init` is its own `fn` line in
+  `net/hci_usb.mx:195`) is `kmain.mx:3620`. `README.md:50` already has the
+  correct `kmain.mx:3620` for the same call site (fixed in the 2026-08-29
+  pass), so this was `docs/hardware.md`'s own independent, never-audited
+  copy of the same fact drifting out of sync — not a re-regression of an
+  already-fixed line. Every other citation in `docs/hardware.md` was
+  checked directly against current source (`net/hardware.mx`,
+  `net/hci_usb.mx`, `net/audio.mx`, `net/settings.mx`, `kmain.mx`'s boot
+  sequence around `init_pit()`/`asm("sti")`) and all were already
+  accurate. Done 2026-11-05: fixed the one line (`3616` -> `3620`).
+  Doc-only change, no kernel logic touched. Ran a citation-range checker
+  (699 `` `path:line` `` citations across `README.md` + all `docs/*.md`,
+  0 out of range) and a link-resolution checker (76 markdown links, 0
+  broken).
+
+### Follow-ups found but not actioned (still doc-shaped work, left for tomorrow)
+- [ ] The file-by-file citation-drift audit (2026-08-27 through
+  2026-08-29, plus this pass's `docs/hardware.md` sweep) still hasn't
+  covered `docs/memory-map.md`, `docs/fs-design.md`, `docs/programs.md`,
+  or `docs/networking.md` — each needs the same direct
+  read-the-actual-cited-line verification (not just the range-check
+  script, which only catches a citation pointing past a file's end, not
+  one pointing at the wrong *existing* line). `docs/networking.md` is
+  probably the highest-value next target: it's the longest undotted doc
+  and cites five different `net/*.mx` files plus `kmain.mx`, so has the
+  most surface for exactly this kind of drift.

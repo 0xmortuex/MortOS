@@ -64,7 +64,7 @@ which calls `rtl_init` itself (see `docs/networking.md`).
 ## USB: UHCI host controller (`net/hci_usb.mx`)
 
 Boot-time only: `usb_boot_init()` runs once from `kmain()`
-(`kmain.mx:3616`), after the filesystem/account/shell setup but *before*
+(`kmain.mx:3620`), after the filesystem/account/shell setup but *before*
 `init_pit()` and `asm("sti")` — so the whole USB sequence below runs with
 interrupts off, purely by polling. The register-write comment at
 `net/hci_usb.mx:205` says so directly: `outw(g_usb_io + 0x04, 0); //
