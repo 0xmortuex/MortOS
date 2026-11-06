@@ -47,7 +47,7 @@ Both are shell commands dispatched in `run_command_impl`
   (`net/netapp.mx:108`-`113`, guarded by a `requested` flag so a later
   duplicate OFFER can't trigger a second REQUEST), finishing when an ACK
   lands — at which point `net_set_ip` records the leased address and prints
-  `DHCP: bound to <ip>` (`net/netapp.mx:96`-`100`). The dotted-decimal
+  `DHCP: bound to <ip>` (`net/netapp.mx:95`-`100`). The dotted-decimal
   formatting behind `<ip>` is its own small helper, `net_ip_to_str`
   (`net/netapp.mx:28`-`42`), which writes each octet via `u32_to_dec`
   (`net/http.mx:37`-`59` — the same decimal formatter `http_build_response`

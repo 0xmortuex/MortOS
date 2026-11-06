@@ -2097,7 +2097,7 @@ behavior, add a backlog item describing it and stop.
   broken).
 
 ### Follow-ups found but not actioned (still doc-shaped work, left for tomorrow)
-- [ ] The file-by-file citation-drift audit (2026-08-27 through
+- [x] The file-by-file citation-drift audit (2026-08-27 through
   2026-08-29, plus this pass's `docs/hardware.md` sweep) still hasn't
   covered `docs/memory-map.md`, `docs/fs-design.md`, `docs/programs.md`,
   or `docs/networking.md` — each needs the same direct
@@ -2106,4 +2106,40 @@ behavior, add a backlog item describing it and stop.
   one pointing at the wrong *existing* line). `docs/networking.md` is
   probably the highest-value next target: it's the longest undotted doc
   and cites five different `net/*.mx` files plus `kmain.mx`, so has the
-  most surface for exactly this kind of drift.
+  most surface for exactly this kind of drift. Done 2026-11-06
+  (`docs/networking.md` only, per this item's own recommendation to start
+  there — `docs/memory-map.md`, `docs/fs-design.md`, and
+  `docs/programs.md` are still unaudited by this method and split out as
+  a new follow-up below): read every one of `docs/networking.md`'s ~90
+  `file:line` citations directly against current source — `net/endian.mx`,
+  `net/checksum.mx`, `net/rtl8139.mx`, `net/eth.mx`, `net/arp.mx`,
+  `net/ip.mx`, `net/icmp.mx`, `net/udp.mx`, `net/dhcp.mx`, `net/dns.mx`,
+  `net/tcp.mx`, `net/http.mx`, `net/netcfg.mx`, `net/netapp.mx`, and the
+  `kmain.mx`/`net/settings.mx` call sites in the "What `net` and `httpd`
+  actually do" section — rather than just range-checking. Found one real
+  drift, the same off-by-one-line pattern as prior passes: the sentence
+  "at which point `net_set_ip` records the leased address and prints
+  `DHCP: bound to <ip>`" cited `net/netapp.mx:96`-`100`, but the
+  `net_set_ip(dhcp_yiaddr(dhcp))` call it names is actually on line 95 (the
+  range started one line after the call it was supposed to cover; lines
+  96-100 are only the subsequent `net_ip_to_str`/print calls). Caught by
+  cross-checking against `net/netcfg.mx:14`-`16`'s own header comment,
+  which independently cites the same call as `net/netapp.mx:95` and is
+  correct. Fixed by widening the range to `95`-`100`. Every other citation
+  in the file — including the detailed body-line citations inside
+  `net_dhcp`, `net_httpd`, `dhcp_find_option`, `dns_first_a`, and
+  `httpd_xmit` — matched current source exactly. Doc-only change, no
+  kernel/net logic touched. Re-ran the citation-range checker (698
+  `` `path:line` `` citations across `README.md` + all `docs/*.md`, 0 out
+  of range) and the link-resolution checker (88 markdown links, 0
+  broken).
+
+## Doc quality (found 2026-11-06, not yet done)
+- [ ] The file-by-file citation-drift audit still hasn't covered
+  `docs/memory-map.md`, `docs/fs-design.md`, or `docs/programs.md` —
+  `docs/networking.md`, `docs/hardware.md`, `docs/shell.md`,
+  `docs/architecture.md`, `docs/accounts.md`, and `README.md` are now
+  done (2026-08-27 through 2026-11-06); these three are what's left.
+  Each needs the same direct read-the-actual-cited-line verification,
+  not just the range-check script. Found 2026-11-06 while finishing the
+  `docs/networking.md` pass.
