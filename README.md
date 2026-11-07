@@ -24,7 +24,7 @@ That builds a bootable ISO and boots it in QEMU. Press `Enter` on **Terminal**, 
 
 ---
 
-**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and paints a **graphical desktop with multiple apps** — a Terminal, a Files manager, a Vex-styled browser, and a Settings control center, switched with `F1`-`F4` (or opened from an `F5` home launcher), all drawn to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — it **runs real, interactive compiled programs** (a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls), and it **speaks TCP/IP**: the [mortnet](https://github.com/0xmortuex/mortnet) stack is vendored into the kernel, so MORT OS gets its own IP over DHCP and **runs a web server**. Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the RTL8139 network driver, the shell — is written in Mort.
+**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots in QEMU (and the ISO is built to boot from a USB stick, though I have only tested QEMU), runs in 32-bit protected mode, and paints a **graphical desktop with multiple apps** — a Terminal, a Files manager, a Vex-styled browser, and a Settings control center, switched with `F1`-`F4` (or opened from an `F5` home launcher), all drawn to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — it **runs real, interactive compiled programs** (a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls), and it **speaks TCP/IP**: the [mortnet](https://github.com/0xmortuex/mortnet) stack is vendored into the kernel, so MORT OS gets its own IP over DHCP and **runs a web server**. Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the RTL8139 network driver, the shell — is written in Mort.
 
 ## Session &amp; power
 
@@ -59,7 +59,7 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.
 - **Runs real, interactive compiled programs** — `exec <file>` loads a Mort program (compiled to a flat binary) off the disk to `0x00A00000` and runs it. Programs share no symbols with the kernel; they call it through **`int 0x80` syscalls** (args passed via a fixed mailbox, since Mort's `asm()` takes no operands). A read-line syscall polls the keyboard directly, so programs can take input too — `exec ask.bin` asks your name and greets you. Sample programs are in [`programs/`](programs/). See [`docs/memory-map.md`](docs/memory-map.md) for every fixed physical address the kernel uses.
 - **Users, login, and file permissions** — two built-in accounts, `root` and `mortuex`, with djb2-hashed passwords (`acct_init`, `kmain.mx:2904`); the shell auto-logs-in as the normal user and starts in `/home/mortuex` (`login_default`/`cwd_init`, `kmain.mx:2910`/`2916`), with `whoami`, `su`, `sudo`, and `passwd` on top. Every MortFS entry carries an owner uid and Unix-style mode bits, enforced on entry creation, `write`, and `rm` by `can_write` (`kmain.mx:2978`). See [`docs/accounts.md`](docs/accounts.md) for the model, and for which bits are enforced versus only displayed.
-- **Boots for real** — a BIOS+UEFI hybrid ISO (Limine bootloader) you can write to a USB stick and boot on actual hardware, not just QEMU's `-kernel` shortcut
+- **A real bootable ISO** — a BIOS+UEFI hybrid ISO (Limine bootloader) built to be written to a USB stick, not just QEMU's `-kernel` shortcut (tested in QEMU only; not yet verified on physical hardware)
 - **Interrupt-driven keyboard** — a flat GDT, an IDT, remapped PICs; IRQ1 fires into a Mort handler (no polling)
 - **A shell** — command parsing, Backspace line editing, Shift-aware scancode→ASCII, and **command history** (Up/Down arrows, decoded from 0xE0 extended scancodes). See [`docs/shell.md`](docs/shell.md) for the full command reference.
 - **PIT timer on IRQ0** (~100 Hz) with an `uptime` command
@@ -240,7 +240,7 @@ the same ISO a third way — headless, with its own `-display none` (see
 [`docs/testing.md`](docs/testing.md)) — so this gap only affects a human
 running `python build.py run-iso` directly.
 
-Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) and it boots on real hardware.
+Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) and it is built to boot from it. Not yet verified on physical hardware (QEMU only so far), so treat that as untested.
 
 ## Roadmap
 
