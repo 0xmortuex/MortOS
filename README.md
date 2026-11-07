@@ -40,7 +40,7 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 
 ![MORT OS networking: net leases 10.0.2.15 over DHCP, httpd serves on port 80](docs/mortos-net.png)
 
-<sub>A web server, on an OS, over a TCP/IP stack — every layer in one language. Networking needs an RTL8139 NIC (QEMU emulates one; on real hardware, a ~$5 PCI card). The rest of the OS boots and runs on any machine.</sub>
+<sub>A web server, on an OS, over a TCP/IP stack — every layer in one language. Networking needs an RTL8139 NIC (QEMU emulates one). The rest of the OS does not need a network card.</sub>
 
 ![MORT OS graphical desktop](docs/desktop.png)
 
