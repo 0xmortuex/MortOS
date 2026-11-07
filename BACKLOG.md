@@ -2135,11 +2135,48 @@ behavior, add a backlog item describing it and stop.
   broken).
 
 ## Doc quality (found 2026-11-06, not yet done)
-- [ ] The file-by-file citation-drift audit still hasn't covered
+- [x] The file-by-file citation-drift audit still hasn't covered
   `docs/memory-map.md`, `docs/fs-design.md`, or `docs/programs.md` —
   `docs/networking.md`, `docs/hardware.md`, `docs/shell.md`,
   `docs/architecture.md`, `docs/accounts.md`, and `README.md` are now
   done (2026-08-27 through 2026-11-06); these three are what's left.
   Each needs the same direct read-the-actual-cited-line verification,
   not just the range-check script. Found 2026-11-06 while finishing the
-  `docs/networking.md` pass.
+  `docs/networking.md` pass. Partial progress 2026-11-07
+  (`docs/memory-map.md` only, per this item's own ordering —
+  `docs/fs-design.md` and `docs/programs.md` are still unaudited by this
+  method and split out as a new follow-up below): read every one of
+  `docs/memory-map.md`'s ~45 `` `file:line` `` citations directly against
+  current `kmain.mx`/`linker.ld`/`boot.s`/`net/settings.mx` source,
+  including the full kernel-heap section this doc added after its own
+  2026-08-30 audit (predating that pass, so never checked this way).
+  Found one real drift: the "`mem` has no caller wired to `heap_used`"
+  paragraph cited `mem` at `kmain.mx:2127` — that line is real (the shell
+  dispatch's `if streq(cmd, "mem")` condition) but, unlike `docs/shell.md`'s
+  own `mem` row (`kmain.mx:2127, kmain.mx:917` — both the dispatch line
+  *and* the function), this doc cited only the dispatch line while
+  describing what the function itself does ("reports total RAM from the
+  multiboot memory map"), so a reader following the citation lands on a
+  one-line `if` and not the 26-line function the sentence is actually
+  about. Confirmed `fn mem()` runs `kmain.mx:917`-`942` (closing brace at
+  942) by reading it in full. Fixed the citation to `kmain.mx:917-942`.
+  Every other citation checked out exactly, including ones that looked
+  likely to have drifted: the whole syscall-mailbox field table
+  (`kmain.mx:1779`-`1920`), `SECBUF`/`TABCACHE`/`FILEBUF` and all of their
+  usage-site citations (`kmain.mx:1698`-`2690`), the `kmalloc`/`kfree`/
+  `heap_used`/`heap_init` ranges (`kmain.mx:1031`-`1131`), `memtest`'s
+  allocation-size math (`kmain.mx:980-981`, `1066`, `1003-1004`), both
+  Settings heap-display citations (`net/settings.mx:233-234`, `320`,
+  `325-326` — both exact, byte offsets and all), the boot-stack note
+  (`boot.s:33-37`), and all three markdown links/anchors in this doc
+  (`programs.md#typing-a-long-answer-to-syscall-4-corrupts-the-row-below-it`,
+  `settings.md`, `architecture.md#the-desktop--window-manager`). Doc-only
+  change, no kernel logic touched.
+
+## Doc quality (found 2026-11-07, not yet done)
+- [ ] The citation-drift audit above covered `docs/memory-map.md`;
+  `docs/fs-design.md` and `docs/programs.md` are the two docs left in
+  the original 2026-11-06 list. Same method: read every `` `file:line` ``
+  citation's actual cited line against current source, not just a
+  range-check. Found 2026-11-07 while finishing the `docs/memory-map.md`
+  pass.
