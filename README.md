@@ -4,6 +4,26 @@
 ![arch](https://img.shields.io/badge/arch-x86%20(32--bit)-lightgrey)
 ![lang](https://img.shields.io/badge/kernel%20written%20in-Mort-8b5cf6)
 
+**I wrote a programming language, then wrote an operating system in it.** MORT OS is a graphical x86 desktop OS (terminal, file manager, browser, settings, a filesystem that survives reboots, and a TCP/IP stack that serves web pages) and every line above the boot stub is written in [Mort](https://github.com/0xmortuex/Mort), a language I built from scratch that compiles to C.
+
+<p align="center">
+  <img src="docs/mortos-demo.gif" alt="MORT OS booting to its home launcher, then a terminal session (whoami, uptime, write a file, ls, cat it back), then the Files, Vex and Settings apps" width="640" />
+  <br/><sub>A real boot in QEMU: launcher, terminal (write a file, read it back), Files, Vex, Settings.</sub>
+</p>
+
+### Try it
+
+You need [uv](https://docs.astral.sh/uv/), git and [QEMU](https://www.qemu.org/). No other setup: the build fetches the Mort compiler, the Limine bootloader and xorriso itself (a clean build takes about 10 seconds once uv's cache is warm).
+
+```bash
+git clone https://github.com/0xmortuex/MortOS && cd MortOS
+uv run --no-project --with ziglang --with cryptography python build.py run-iso
+```
+
+That builds a bootable ISO and boots it in QEMU. Press `Enter` on **Terminal**, then try `help`, `ls`, `write hello.txt hi` and `cat hello.txt`. `F1`-`F4` switch apps, `F5` is the home launcher, `F12` is the power menu. The same ISO also boots on real hardware (BIOS or UEFI).
+
+---
+
 **An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots on QEMU *and real hardware*, runs in 32-bit protected mode, and paints a **graphical desktop with multiple apps** — a Terminal, a Files manager, a Vex-styled browser, and a Settings control center, switched with `F1`-`F4` (or opened from an `F5` home launcher), all drawn to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — it **runs real, interactive compiled programs** (a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls), and it **speaks TCP/IP**: the [mortnet](https://github.com/0xmortuex/mortnet) stack is vendored into the kernel, so MORT OS gets its own IP over DHCP and **runs a web server**. Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the RTL8139 network driver, the shell — is written in Mort.
 
 ## Session &amp; power
@@ -70,7 +90,7 @@ Why does a hobby language compile to C instead of running on an interpreter? **B
 
 ## Build & run
 
-Requirements: Python 3, `pip install ziglang` (the C cross-compiler), and [QEMU](https://www.qemu.org/) for booting. The [Mort compiler](https://github.com/0xmortuex/Mort) is fetched automatically into `.mort/` on first build (or set `MORT_HOME`, or keep a `../Mort` checkout).
+Requirements: Python 3, `pip install ziglang cryptography` (`ziglang` is the C cross-compiler; the Mort compiler imports `cryptography`), and [QEMU](https://www.qemu.org/) for booting. The [Mort compiler](https://github.com/0xmortuex/Mort) is fetched automatically into `.mort/` on first build (or set `MORT_HOME`, or keep a `../Mort` checkout).
 
 ```bash
 python build.py check     # build + verify it's a valid 32-bit multiboot ELF
