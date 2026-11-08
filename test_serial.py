@@ -3,7 +3,8 @@
 QEMU's stdio pipe, asserts the boot banner arrives on serial, and drives the
 shell purely over serial, in lock-step (send a line, wait for the prompt).
 
-    python test_serial.py
+    python test_serial.py                  # build, then every session
+    python test_serial.py --no-build text  # reuse the build, chosen sessions
 
 Covers the text (-kernel) and graphical (Limine ISO) paths, the polled input
 paths (sudo password, a program's read-line syscall), PS/2 used alongside
@@ -34,6 +35,8 @@ import test as T  # noqa: E402  (QEMU harness)
 
 TMP = tempfile.mkdtemp(prefix="mortserial-test-")
 IMG = os.path.join(TMP, "serial.img")
+BIGIMG = os.path.join(TMP, "big.img")
+ESC = chr(27)
 
 BANNER = "MORT OS -- interrupt-driven"
 SESSION_LIMIT_S = 180            # watchdog: no QEMU outlives this
@@ -167,13 +170,6 @@ def session_text():
 
 def session_polled_input():
     """sudo and a program's read-line poll the hardware from inside a command."""
-    bins = []
-    for mx in build._program_sources():
-        out = os.path.join(build.BUILD, os.path.splitext(os.path.basename(mx))[0] + ".bin")
-        build.build_program(mx, out)
-        bins.append((out, os.path.basename(out)))
-    mkfs.make(IMG, bins=bins)
-
     h = boot_serial("-kernel", build.ELF, "-hda", IMG)
     try:
         if not boot_to_prompt(h, "polled"):
@@ -216,54 +212,164 @@ def free_port():
     return port
 
 
-def session_line_endings():
-    """CR and CRLF, over a raw TCP serial port (see the module docstring)."""
-    port = free_port()
-    h = spawn(["-serial", f"tcp:127.0.0.1:{port},server=on,wait=off",
-               "-monitor", "none", "-kernel", build.ELF])
-    got = bytearray()
+class TcpSerial:
+    """COM1 on a TCP socket, with the monitor on stdio for VGA and screendumps."""
 
-    def pump(sock):
+    def __init__(self, *args, rcvbuf=None):
+        port = free_port()
+        self.h = spawn(["-serial", f"tcp:127.0.0.1:{port},server=on,wait=off",
+                        "-monitor", "stdio", *args])
+        T._wait_first_prompt(self.h)
+        self.sock = socket.socket()
+        if rcvbuf is not None:       # a small window makes an idle reader stall QEMU
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+        self.sock.settimeout(10)
+        self.sock.connect(("127.0.0.1", port))
+        self.sock.settimeout(None)
+        self.got = bytearray()
+
+    def start_reading(self):
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
         while True:
             try:
-                chunk = sock.recv(4096)
+                chunk = self.sock.recv(65536)
             except OSError:
                 return
             if not chunk:
                 return
-            got.extend(chunk)
+            self.got.extend(chunk)
 
-    def seen():
-        return bytes(got).decode("ascii", "replace")
+    def seen(self, start=0):
+        return bytes(self.got).decode("ascii", "replace")[start:]
 
-    def until(needle, start):
-        deadline = time.monotonic() + 30
-        while needle not in seen()[start:] and time.monotonic() < deadline:
+    def until(self, needle, start=0, timeout_s=30):
+        deadline = time.monotonic() + timeout_s
+        while needle not in self.seen(start) and time.monotonic() < deadline:
             time.sleep(0.05)
-        return needle in seen()[start:]
+        return needle in self.seen(start)
 
-    def typed(sock, data):
+    def typed(self, data):
         for byte in data.encode("ascii"):
-            sock.sendall(bytes((byte,)))
+            self.sock.sendall(bytes((byte,)))
             time.sleep(BYTE_GAP_S)
 
+    def close(self):
+        self.h.watchdog.cancel()
+        self.sock.close()
+        T.shutdown(self.h)
+
+
+def session_line_endings():
+    """CR and CRLF over TCP (see the module docstring), and both console outputs."""
+    t = TcpSerial("-kernel", build.ELF)
     try:
-        time.sleep(5)                # let the kernel reach its prompt first
-        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-            sock.settimeout(None)
-            threading.Thread(target=pump, args=(sock,), daemon=True).start()
-            typed(sock, "echo ready\r")   # output before we connected is gone
-            if not check("endings: CR ends a line", until("\r\nready\r\n", 0), repr(seen())):
-                return
-            until("$ ", seen().index("ready\r\n"))
-            start = len(seen())
-            typed(sock, "echo crlf-ok\r\n")
-            until("\r\ncrlf-ok\r\n", start)
-            time.sleep(1)            # room for a wrong second prompt to show up
-            out = seen()[start:]
-            check("endings: CRLF is one Enter, not two", out.count("$ ") == 1, repr(out))
+        check("endings: VGA reaches the prompt", T.wait_for(t.h, "$ ", timeout_s=30),
+              T.screen_text(t.h))
+        t.start_reading()
+        t.typed("echo ready-both\r")
+        if not check("endings: CR ends a line on serial", t.until("\r\nready-both\r\n"), repr(t.seen())):
+            return
+        check("endings: the same output is on VGA", T.wait_for(t.h, "ready-both", timeout_s=10),
+              T.screen_text(t.h))
+        t.until("$ ", t.seen().index("ready-both\r\n"))
+        start = len(t.seen())
+        t.typed("echo crlf-ok\r\n")
+        t.until("\r\ncrlf-ok\r\n", start)
+        time.sleep(1)                # room for a wrong second prompt to show up
+        out = t.seen(start)
+        check("endings: CRLF is one Enter, not two", out.count("$ ") == 1, repr(out))
+    finally:
+        t.close()
+
+
+def session_escape():
+    h = boot_serial("-kernel", build.ELF)
+    try:
+        if not boot_to_prompt(h, "escape"):
+            return
+        out = run(h, ESC + "[A" + ESC + "OB" + ESC + "[1;5Cecho esc-ok")
+        check("escape: CSI and SS3 sequences are ignored",
+              "\r\nesc-ok\r\n" in out and "[A" not in out and "OB" not in out and "unknown" not in out,
+              repr(out))
     finally:
         stop(h)
+
+
+def session_burst():
+    """Unpaced and busy-time input: what a scripted boot test really sends."""
+    h = boot_serial("-kernel", build.ELF, "-hda", IMG)
+    try:
+        if not boot_to_prompt(h, "burst"):
+            return
+        mark = h.out_len()
+        h.proc.stdin.write(b"echo burst-0123456789abcdef\n")     # one 28-byte write
+        h.proc.stdin.flush()
+        check("burst: one 28-byte write arrives whole",
+              wait_text(h, "\r\nburst-0123456789abcdef\r\n", mark, timeout_s=10), repr(text(h, mark)))
+        wait_until(h, at_prompt, mark, timeout_s=5)
+
+        name = "x" * 37
+        mark = h.out_len()
+        send(h, "exec /bin/ask.bin\n" + name + "\n")     # no wait for its prompt
+        check("burst: paced input during exec all arrives",
+              wait_text(h, "hello, " + name, mark, timeout_s=15), repr(text(h, mark)))
+    finally:
+        stop(h)
+
+
+def serial_counters(t):
+    """Run `serial` and return its three counters."""
+    start = len(t.seen())
+    t.typed("serial\r")
+    if not t.until("tx-dropped", start, timeout_s=15):
+        return None
+    t.until("$ ", start)
+    found = re.search(r"overrun (\d+) ring-lost (\d+) tx-dropped (\d+)", t.seen(start))
+    return tuple(int(n) for n in found.groups()) if found else None
+
+
+def session_overflow():
+    """More input than the ring holds, while a long command keeps the shell busy."""
+    t = TcpSerial("-kernel", build.ELF, "-hda", BIGIMG)
+    try:
+        T.wait_for(t.h, "$ ", timeout_s=30)
+        t.start_reading()
+        t.typed("cat /big.txt\r")
+        t.sock.sendall(b"x" * 4000 + b"\r")
+        check("overflow: output reached serial", t.until("BIGEND", timeout_s=60), t.seen()[-200:])
+        time.sleep(3)                # the leftover input runs as one bad command
+        t.typed("\r")
+        counters = serial_counters(t)
+        check("overflow: lost input is counted", counters is not None and counters[1] > 0, repr(counters))
+        start = len(t.seen())
+        t.typed("echo overflow-alive\r")
+        check("overflow: shell still answers", t.until("\r\noverflow-alive\r\n", start), t.seen(start))
+    finally:
+        t.close()
+
+
+def session_stall():
+    """A reader that stops reading must not cost us the serial console."""
+    t = TcpSerial("-kernel", build.ELF, "-hda", BIGIMG, rcvbuf=2048)
+    try:
+        T.wait_for(t.h, "$ ", timeout_s=30)
+        for n in range(4):           # nothing reads the socket: 240 KB backs up
+            t.typed("cat /big.txt\r")
+            t.typed(f"echo stalled-{n}\r")
+            check(f"stall: shell runs with the reader stalled ({n})",
+                  T.wait_for(t.h, f"stalled-{n}", timeout_s=40), T.screen_text(t.h))
+        t.start_reading()
+        time.sleep(3)
+        start = len(t.seen())
+        t.typed("echo stall-recovered\r")
+        check("stall: serial input and output recover",
+              t.until("\r\nstall-recovered\r\n", start, timeout_s=20), t.seen(start)[-200:])
+        counters = serial_counters(t)
+        check("stall: dropped output is counted", counters is not None and counters[2] > 0, repr(counters))
+    finally:
+        t.close()
 
 
 def session_ps2_alongside():
@@ -291,19 +397,185 @@ def session_ps2_alongside():
         stop(h)
 
 
+def screendump(sendcmd, name):
+    """A real QEMU screendump; returns (width, height, RGB bytes)."""
+    path = os.path.join(TMP, name).replace(os.sep, "/")
+    sendcmd(f"screendump {path}")
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        if os.path.exists(path) and os.path.getsize(path) > 100000:
+            break
+    time.sleep(0.5)              # the header is written before the pixels
+    return parse_ppm(path)
+
+
+def parse_ppm(path):
+    with open(path, "rb") as fh:
+        data = fh.read()
+    idx, fields = 2, []
+    while len(fields) < 3:
+        while data[idx] in b" \t\n\r":
+            idx += 1
+        start = idx
+        while data[idx] not in b" \t\n\r":
+            idx += 1
+        fields.append(int(data[start:idx]))
+    return fields[0], fields[1], data[idx + 1:]
+
+
+def region_diff(a, b, x0, y0, x1, y1):
+    """How many pixels differ between two dumps inside a rectangle."""
+    w = a[0]
+    return sum(1 for y in range(y0, y1) for x in range(x0, x1)
+               if a[2][(y * w + x) * 3:(y * w + x) * 3 + 3] != b[2][(y * w + x) * 3:(y * w + x) * 3 + 3])
+
+
+def is_surface(dump):
+    """Limine is dark; the Borehole sky at this point is light."""
+    w, _, px = dump
+    o = (40 * w + 500) * 3
+    return px[o] + px[o + 1] + px[o + 2] > 300
+
+
+def iso_monitor_boot(*args):
+    """ISO on a monitor-on-stdio QEMU, up to a settled Surface screen."""
+    h = spawn(["-monitor", "stdio", "-cdrom", build.ISO, *args])
+    T._wait_first_prompt(h)
+    mon = lambda cmd: T._monitor(h, cmd)
+    deadline = time.monotonic() + 60
+    n = 0
+    while time.monotonic() < deadline:
+        n += 1
+        time.sleep(1)
+        if is_surface(screendump(mon, f"probe{h.proc.pid}-{n}.ppm")):
+            break
+    time.sleep(4)                # let the reveal finish
+    return h, mon
+
+
 def session_iso():
-    """Limine boots to the graphical launcher; serial must still reach the shell."""
-    h = boot_serial("-cdrom", build.ISO)
+    """Limine boots to the Surface screen; serial must still reach the shell."""
+    port = free_port()
+    h = spawn(["-serial", "stdio", "-monitor", f"tcp:127.0.0.1:{port},server=on,wait=off",
+               "-cdrom", build.ISO])
     try:
         if not boot_to_prompt(h, "iso"):
             return
-        mark = h.out_len()
-        send(h, "echo iso-$USER\n")
-        check("iso: serial command runs from the launcher screen",
-              wait_text(h, "\r\niso-mortuex\r\n", mark), repr(text(h, mark)))
-        wait_until(h, at_prompt, mark)
-        out = run(h, "uptime")
-        check("iso: shell keeps answering", re.search(r"uptime: \d+ s", out) is not None, repr(out))
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+            mon = lambda cmd: sock.sendall(cmd.encode("ascii") + b"\n")
+            mark = h.out_len()
+            send(h, "echo iso-$USER\n")
+            check("iso: serial command runs from the Surface screen",
+                  wait_text(h, "\r\niso-mortuex\r\n", mark), repr(text(h, mark)))
+            wait_until(h, at_prompt, mark)
+            time.sleep(1)
+            before = screendump(mon, f"iso-before-{h.proc.pid}.ppm")
+            out = run(h, "echo " + "z" * 40)
+            check("iso: shell keeps answering", ("z" * 40 + "\r\n") in out, repr(out))
+            time.sleep(1)
+            after = screendump(mon, f"iso-after-{h.proc.pid}.ppm")
+            check("iso: the framebuffer console drew it too",
+                  region_diff(before, after, 0, 60, 1024, 700) > 200,
+                  region_diff(before, after, 0, 60, 1024, 700))
+    finally:
+        stop(h)
+
+
+def session_iso_no_uart():
+    """-serial none must be visible on the Surface screen, not only in a log."""
+    h, mon = iso_monitor_boot("-serial", "none")
+    try:
+        absent = screendump(mon, f"nouart-{h.proc.pid}.ppm")
+    finally:
+        h.watchdog.cancel()
+        T.shutdown(h)
+    log = os.path.join(TMP, "present.log").replace(os.sep, "/")
+    h, mon = iso_monitor_boot("-serial", f"file:{log}")
+    try:
+        present = screendump(mon, f"uart-{h.proc.pid}.ppm")
+    finally:
+        h.watchdog.cancel()
+        T.shutdown(h)
+    changed = region_diff(absent, present, 720, 8, 920, 30)
+    check("iso-no-uart: Surface shows the report only without a UART", changed > 100, changed)
+
+
+def session_iso_junk():
+    """NUL and 0xFF type nothing, so they must not leave the Surface screen."""
+    port = free_port()
+    h = spawn(["-serial", "stdio", "-monitor", f"tcp:127.0.0.1:{port},server=on,wait=off",
+               "-cdrom", build.ISO])
+    try:
+        if not boot_to_prompt(h, "junk"):
+            return
+        time.sleep(6)            # the reveal must have finished
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+            mon = lambda cmd: sock.sendall(cmd.encode("ascii") + b"\n")
+            before = screendump(mon, f"junk-a-{h.proc.pid}.ppm")
+            mark = h.out_len()
+            for byte in (0, 255, 0, 255):
+                h.proc.stdin.write(bytes((byte,)))
+                h.proc.stdin.flush()
+                time.sleep(0.05)
+            time.sleep(2)
+            after = screendump(mon, f"junk-b-{h.proc.pid}.ppm")
+            changed = region_diff(before, after, 60, 180, 1000, 760)
+            check("iso-junk: Surface screen untouched", changed < 50, changed)
+            check("iso-junk: nothing echoed", text(h, mark) == "", repr(text(h, mark)))
+            mark = h.out_len()
+            send(h, "echo junk-then-ok\n")
+            check("iso-junk: real input still reaches the shell",
+                  wait_text(h, "\r\njunk-then-ok\r\n", mark), repr(text(h, mark)))
+    finally:
+        stop(h)
+
+
+def session_iso_lock():
+    """Input typed at the lock screen is discarded, never run after unlock."""
+    port = free_port()
+    h = spawn(["-serial", "stdio", "-monitor", f"tcp:127.0.0.1:{port},server=on,wait=off",
+               "-cdrom", build.ISO])
+    try:
+        if not boot_to_prompt(h, "lock"):
+            return
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+            mark = h.out_len()
+            send(h, "lock\n")
+            time.sleep(3)
+            mark = h.out_len()
+            send(h, "mort\n")
+            time.sleep(1)
+            sendkeys(sock, "mort")   # the real unlock, on the keyboard
+            time.sleep(4)
+            typed_after = text(h, mark)
+            check("lock: serial bytes are discarded, not echoed or run",
+                  "mort" not in typed_after and "unknown" not in typed_after, repr(typed_after))
+            out = run(h, "echo after-unlock")
+            check("lock: shell works after a keyboard unlock",
+                  "\r\nafter-unlock\r\n" in out and "mort" not in out, repr(out))
+    finally:
+        stop(h)
+
+
+def session_iso_fault():
+    """Exception and shutdown screens bypass put_cell_at; serial must see them."""
+    h = boot_serial("-cdrom", build.ISO)
+    try:
+        if not boot_to_prompt(h, "fault"):
+            return
+        send(h, "crash\n")
+        check("fault: exception report on serial",
+              wait_text(h, "*** CPU EXCEPTION #6 -- HALTED ***", timeout_s=15), repr(text(h)[-200:]))
+    finally:
+        stop(h)
+    h = boot_serial("-cdrom", build.ISO)
+    try:
+        if not boot_to_prompt(h, "capped"):
+            return
+        send(h, "shutdown\n")
+        check("capped: shutdown notice on serial",
+              wait_text(h, "It is now safe to turn off your computer.", timeout_s=15), repr(text(h)[-200:]))
     finally:
         stop(h)
 
@@ -325,13 +597,41 @@ def session_no_uart():
         T.shutdown(h)
 
 
+SESSIONS = {f.__name__.replace("session_", ""): f for f in (
+    session_text, session_line_endings, session_escape, session_burst,
+    session_polled_input, session_ps2_alongside, session_overflow, session_stall,
+    session_no_uart, session_iso, session_iso_no_uart, session_iso_junk,
+    session_iso_lock, session_iso_fault)}
+
+
+def prepare_images(compile_programs):
+    bins = []
+    for mx in build._program_sources():
+        out = os.path.join(build.BUILD, os.path.splitext(os.path.basename(mx))[0] + ".bin")
+        if compile_programs:
+            build.build_program(mx, out)
+        bins.append((out, os.path.basename(out)))
+    mkfs.make(IMG, bins=bins)
+    big = os.path.join(TMP, "big.txt")
+    with open(big, "w", newline="\n") as fh:
+        fh.write(("0123456789" * 6 + "\n") * 980 + "BIGEND\n")
+    mkfs.make(BIGIMG, adds=[(big, "big.txt")])
+
+
 def main():
     if not build._find_qemu():
         sys.exit("qemu-system-i386 not found")
-    build.iso()                  # builds kernel.elf too
-    for session in (session_text, session_line_endings, session_polled_input,
-                    session_ps2_alongside, session_iso, session_no_uart):
-        session()
+    args = sys.argv[1:]
+    no_build = "--no-build" in args
+    names = [a for a in args if a != "--no-build"] or list(SESSIONS)
+    unknown = [n for n in names if n not in SESSIONS]
+    if unknown:
+        sys.exit(f"unknown session(s) {unknown}; choose from {list(SESSIONS)}")
+    if not no_build:
+        build.iso()              # builds kernel.elf too
+    prepare_images(compile_programs=not no_build)
+    for name in names:
+        SESSIONS[name]()
     print(f"\n{passed} passed, {failed} failed")
     return 1 if failed else 0
 
