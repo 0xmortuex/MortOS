@@ -108,7 +108,6 @@ writable and removable by you.
 | `whoami` — name and uid | `kmain.mx:2356`-`2365` |
 | `$USER`, and `$HOME` as `/home/<user>` | `env_get`, `kmain.mx:1963`-`1970` |
 | `ls`'s trailing `uid N` column | `kmain.mx:2212`-`2213` |
-| The home launcher's `welcome, <user>` line | `draw_launcher`, `kmain.mx:3342`-`3345` |
 | The lock screen's password check | `lock_ok`, `kmain.mx:3216`-`3223` |
 
 The lock screen is worth calling out: `lock_ok` hashes what you typed and

@@ -42,14 +42,14 @@ BIOS/UEFI -> Limine (ISO path) or QEMU -kernel (Multiboot loader)
              mort_kmain(mbinfo)            kmain.mx:3593
 ```
 
-`kmain` runs these in order: `heap_init`, `fb_init`, `draw_desktop` (if graphics), banner,
+`kmain` runs these in order: `heap_init`, `fb_init`, `ui_init` (if graphics), banner,
 `fs_init`, `fs_ensure_layout`, `fs_populate_bin`, `acct_init`, `ensure_home`, `login_default`,
-`cwd_init`, `run_script(1)`, prompt, `usb_boot_init`, `init_pit`, `open_launcher` (if graphics),
+`cwd_init`, `run_script(1)`, prompt, `usb_boot_init`, `init_pit`, `ui_start` (if graphics),
 `sti`, then `while true { asm("hlt"); }`.
 
 | Path | Command | Display | First screen |
 |---|---|---|---|
-| Limine ISO | `build.py run-iso` | 1024x768x32 framebuffer | Home launcher. Enter on Terminal gives a shell |
+| Limine ISO | `build.py run-iso` | 1024x768x32 framebuffer | Borehole start screen (`docs/borehole-concept.md`). Enter gives a shell |
 | QEMU `-kernel` | `build.py run`, test harnesses | VGA text 80x25 (QEMU ignores the graphics request) | Shell prompt |
 
 ## Execution model
@@ -102,7 +102,7 @@ address space and one stack.
 | MortFS v2 | `kmain.mx:1244-1760`, host `mkfs.py` | 64 entries, 64 KiB extents, directories, modes, no reclaim |
 | Accounts | `kmain.mx:2852-3009` | Two in-memory accounts; see `docs/accounts.md` |
 | Programs | `exec_file` `kmain.mx:1896`, `programs/` | Flat binaries; see `docs/programs.md` |
-| Desktop | `kmain.mx:2640-3480`, `net/settings.mx` | Terminal, Files, Vex, Settings, launcher, power overlays |
+| Interface | `ui/borehole.mx`, `docs/borehole-concept.md` | Borehole: surface, shell gallery, Objects, core sample, Machine, Terminate, lock, sleep |
 | Networking | `net/*.mx`, bridge in `net/netapp.mx` | RTL8139, ARP reply, IPv4, ICMP echo, UDP, DHCP, TCP server, HTTP |
 | PCI, USB, audio | `net/hardware.mx`, `net/hci_usb.mx`, `net/audio.mx` | `docs/hardware.md` |
 
@@ -163,7 +163,7 @@ uv run --no-project --with ziglang --with cryptography python build.py run-iso
 | `python test.py smoke` | Boot and shell basics |
 | `python test_fs.py` | Disk stack and persistence |
 | `python test_exec.py` | Compiled programs |
-| `python test_gfx.py` | ISO desktop by screendump |
+| `python test_gfx.py` | ISO Borehole interface by screendump |
 
 The harnesses type through the QEMU monitor (`sendkey`) and read VGA memory (`memsave`), or
 screendumps in `test_gfx.py`. They do not use serial: the kernel has no serial driver.

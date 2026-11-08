@@ -1,5 +1,7 @@
 # MORT OS — Architecture
 
+> `kmain.mx:NNN` citations below predate the Borehole remake, which removed about 735 lines; function names remain accurate.
+
 How the pieces fit together, from power-on to the running shell. This is a
 map for navigating the source, not a spec — where behavior is detailed
 elsewhere ([`docs/memory-map.md`](memory-map.md), [`docs/shell.md`](shell.md),
@@ -53,11 +55,10 @@ turns the Mort source into the multiboot ELF that the boot chain loads:
    `build()` first reads every `net/*.mx` file (sorted, so output is
    deterministic) and prepends that combined source to `kmain.mx` before
    handing the whole thing to `mortc.compile_to_c(..., freestanding=True)`
-   as **one translation unit** (`build.py:109-122`). This is the same glue
-   loop `net/settings.mx`'s header comment points at to explain why an
-   unrelated Settings-app file lives under `net/`. Mort emits forward
-   prototypes, so it doesn't matter that `net/*.mx` is compiled before the
-   `kmain.mx` code that calls into it.
+   as **one translation unit** (`build.py:109-122`). `ui/*.mx`, the Borehole
+   interface, joins through the same loop. Mort emits forward prototypes, so
+   it doesn't matter that these files are compiled before the `kmain.mx` code
+   that calls into them.
 2. **Cross-compile to 32-bit x86.** The generated C is compiled for
    `x86-freestanding-none` (`build.py:51`) via Zig's C compiler
    (`_zig()`, `build.py:96-103` — the reason `pip install ziglang` is a
@@ -110,7 +111,7 @@ accounts (`root` and `mortuex`) and auto-log-in as the latter — see
 multiboot module if one was passed in, and the prompt is drawn. Only after
 all of that does `kmain` call `usb_boot_init()` (a one-shot, polling-only
 UHCI enumeration — see [`docs/hardware.md`](hardware.md)), `init_pit()`
-(arms the ~100 Hz PIT on IRQ0), optionally `open_launcher()` on the graphics
+(arms the ~100 Hz PIT on IRQ0), optionally `ui_start()` on the graphics
 path, and
 finally `asm("sti")` to enable interrupts — everything before that line runs
 with interrupts off. The function ends in `while true { asm("hlt"); }`
@@ -123,30 +124,18 @@ There is no scheduler, no task list, and no preemption anywhere in this
 codebase — the repo has exactly one flow of control besides interrupts.
 Shell and UI state lives in global variables at the top of `kmain.mx`
 (e.g. `g_row` at `kmain.mx:10`, `g_uid` at `kmain.mx:25`, `g_gfx` at
-`kmain.mx:42`, `g_app` at `kmain.mx:49`), and four interrupt sources drive
+`kmain.mx:42`), and four interrupt sources drive
 all behavior after `sti`:
 
 - **IRQ1 (keyboard)** → `keyboard_isr` (`idt.s:137-145`) → `mort_on_key` →
-  `on_key()` (`kmain.mx:3495`), which reads the scancode and either routes
-  it to an open overlay (`g_overlay != 0`), an app-switch hotkey (F1-F5,
-  graphics only, `kmain.mx:3507-3512`), the active app's own handler when
-  `g_app` isn't the terminal (`kmain.mx:3514-3522`), or the terminal/shell
-  scancode-to-ASCII path.
+  `on_key()` (`kmain.mx:3495`), which reads the scancode and, in graphics mode,
+  offers it to `ui_on_key()` first; keys the interface doesn't take reach the
+  shell's scancode-to-ASCII path.
 - **IRQ0 (timer, ~100 Hz)** → `timer_isr` (`idt.s:147-155`) → `mort_on_tick` →
   `on_tick()` (`kmain.mx:2617-2624`), which bumps `g_ticks` (backs the
-  `uptime` command) and, in graphics mode, redraws the top-bar clock once a
-  second (`(g_ticks % 100) == 0` calling `draw_clock()`, `kmain.mx:2619-2622`)
-  — so the clock advances on its own, with no user action or app redraw
-  needed. `draw_clock()` itself no-ops while an overlay is open
-  (`g_overlay != 0`, `kmain.mx:3056-3058`), so this per-second tick never
-  paints over a full-screen power/lock/sleep/launcher screen; see
-  [`docs/settings.md`](settings.md) for the RTC read `draw_clock()` does and
-  its own caveats. That guard also makes `restore_desktop()`'s own explicit
-  `draw_clock()` call (`kmain.mx:3163-3168`) redundant in the common case:
-  `restore_desktop()` calls `switch_app(g_app)` first, whose `draw_topbar()`
-  (`kmain.mx:2843-2845`) already redraws the clock unconditionally, so the
-  line right after it repaints the same 108x24 region a second time —
-  harmless, just an extra draw.
+  `uptime` command) and, in graphics mode, calls `ui_tick()`, which drives
+  the interface's motion and clock; see [The Borehole interface](#the-borehole-interface)
+  and [`docs/settings.md`](settings.md) for the RTC read's caveats.
 - **`int 0x80` (syscall)** → `syscall_isr` (`idt.s:170-174`) → `on_syscall()`
   (`kmain.mx:1864`), described below.
 - **CPU exceptions (vectors 0-31)** → each vector gets its own stub
@@ -155,10 +144,9 @@ all behavior after `sti`:
   `on_exception(vec)` (`kmain.mx:2629-2635`), then `hlt`s in an infinite
   loop. Unlike the three sources above, this path never returns — no
   `iret`, no end-of-interrupt — so a fault is unrecoverable; only a reboot
-  clears it. `on_exception` prints the raw vector number through the same
-  `put_cell_at` (`kmain.mx:505-517`) funnel as everything else (so it's
-  visible in both VGA text and framebuffer graphics mode), not a
-  per-vector fault name: the `crash` shell command's `ud2` (`kmain.mx:2573`,
+  clears it. `on_exception` reports the raw vector number on the VGA console's last
+  row, or as a red band across the bottom of the screen in graphics mode
+  (`ui_fault`, whatever scene is up), not a per-vector fault name: the `crash` shell command's `ud2` (`kmain.mx:2573`,
   vector 6, `#UD`) prints `*** CPU EXCEPTION #6 -- HALTED ***`, not
   "Invalid Opcode".
 
@@ -195,16 +183,16 @@ anywhere in between — the only two `sti`/`cli` calls in the whole kernel are
 - **`net` freezes the clock and the keyboard for its whole DHCP wait.**
   `net_dhcp()`'s receive-poll loop (`net/netapp.mx:77`,
   `while spins < 30000000`) runs with IF cleared throughout, so IRQ0 can't
-  tick the top-bar clock and IRQ1 can't call `on_key()` again until the loop
+  tick the clock and IRQ1 can't call `on_key()` again until the loop
   ends and the Enter keystroke's original call finally returns — any key
-  pressed in that window isn't serviced until then. Settings' Ethernet page
-  "Connect" action calls the same `net_dhcp()` from its own key handler
-  (`net/settings.mx:541`), so the GUI freezes the same way.
+  pressed in that window isn't serviced until then. The Machine stratum's
+  "Connect with DHCP" row calls the same `net_dhcp()` from its own key
+  handler, so the interface freezes the same way.
 - **`httpd` never gives the keyboard back.** `net_httpd()`'s serve loop
   (`net/netapp.mx:193`-`259`) is an unconditional `while true` with no exit,
   so the `on_key()` call that started it never returns — `keyboard_isr`
   never reaches its EOI or `iret`, and IF stays cleared for good. From then
-  on, no IRQ1 (keystrokes — including `F12`'s power menu, or typing
+  on, no IRQ1 (keystrokes — including Esc back to the surface, or typing
   `reboot`) and no IRQ0 (the clock) can fire again. `net_httpd`'s own
   printed `"(reboot to stop)"` (`net/netapp.mx:182`-`187`, see
   [`docs/networking.md`](networking.md)) therefore means a physical reset
@@ -223,28 +211,23 @@ main shell prompt (`on_key`, `kmain.mx:3580-3581`), the blocking poll-based
 line reader used for `su`/`passwd`/masked prompts (`kread_line`,
 `kmain.mx:2935`, `ch != 0` at `kmain.mx:2961`), the program `read-line`
 syscall (`read_line`, `kmain.mx:1810`, `ch != 0` at `kmain.mx:1843`), and
-the lock screen (`lock_on_key`, `kmain.mx:3449`, `ch != 0` at
-`kmain.mx:3473`). There is no Caps Lock state anywhere in the source — only
+the lock screen (`ui_lock_key`, `ui/borehole.mx`). There is no Caps Lock state anywhere in the source — only
 the tracked Shift flag (`g_shift` or a local `shift`) selects the
 upper/shifted row, so `scancode_to_ascii`'s own two-value `shift: bool`
 parameter is the entire case-toggle mechanism.
 
 Arrow keys are a separate case worth tracing, since they arrive as a
 two-byte `0xE0`-prefixed sequence rather than the single scancodes
-`scancode_to_ascii` maps. The desktop's list/menu contexts explicitly check
-for that prefix to drive navigation — Files (`files_on_key`,
-`kmain.mx:2766`), the home launcher (`launcher_on_key`, `kmain.mx:3377`),
-the power menu (`power_on_key`, `kmain.mx:3422`), and Settings' sidebar and
-search results (`net/settings.mx:608`, `net/settings.mx:611-613`), all
-using the raw scancodes `72` (Up), `75`/`77` (Left/Right), `80` (Down) once
-the prefix is seen — as does the shell prompt's own history recall
+`scancode_to_ascii` maps. `ui_on_key()` tracks that prefix for every
+non-shell scene, which use the raw scancodes `72` (Up), `80` (Down), and
+`73`/`81` (PgUp/PgDn, in the core sample) once it is seen — as does the shell
+prompt's own history recall
 (`kmain.mx:3524`, see
 [`docs/shell.md`](shell.md)'s Line editing section). The three plain
 text-entry readers do not: `kread_line` and `read_line` drop the prefix
 only incidentally, since `224` fails their own `sc < 128` gate
 (`kmain.mx:2959`, `kmain.mx:1841`) before ever reaching
-`scancode_to_ascii`; `lock_on_key` drops it explicitly (`if sc == 224 {
-return; }`, `kmain.mx:3452`). Either way, the arrow key's second byte (`72`/
+`scancode_to_ascii`; `ui_lock_key` ignores it explicitly (`if ext`). Either way, the arrow key's second byte (`72`/
 `75`/`77`/`80`) also maps to `0` in `scancode_to_ascii` — none of those
 values fall inside any of its mapped ranges — so pressing an arrow key
 while typing a password (`su`/`passwd`), answering a program's `read-line`
@@ -256,183 +239,59 @@ Backspace.
 Only one compiled program can run at a time, synchronously, from inside a
 shell command — there is no concept of a background process.
 
-## The desktop / window manager
+## The Borehole interface
 
-`g_app` (`kmain.mx:49`) selects which of four apps is active: `0` Terminal,
-`1` Files, `2` Vex (browser), `3` Settings. `switch_app()` (`kmain.mx:2843-2854`) just sets `g_app`, redraws
-the top bar, and calls that app's own draw function
-(`terminal_activate`/`files_draw`/`vex_draw`/`settings_draw`, the last
-detailed in [`docs/settings.md`](settings.md)) — there's no
-generic window/widget abstraction, each app owns its own draw + key-handler
-pair, dispatched by the `if g_app == N` chain in `on_key()` above. `F12`
-opens the power menu as a modal overlay from any app (`g_overlay`,
-`kmain.mx:3498-3499`); overlays intercept the keyboard ahead of app routing.
+The graphics path's whole interface lives in `ui/borehole.mx`; the idea is
+written up in [`docs/borehole-concept.md`](borehole-concept.md). There is no
+window manager and there are no apps. `g_scene` selects one full-screen scene:
+surface, shell gallery, Objects, core sample, Machine, Terminate, lock or sleep.
 
-The desktop's pixel layout is mostly fixed, not derived from the actual
-framebuffer size. `draw_desktop()`'s window frame is a hardcoded
-`fill_rect(180, 160, 664, 456, ...)` (`kmain.mx:492`) — x:180-844, y:160-616
-regardless of `g_fb_w`/`g_fb_h` — and `window_title()` (`kmain.mx:476-479`)
-and `clear_window()` (`kmain.mx:482-484`) are similarly absolute (x:182-842
-and x:184-840). Only the top bar tracks the real width: it's filled
-`fill_rect(0, 0, g_fb_w, 24, ...)` (`kmain.mx:468`) and two of its three
-labels are right-aligned off `g_fb_w` (`g_fb_w - 290`/`g_fb_w - 190`,
-`kmain.mx:470-471`) — the window frame beneath it is not. `fb_init()`
-(`kmain.mx:340-355`) sets `g_gfx = true` whenever the multiboot info reports
-32-bpp direct-RGB (`bpp == 32 && kind == 1`) with no check that `g_fb_w`/
-`g_fb_h` are actually large enough for this fixed 664x456 frame to fit —
-it works today only because the one bootloader that ever supplies a linear
-framebuffer, Limine on the ISO path, honors the exact `1024x768` mode the
-multiboot header requests (`boot.s:28-29`), a fact `test_gfx.py` asserts
-directly (`test_gfx.py:105`) rather than the kernel itself ever checking.
-A bootloader granting a smaller (but still 32-bpp direct-RGB) mode would
-pass `fb_init`'s two checks and still corrupt the display: `fill_rect`/
-`put_pixel` compute every pixel address from `g_fb_pitch` with no
-width/height bound anywhere (`kmain.mx:357-358`, `362-373`), so writes past
-the real row width spill into the next scanline instead of being clipped.
+**Drawing.** Each scene is composed off-screen into `g_back` (1024x768, pitch
+4096, from `kmalloc` in `ui_init`, which halts with an on-screen error if the
+allocation fails or the framebuffer is not 1024x768). `ui_reveal` then lets the
+timer copy it to the framebuffer row by row, behind the drill bit. Anything
+that changes between scenes (selection, the bit, the clock, the password
+field) is drawn straight on the framebuffer over a strip restored from `g_back`
+by `ui_restore`.
 
-### The overlay state machine
+Every primitive clips to the surface it is drawing on: `put_pixel`,
+`fill_rect` and `draw_glyph` in `kmain.mx`, using `g_tgt`/`g_tgt_w`/`g_tgt_h`,
+and `ui_glyph`, `ui_restore` and `ui_copy_row` in the interface. Coordinates are
+`u32`, so a negative value arrives as a huge one and is clipped with the rest.
+The `drawprobe` shell command exists to prove this: `test_gfx.py` runs it and
+diffs guest memory.
 
-`g_overlay` (`kmain.mx:56`) is actually a five-way state, though its own
-comment only ever listed three values (a drift last left uncorrected when the
-home launcher was added — the same stale-field-comment pattern already found
-and fixed once for `g_settings_view`, see [`docs/settings.md`](settings.md)):
-`0` none, `1` power menu (`F12`, `kmain.mx:3502-3504`), `2` lock, `3` sleep,
-`4` home launcher (`F5`, `kmain.mx:3512`). `on_key()`'s overlay gate
-(`kmain.mx:3498-3500`) routes every keystroke to `overlay_on_key()`
-(`kmain.mx:3482-3493`) whenever `g_overlay != 0`, which dispatches by value to
-`power_on_key`/`lock_on_key`/`launcher_on_key`, or (for sleep) handles
-wake-on-any-keypress inline.
+**The console seam.** The shell still draws through `put_cell_at`,
+`move_cursor`, `clear_screen` and `scroll_up`. Their graphics branches call
+`ui_put_cell`, `ui_move_cursor`, `ui_console_clear` and `ui_console_scroll`, which
+keep the text in `g_cells` (80x25, character and attribute) whether or not the
+shell is on screen. That is why leaving the shell loses nothing, and why output
+produced before the first frame still appears. A cell is 10x20 px, so the
+console fills 800x500 inside the gallery.
 
-The four overlays don't dismiss the same way. Only the power menu's Esc-cancel
-path restores a saved pixel snapshot rather than repainting: `open_power_menu()`
-(`kmain.mx:3149-3160`) calls `save_box()` (`kmain.mx:3096-3109`) to copy the
-260x200 region under the flyout into `g_boxsave`, and `power_on_key`'s Esc
-branch (`kmain.mx:3438-3441`) calls `restore_box()` (`kmain.mx:3111-3124`) to
-copy it back exactly — cheap, since the power menu only ever covers that one
-small centered box. Every other overlay exit instead calls `restore_desktop()`
-(`kmain.mx:3163-3168`, a full gradient + window-frame + active-app + clock
-repaint): unlocking (`kmain.mx:3456-3457`), sleep waking on any keypress
-(`kmain.mx:3488-3489`), and the launcher's Esc (`kmain.mx:3394-3395`) and
-Enter-an-app (`kmain.mx:3401-3403`) branches. Picking "Power" from the
-launcher does both in sequence — `restore_desktop()` first, then
-`open_power_menu()` on the now-freshly-drawn desktop (`kmain.mx:3405-3406`) —
-so the box that call saves is always current, not stale launcher pixels. The
-full repaint elsewhere isn't an inconsistency: the lock and sleep screens both
-paint over the *entire* framebuffer themselves (`draw_lock`,
-`kmain.mx:3172-3201`; `draw_sleep`, `kmain.mx:3227-3231`), and the launcher
-does too (`draw_launcher`, `kmain.mx:3339-3364`), so `restore_box()`'s saved
-260x200 region would be far too small to undo any of them — `g_boxsave` is
-sized and used for exactly one transition.
+**Keys.** `on_key()` calls `ui_on_key(sc)` first. In the shell gallery only Esc
+is taken; everything else returns `false` and reaches the normal shell path.
+Every other scene consumes all keys. A key pressed during a reveal finishes the
+reveal first. On the surface `M`, `O`, `R` and `T` drill straight to a stratum.
 
-A third case neither restore path covers: selecting "Lock" or "Sleep" from
-inside the power menu itself. Enter (`power_on_key`'s activate branch,
-`kmain.mx:3443-3446`) calls `power_activate()` (`kmain.mx:3412-3417`), which
-for `sel == 0`/`sel == 1` jumps straight into `open_lock()`/`open_sleep()` —
-neither `restore_box()` nor `restore_desktop()` runs first, so the
-`g_boxsave` snapshot `open_power_menu()` took when `F12` was pressed is
-simply abandoned, exactly as `power_activate()`'s own comment says
-("`full-screen; box stays saved but unused`", `kmain.mx:3413`). That's
-harmless only because `open_lock()`/`open_sleep()` repaint the whole
-framebuffer themselves (as above) and `g_boxsave` gets overwritten wholesale
-the next time `open_power_menu()` runs — nothing ever reads the stale copy
-in between. This path is also the only *graphical* way to reach the lock or
-sleep screen from a non-Terminal app: the `lock`/`sleep` shell commands
-(`docs/shell.md`) need the Terminal app focused, while `F12` works from any
-app (`kmain.mx:3502-3504`), so `F12` then Down then Enter is the only route
-in from Files, Vex, or Settings. "Restart" and "Shut down" (`sel == 2`/`3`)
-need no restore at all: `reboot()` (`kmain.mx:1024-1029`) and `poweroff()`
-(`kmain.mx:3245-3263`) both end in an infinite `hlt` loop with no `iret`, so
-control never returns to `power_activate()` to draw anything further.
+**Timer.** `ui_tick()` advances a reveal, slides the bit toward its goal,
+flickers its spark, and redraws the clock (and Machine's uptime) once a second.
+The sealed scenes, lock and sleep, draw neither bit nor clock.
 
-One more overlay asymmetry: the lock screen has no cancel key at all —
-`lock_on_key` (`kmain.mx:3449-3480`) only ever checks Enter, Backspace, Shift,
-and character keys; `Esc` (scancode `1`) isn't one of its `if` branches, falls
-through `scancode_to_ascii` as `0`, and is silently dropped like any other
-unmapped key — unlike the power menu and launcher, which both close on `Esc`.
+**Objects** (`ui_scan_dir`, `ui_compose_objects`) lists one directory's entries,
+directories first, by checking each table entry's `parent` and `type` bytes.
+`g_chain` holds the path, drawn as stacked strata (the last seven segments on a
+very deep path). A bed's height grows with the log of the file's size; beds stay
+above a fixed footer and the list scrolls so the selection is always visible.
+Esc re-finds the directory just left in its parent's listing, so the selection
+is valid at any depth. Enter on a file reads it into FILEBUF with
+`fs_read_file` and opens the core sample, which reports a failed read on the
+slab rather than showing an empty one.
 
-Unlike the power menu, lock screen, and sleep screen — each of which has a
-shell-command equivalent reachable from VGA text mode (`power`/`lock`/`sleep`,
-[`docs/shell.md`](shell.md), dispatched at `kmain.mx:2557`/`2565`/`2569`) —
-there is no shell command that opens the launcher; `F5` is its only entry
-point (`kmain.mx:3512`), plus the unconditional boot-time greet call
-(`kmain.mx:3623`). Both of those call sites are already nested inside their
-own `if g_gfx` block (`kmain.mx:3507` and `kmain.mx:3622`), so
-`open_launcher()`'s own `if !g_gfx { return; }` guard (`kmain.mx:3367-3369`)
-can never actually run — confirmed by grep, those are `open_launcher()`'s
-only two callers in the whole source. That makes it dead code, unlike the
-identical-looking guards in `open_power_menu()`/`open_lock()`/`open_sleep()`
-(`kmain.mx:3150-3152`, `3204-3207`, `3234-3237`), which *are* reachable —
-each has a shell-command call site with no `g_gfx` check upstream of it, so
-typing `power`/`lock`/`sleep` in text mode is the case those guards exist
-for.
-
-The framebuffer console itself (`put_pixel`/`fill_rect`/`fill_gradient`,
-`kmain.mx:357-391`) is a flat pixel-pushing layer with no double buffering
-or dirty-rect tracking — every draw call writes straight to `g_fb`.
-
-## The Files and Vex apps
-
-Both are reachable only in graphics mode: the F1-F4 app-switch hotkeys are
-gated on `g_gfx` (`on_key`, `kmain.mx:3507`-`3512`), so on the bare
-`-kernel` text-mode path `g_app` never leaves `0` (Terminal) and neither
-app's code ever runs.
-
-**Files** (`g_app == 1`) is a two-view MortFS browser; its state is
-`g_files_sel`/`g_files_view`/`g_files_entry`/`g_files_count`
-(`kmain.mx:50`-`53`). The list view (`files_draw`, `kmain.mx:2695`-`2734`)
-walks all 64 file-table slots via `fs_entry_addr` and renders every row
-whose `used` flag (byte offset 24) is `1` (`kmain.mx:2712`) — not "every
-file": the filter checks only `used`, never MortFS v2's `type` byte
-(`fs_type`, `kmain.mx:1269`) or `parent` byte (`fs_parent`,
-`kmain.mx:1270`), so directories (`/bin`,
-`/etc`, `/home`, `/var`, seeded by `fs_ensure_layout`, `kmain.mx:1617`-
-`1625`) are listed with no visual distinction from files, and every entry
-in the table is shown in one flat list regardless of nesting — a `.bin`
-program reparented into `/bin` by `fs_populate_bin` (`kmain.mx:1641`-
-`1662`) still appears alongside root-level entries, with no indication of
-its real path. There is no way to browse into a subdirectory: `files_open`
-(`kmain.mx:2750`-`2758`, bound to Enter) never checks `fs_type` either, so
-selecting a directory just switches to the content view and calls
-`fs_read_file` on it; `fs_read_file` (`kmain.mx:1666`-`1682`) returns `0`
-immediately whenever the stored `size_bytes` is `0`
-(`kmain.mx:1668`-`1671`), which every directory's is — `fs_create_full`
-never gives a `typ == 1` entry a data extent (`kmain.mx:1561`-`1564`) and
-nothing ever appends to one — so the content view just shows an empty
-page under the directory's name, not an error and not its contents. The
-shell's `cd`/`ls <path>` ([`docs/shell.md`](shell.md)) are the only way to
-actually navigate MortFS's directory tree; the Files app only ever shows
-the whole table flattened. Enter on a real file (`files_open`, same citation) reads
-it into FILEBUF via `fs_read_file` and switches to the content view
-(`files_draw_content`, `kmain.mx:2685`-`2692`), which renders the raw
-bytes with `draw_page_text` (`kmain.mx:2642`). Esc (`files_back`,
-`kmain.mx:2760`-`2763`) always returns to the list regardless of which view
-is active; Up/Down (extended scancodes 72/80) only work in the list view,
-since `files_on_key` (`kmain.mx:2765`-`2778`) doesn't handle them in the
-content view. If `g_fs_ok` is false (no disk, or no valid MortFS on it),
-the app shows an error instead of the browser (`kmain.mx:2698`-`2702`).
-
-**Vex** (`g_app == 2`) is not a real browser — not because MORT OS lacks a
-network stack (`mortnet`, vendored into `net/`, is real and serves a page
-over TCP/IP; see [`docs/networking.md`](networking.md)), but because
-nothing gives Vex an HTTP *client*: `net`/`httpd` only ever serve one fixed
-page, they never fetch one. It's two static local pages selected by
-`g_vex_page` (`kmain.mx:54`): `vex_page_home` (`kmain.mx:2782`-`2791`), a
-tribute to the real Vex browser with a link out, and `vex_page_about`
-(`kmain.mx:2793`-`2800`), a paragraph about MORT OS itself. Both pages'
-own on-screen text has drifted from current source: `vex_page_home` still
-prints "there is no network stack here yet, so it can't load real
-websites" (`kmain.mx:2789`-`2790`), written before mortnet existed, and
-`vex_page_about`'s hint line "Switch apps any time with F1 / F2 / F3"
-(`kmain.mx:2799`) predates the F4 Settings app. Keys `1`/`2` (scancodes
-2/3) switch pages (`vex_on_key`, `kmain.mx:2820`-`2825`); despite the
-drawn URL box (`vex_draw`, `kmain.mx:2802`-`2818`), there's no
-address-bar input or any navigation beyond those two fixed pages.
-
-Switching to either app resets its state: `switch_app`
-(`kmain.mx:2843`-`2854`) always zeroes `g_files_view`/`g_files_sel` on
-entry to Files, so returning to it from another app never shows a stale
-content view or scroll position; Vex has no equivalent reset and simply
-redraws whatever `g_vex_page` was last set to.
+**Lock** checks the typed password against the logged-in account's hash
+(`ui_lock_ok`). **Lock and Sleep** return to whichever scene opened them
+(`g_return_scene`). `restore_desktop()` puts the shell gallery back on screen
+at once, with no reveal, for callers outside the keyboard path.
 
 ## Programs and syscalls
 
