@@ -39,6 +39,10 @@ let g_envscratch: [u8; 80] = [0; 80];                         // scratch for com
 let g_cmdexp: [u8; 256] = [0; 256];                           // a command line after $VAR expansion
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
 let g_pcol: u32 = 0;                                           // program-output cursor column (syscalls)
+let g_serial_ok: bool = false;                                 // COM1 passed its loopback check
+let g_ser_row: u32 = 0;                                        // console cell the COM1 stream has reached
+let g_ser_col: u32 = 0;
+let g_ser_last_cr: bool = false;                               // last COM1 byte was CR (folds CRLF into one Enter)
 let g_gfx: bool = false;                                       // a linear framebuffer is available
 let g_fb: u32 = 0;                                             // framebuffer base address
 let g_fb_pitch: u32 = 0;                                       // bytes per scanline
@@ -494,6 +498,164 @@ fn draw_desktop() {
     clear_window();
 }
 
+// ----- COM1 serial console (16550 UART at 0x3F8, 115200 8N1, polled) -----
+//
+// Output mirrors the console: put_cell_at is its one write path, so the stream
+// is rebuilt from cell positions (a gap pads with spaces, a step back emits
+// backspaces, a new row emits CRLF). Input is polled from on_tick, or from the
+// polling read loops while a command waits for a line, and goes through the
+// keyboard handling as the key that would type that byte.
+
+// Program the UART and prove it exists with a loopback round trip. On failure
+// g_serial_ok stays false and every serial path below does nothing.
+fn serial_init() {
+    outb(0x3F9, 0x00);                  // IER: no UART interrupts, we poll
+    outb(0x3FB, 0x80);                  // LCR: DLAB on, to reach the divisor
+    outb(0x3F8, 0x01);                  // divisor low: 115200 baud
+    outb(0x3F9, 0x00);                  // divisor high
+    outb(0x3FB, 0x03);                  // LCR: 8N1, DLAB off
+    outb(0x3FA, 0xC7);                  // FCR: FIFO on and cleared
+    outb(0x3FC, 0x1E);                  // MCR: loopback
+    outb(0x3F8, 0xAE);
+    let wait: u32 = 0;
+    while (inb(0x3FD) & 1) == 0 {
+        wait = wait + 1;
+        if wait >= 100000 {
+            return;
+        }
+    }
+    if inb(0x3F8) != 0xAE {
+        return;
+    }
+    outb(0x3FC, 0x03);                  // MCR: normal operation, DTR + RTS
+    g_serial_ok = true;
+}
+
+// Row 1 sits between the banner and the first shell line.
+fn serial_report_unavailable() {
+    print_string("serial: COM1 unavailable", 1, 12);
+}
+
+fn serial_putc(ch: u8) {
+    if !g_serial_ok {
+        return;
+    }
+    let wait: u32 = 0;
+    while (inb(0x3FD) & 32) == 0 {      // LSR bit 5: transmitter ready
+        wait = wait + 1;
+        if wait >= 100000 {             // never let a stuck port wedge the kernel
+            g_serial_ok = false;
+            serial_report_unavailable();
+            return;
+        }
+    }
+    outb(0x3F8, ch);
+}
+
+fn serial_newline() {
+    serial_putc(13);
+    serial_putc(10);
+    g_ser_col = 0;
+}
+
+fn serial_mirror(row: u32, col: u32, ch: u8) {
+    if row != g_ser_row {
+        serial_newline();
+        g_ser_row = row;
+    }
+    while g_ser_col < col {
+        serial_putc(32);
+        g_ser_col = g_ser_col + 1;
+    }
+    while g_ser_col > col {
+        serial_putc(8);
+        g_ser_col = g_ser_col - 1;
+    }
+    if ch < 32 || ch == 127 {           // a raw control byte would drive the terminal
+        serial_putc(63);                // '?'
+    } else {
+        serial_putc(ch);
+    }
+    g_ser_col = col + 1;
+}
+
+// Read one COM1 byte as the key that types it: low byte is the scancode, bit 8
+// means Shift. Returns 0 when nothing is waiting or no key produces the byte.
+fn serial_read_key() -> u32 {
+    if !g_serial_ok {
+        return 0;
+    }
+    if (inb(0x3FD) & 1) == 0 {
+        return 0;
+    }
+    let ch: u8 = inb(0x3F8);
+    let was_cr: bool = g_ser_last_cr;
+    g_ser_last_cr = ch == 13;
+    if ch == 13 { return 28; }                  // Enter
+    if ch == 10 {
+        if was_cr { return 0; }                 // the LF of a CRLF
+        return 28;
+    }
+    if ch == 8 || ch == 127 { return 14; }      // Backspace
+    if ch < 32 || ch > 126 { return 0; }
+    let sc: u32 = 2;
+    while sc <= 57 {
+        if scancode_to_ascii(sc as u8, false) == ch { return sc; }
+        if scancode_to_ascii(sc as u8, true) == ch { return sc + 256; }
+        sc = sc + 1;
+    }
+    return 0;
+}
+
+// Block until a key arrives from PS/2 (a raw scancode) or COM1 (see above).
+fn input_wait() -> u32 {
+    while true {
+        if (inb(0x64) & 1) != 0 {
+            return inb(0x60) as u32;
+        }
+        let key: u32 = serial_read_key();
+        if key != 0 {
+            return key;
+        }
+    }
+    return 0;
+}
+
+// Serial always talks to the shell, so bring the terminal up if the launcher
+// or another app is showing. The power, lock and sleep overlays keep the input
+// waiting in the UART instead: serial must not get past a lock screen.
+fn serial_claim_terminal() -> bool {
+    if g_overlay != 0 && g_overlay != 4 {
+        return false;
+    }
+    if g_overlay == 4 || g_app != 0 {
+        g_overlay = 0;
+        g_app = 0;
+        restore_desktop();
+    }
+    return true;
+}
+
+// Feed waiting COM1 input to the shell. Runs in on_tick with interrupts off,
+// the same context on_key runs commands in.
+fn serial_poll() {
+    while g_serial_ok && (inb(0x3FD) & 1) != 0 {
+        if !serial_claim_terminal() {
+            return;
+        }
+        let key: u32 = serial_read_key();
+        if key != 0 {
+            let saved_shift: bool = g_shift;
+            let saved_ext: bool = g_ext;
+            g_shift = (key & 256) != 0;
+            g_ext = false;
+            key_event((key & 255) as u8);
+            g_shift = saved_shift;
+            g_ext = saved_ext;
+        }
+    }
+}
+
 // ----- text output (framebuffer glyphs when g_gfx, else VGA text memory) -----
 
 fn put_index(index: u32, ch: u8, color: u8) {
@@ -503,6 +665,7 @@ fn put_index(index: u32, ch: u8, color: u8) {
 }
 
 fn put_cell_at(row: u32, col: u32, ch: u8, color: u8) {
+    serial_mirror(row, col, ch);
     if g_gfx {
         let fg: u32 = vga_rgb(color & 15);
         let bghi: u8 = (color >> 4) & 15;
@@ -599,6 +762,8 @@ fn feed() {
     } else {
         g_row = g_row + 1;
     }
+    serial_newline();
+    g_ser_row = g_row;
 }
 
 // ----- scancode -> ASCII (Shift-aware) -----
@@ -1813,9 +1978,8 @@ fn read_line() {
     let shift: bool = false;
     move_cursor(g_row, g_pcol);
     while true {
-        while (inb(0x64) & 1) == 0 {                // wait for a byte
-        }
-        let sc: u8 = inb(0x60);
+        let key: u32 = input_wait();                // PS/2 or COM1
+        let sc: u8 = (key & 255) as u8;
         if sc == 42 || sc == 54 {                   // Shift down
             shift = true;
         } else {
@@ -1839,7 +2003,7 @@ fn read_line() {
                         }
                     } else {
                         if sc < 128 {               // a key press (ignore releases)
-                            let ch: u8 = scancode_to_ascii(sc, shift);
+                            let ch: u8 = scancode_to_ascii(sc, shift || (key & 256) != 0);
                             if ch != 0 {
                                 if len < 120 {
                                     *((buf + len) as *u8) = ch;
@@ -2616,6 +2780,7 @@ fn init_pit() {
 // Timer interrupt handler (IRQ0) — called ~100x/second from timer_isr.
 fn on_tick() {
     g_ticks = g_ticks + 1;
+    serial_poll();
     if g_gfx {
         if (g_ticks % 100) == 0 {        // once a second: refresh the top-bar clock
             draw_clock();
@@ -2937,9 +3102,8 @@ fn kread_line(buf: u64, mask: bool) -> u32 {
     let shift: bool = false;
     move_cursor(g_row, g_col);
     while true {
-        while (inb(0x64) & 1) == 0 {
-        }
-        let sc: u8 = inb(0x60);
+        let key: u32 = input_wait();            // PS/2 or COM1
+        let sc: u8 = (key & 255) as u8;
         if sc == 42 || sc == 54 {
             shift = true;
         } else if sc == 170 || sc == 182 {
@@ -2957,7 +3121,7 @@ fn kread_line(buf: u64, mask: bool) -> u32 {
                 move_cursor(g_row, g_col);
             }
         } else if sc < 128 {
-            let ch: u8 = scancode_to_ascii(sc, shift);
+            let ch: u8 = scancode_to_ascii(sc, shift || (key & 256) != 0);
             if ch != 0 && len < 60 {
                 *((buf + (len as u64)) as *u8) = ch;
                 len = len + 1;
@@ -3493,8 +3657,10 @@ fn overlay_on_key(sc: u8) {
 }
 
 fn on_key() {
-    let sc: u8 = inb(0x60);
+    key_event(inb(0x60));
+}
 
+fn key_event(sc: u8) {
     if g_overlay != 0 {              // an overlay owns the keyboard while it's up
         overlay_on_key(sc);
         return;
@@ -3600,8 +3766,12 @@ fn kmain(mbinfo: u32) {
 
     clear_screen();
     enable_cursor();
+    serial_init();                   // COM1: everything printed from here on is mirrored
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);
-    fs_init();                       // detect the disk + mount MortFS (safe without either)
+    if !g_serial_ok {
+        serial_report_unavailable();
+    }
+    fs_init();                      // detect the disk + mount MortFS (safe without either)
     fs_ensure_layout();              // seed /bin /etc /home /var if this is a fresh disk (as root)
     fs_populate_bin();               // move seeded *.bin programs into /bin, executable
     acct_init();                     // load the account table (root + a normal user)
