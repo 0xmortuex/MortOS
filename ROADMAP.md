@@ -104,8 +104,9 @@ the language.
 | Identical (ignoring line endings) | `boot.s`, `idt.s`, `linker.ld`, all of `programs/` |
 | Only in `MortOS` | all 18 `net/*.mx`, `runtime.c`, 9 docs |
 
-The last real sync in Mort's history is `89b3cc6` (2026-07-22); the only later commit touching
-`kernel/` is a README edit.
+The last change to `Mort/kernel/kmain.mx` is `ee0b11e` (2026-07-07). Later commits under
+`kernel/` are doc-only: `89b3cc6` (2026-07-22, `docs/fs-design.md`) and `25255e6` (2026-11-07,
+`README.md`).
 
 ## Ranked gaps
 
