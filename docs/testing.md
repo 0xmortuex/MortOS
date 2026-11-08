@@ -12,7 +12,7 @@ its own beyond the `smoke` subcommand.
 python test.py smoke      # boot + shell basics (text-mode -kernel path)
 python test_fs.py         # the disk stack, incl. write-reboot-cat persistence
 python test_exec.py       # build programs, seed, boot, exec, check syscall output
-python test_gfx.py        # boot the ISO, screendump, assert the desktop + console rendered
+python test_gfx.py        # boot the ISO, drive the Borehole interface, assert on screendumps and guest memory
 ```
 
 All four need `qemu-system-i386` on `PATH` (found via `build._find_qemu()`,
@@ -84,33 +84,28 @@ after an interactive program returns. See
 [`docs/programs.md`](programs.md) for what these sample programs actually
 do and the syscall ABI they use.
 
-### `test_gfx.py` — the graphical desktop
+### `test_gfx.py` — the Borehole interface
 
-The only script that boots the ISO path (`build.iso()`) instead of the bare
-`-kernel` path, since that's the one that gets a Limine-provided
-framebuffer. Screendumps the framebuffer as a PPM (parsed by hand,
-`parse_ppm`, `test_gfx.py:38`-`53`) and checks specific pixel colors: the
-framebuffer is 1024x768, the top bar and a window title bar render with
-their expected background colors, and typing `help` produces at least 50
-non-background pixels in the console area (i.e. glyphs actually drew).
+The only script that boots the ISO path (`build.iso()`), since that's the one
+that gets a Limine-provided framebuffer. It attaches a scratch copy of the
+MortFS disk, presses real keys over the QEMU monitor, and asserts on PPM
+screendumps. Text is read by decoding pixels against the kernel's own font
+table parsed out of `kmain.mx`; console cells must match glyph and background
+exactly.
 
-It also asserts on **per-app top-bar tab highlighting** across F1/F2/F3
-switches (`test_gfx.py:105`-`140`) — e.g. that pixel `(296, 10)` is the
-active-tab color at boot and after switching back to F1, and the
-inactive-tab color after `F2`. That assertion does not match the kernel as
-currently written: `draw_topbar()` (`kmain.mx:467`-`473`, called from
-`switch_app()` at `kmain.mx:2845`) draws only the "MORT OS" label, the "F5
-home"/"F12 power" hints, and the clock — no per-app tabs. The helper that
-would draw a highlighted tab, `draw_tab()` (`kmain.mx:453`-`462`), is
-defined but never called anywhere in the source (confirmed by grep), and
-nothing else in `kmain.mx` paints the active-tab color (`0x2c5364`) inside
-the top bar's row (y ≈ 0-24). This looks like a test written against an
-intended feature that `draw_tab()`'s own comment (`kmain.mx:452`) already
-flags as unused — see the existing backlog item about wiring it up or
-deleting it. Whether `test_gfx.py` currently passes this assertion is
-something only a human with a local QEMU + ISO toolchain can confirm; this
-doc doesn't claim it fails, only that no source path currently produces the
-pixels it's checking for.
+Phases: the surface (lithology, shaft, captions, selection), the shell
+(gallery, typed commands, scrolling, returning with the console intact),
+Objects and the core sample, Machine, Terminate with exact lock and sleep
+screens, the `power`/`lock`/`sleep` commands, long names, directories nested
+18 deep, a directory too full to fit (a separate boot with a seeded disk), and a
+CPU fault.
+
+`phase_memory` proves nothing draws outside its surface: it dumps about 240 MiB
+of guest RAM with `pmemsave` around the short-sky scenes and around the
+`drawprobe` command, and diffs them outside the back buffer, plus spare VRAM
+past the visible frame and the visible screen edges.
+
+`python test_gfx.py phase_deep phase_full_dir` runs only the named phases.
 
 ## The harness API (`test.py`)
 
@@ -155,6 +150,5 @@ instead of falling back further.
 Networking (`net`, `httpd`, and everything under `net/` except
 `net/hardware.mx`/`net/audio.mx`/`net/hci_usb.mx`) has no automated coverage
 at all — see [`docs/networking.md`](networking.md#not-covered-by-automated-tests)
-for the grounded detail. Settings, the file manager (Files app), and the Vex
-browser app also have no dedicated assertions in any of the four scripts
-beyond `test_gfx.py`'s generic "tab switched" pixel checks.
+for the grounded detail. The Machine stratum's hardware actions (DHCP, speaker,
+AC'97) are listed by `test_gfx.py` but not run by it.

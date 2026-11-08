@@ -100,8 +100,8 @@ anything.
 
 Separately, the CMOS-RTC read `fs_now()` performs is itself unguarded
 against the chip's own update cycle — the same `rtc_reg()` calls the
-top-bar clock uses, with the same gap; see
-[`docs/settings.md`](settings.md)'s Clock section for the detail.
+on-screen clock uses, with the same gap; see
+[`docs/settings.md`](settings.md)'s clock section for the detail.
 
 Root is implicit (not a table entry); a path is
 resolved component-by-component, including `.`/`..`, by `fs_resolve`
