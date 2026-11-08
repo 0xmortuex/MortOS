@@ -4,11 +4,11 @@
 ![arch](https://img.shields.io/badge/arch-x86%20(32--bit)-lightgrey)
 ![lang](https://img.shields.io/badge/kernel%20written%20in-Mort-8b5cf6)
 
-**I wrote a programming language, then wrote an operating system in it.** MORT OS is a graphical x86 desktop OS (terminal, file manager, browser, settings, a filesystem that survives reboots, and a TCP/IP stack that serves web pages) and every line above the boot stub is written in [Mort](https://github.com/0xmortuex/Mort), a language I built from scratch that compiles to C.
+**I wrote a programming language, then wrote an operating system in it.** MORT OS is a graphical x86 OS with a shell, a file browser, a filesystem that survives reboots and a TCP/IP stack that serves web pages, and every line above the boot stub is written in [Mort](https://github.com/0xmortuex/Mort), a language I built from scratch that compiles to C. Its interface is not a desktop: it is **a geological cross-section you drill through**.
 
 <p align="center">
-  <img src="docs/mortos-demo.gif" alt="MORT OS booting to its home launcher, then a terminal session (whoami, uptime, write a file, ls, cat it back), then the Files, Vex and Settings apps" width="640" />
-  <br/><sub>A real boot in QEMU: launcher, terminal (write a file, read it back), Files, Vex, Settings.</sub>
+  <img src="docs/borehole-surface.png" alt="The Borehole start screen: a dusk sky and a derrick over four rock strata labelled Machine, Objects, Run and Terminate, with M O R T carved down the right edge and a drill bit in the shaft" width="640" />
+  <br/><sub>A real boot in QEMU: the start screen. Four strata spell M-O-R-T.</sub>
 </p>
 
 ### Try it
@@ -20,42 +20,38 @@ git clone https://github.com/0xmortuex/MortOS && cd MortOS
 uv run --no-project --with ziglang --with cryptography python build.py run-iso
 ```
 
-That builds a bootable ISO and boots it in QEMU. Press `Enter` on **Terminal**, then try `help`, `ls`, `write hello.txt hi` and `cat hello.txt`. `F1`-`F4` switch apps, `F5` is the home launcher, `F12` is the power menu. The ISO is a BIOS/UEFI hybrid built to be written to a USB stick, but I have only tested it in QEMU.
+That builds a bootable ISO and boots it in QEMU. It boots to the Borehole start screen (see `docs/borehole-concept.md`): press `Enter` for a shell, then try `help`, `ls`, `write hello.txt hi` and `cat hello.txt`. `Esc` climbs back out; `M`, `O`, `R` and `T` drill to the Machine, Objects, Run and Terminate strata. The ISO is a BIOS/UEFI hybrid built to be written to a USB stick, but I have only tested it in QEMU.
 
 ---
 
-**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots in QEMU (and the ISO is built to boot from a USB stick, though I have only tested QEMU), runs in 32-bit protected mode, and paints a **graphical desktop with multiple apps** — a Terminal, a Files manager, a Vex-styled browser, and a Settings control center, switched with `F1`-`F4` (or opened from an `F5` home launcher), all drawn to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — it **runs real, interactive compiled programs** (a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls), and it **speaks TCP/IP**: the [mortnet](https://github.com/0xmortuex/mortnet) stack is vendored into the kernel, so MORT OS gets its own IP over DHCP and **runs a web server**. Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the RTL8139 network driver, the shell — is written in Mort.
+**An operating-system kernel written in [Mort](https://github.com/0xmortuex/Mort) — my own programming language.** It boots in QEMU (and the ISO is built to boot from a USB stick, though I have only tested QEMU), runs in 32-bit protected mode, and draws the **Borehole** interface ([`docs/borehole-concept.md`](docs/borehole-concept.md)) to a linear framebuffer in a bitmap font. It has a **real filesystem** — write a file, reboot the machine, and it's still there — it **runs real, interactive compiled programs** (a `.mx` program compiled to a flat binary, loaded off the disk, talking to the kernel through `int 0x80` syscalls), and it **speaks TCP/IP**: the [mortnet](https://github.com/0xmortuex/mortnet) stack is vendored into the kernel, so MORT OS gets its own IP over DHCP and **runs a web server**. Everything above the boot stub — the framebuffer renderer, PS/2 keyboard driver, interrupt handlers, ATA disk driver, the filesystem, the syscall layer, the RTL8139 network driver, the shell — is written in Mort.
 
 ## Session &amp; power
 
-A proper session layer, the way you'd expect from a desktop OS. The top bar carries a **live clock** (read from the CMOS RTC). **`F12`** opens a **power menu** — Lock, Sleep, Restart, Shut down — with arrow-key navigation; `Esc` cancels it non-destructively (the screen under it is saved and restored). **Lock** shows a password screen (`mort`); **Sleep** blanks the display until a key; **Shut down** powers the machine off (via ACPI on emulators, or an "It is now safe to turn off your computer" halt on bare metal). Everything is a shell command too: `lock`, `sleep`, `restart`, `shutdown`, `power`.
+The bottom stratum, **T**, holds **Lock**, **Sleep**, **Restart** and **Shut down**. Lock seals the screen in granite until the account password is given (`mort`); Sleep leaves one banked ember until a key is pressed; Shut down powers the machine off (via ACPI on emulators, or an "It is now safe to turn off your computer" halt on bare metal). The clock at the top right reads the CMOS RTC. Everything is a shell command too: `lock`, `sleep`, `restart`, `shutdown`, `power`.
 
-<img src="docs/mortos-power.png" alt="MORT OS power menu: Lock, Sleep, Restart, Shut down, with a live clock in the top bar" width="640" />
+<img src="docs/borehole-terminate.png" alt="The Terminate stratum: Lock, Sleep, Restart and Shut down as beds of rock" width="640" />
 
-<img src="docs/mortos-lock.png" alt="MORT OS lock screen: MORT OS / Locked, a password box, and 'type your password, then Enter'" width="640" />
+<img src="docs/borehole-lock.png" alt="The lock screen: the word SEALED carved in granite above a password slit" width="640" />
 
 ## Networking — it serves a web page
 
 `net` brings up the RTL8139 NIC and leases an address over DHCP; `httpd` then serves an HTML page on port 80. This is the [mortnet](https://github.com/0xmortuex/mortnet) stack — NIC driver, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP, all written from scratch in Mort — vendored into `net/` and compiled into the kernel. See [`docs/networking.md`](docs/networking.md) for which file implements each layer and how `net`/`httpd` actually drive it.
 
-![MORT OS networking: net leases 10.0.2.15 over DHCP, httpd serves on port 80](docs/mortos-net.png)
+![MORT OS networking: net leases an address over DHCP in the shell gallery](docs/borehole-net.png)
 
 <sub>A web server, on an OS, over a TCP/IP stack — every layer in one language. Networking needs an RTL8139 NIC (QEMU emulates one). The rest of the OS does not need a network card.</sub>
 
-![MORT OS graphical desktop](docs/desktop.png)
+![The shell in its gallery, cut out of the shale stratum](docs/borehole-shell.png)
 
-<div align="center">
-<img src="docs/mortos.png" alt="MORT OS booted in QEMU" width="640" />
-<br/><sub>MORT OS booted in QEMU — type <code>help</code>, then Enter.</sub>
-</div>
 
 ## What it does
 
-- **A graphical desktop with apps** — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and a **window manager**: a top bar and `F1`-`F4` app switching (`on_key`, `kmain.mx:3507-3512`) between a **Terminal**, a **Files** manager (browse MortFS, open files), a **Vex-styled browser** app (local pages, a tribute to [Vex](https://github.com/0xmortuex/Vex)), and a **Settings** control center (personalization, clock format, network/hardware controls — `net/settings.mx`; see [`docs/settings.md`](docs/settings.md) for every section, its search feature, and the on/off controls). `F5` opens a home launcher with icon tiles for all four apps plus Power (`open_launcher`, `kmain.mx:3366`). The whole shell renders to the framebuffer because only the cell-drawing primitive changed; everything else is untouched. Falls back to VGA text mode when no framebuffer is present (the bare `-kernel` path).
+- **The Borehole interface** (`ui/borehole.mx`) — a multiboot linear framebuffer, an 8×16 bitmap font renderer, and one idea: everything is depth. Four strata hold the **Machine** (live readings and hardware actions), **Objects** (MortFS: directories are cavities you bore into, files are beds whose thickness grows with their size), **Run** (the shell, in a gallery cut from the rock) and **Terminate**. Opening a file pulls a core sample. Up/Down, Enter and Esc reach everything; `M`, `O`, `R` and `T` drill straight to a stratum. Scenes are composed off-screen and revealed behind the drill bit. See [`docs/borehole-concept.md`](docs/borehole-concept.md). The shell renders through the same four console calls in both modes, and falls back to VGA text when no framebuffer is present (the bare `-kernel` path).
 
-![MORT OS home launcher: Terminal, Files, Vex, Settings, and Power tiles](docs/mortos-home.png)
+![The Objects stratum: directories as cavities, files as beds of rock](docs/borehole-objects.png)
 
-![MORT OS Files app](docs/app-files.png)
+![A core sample: a file's real contents on a pale slab of rock](docs/borehole-core.png)
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.
 - **Runs real, interactive compiled programs** — `exec <file>` loads a Mort program (compiled to a flat binary) off the disk to `0x00A00000` and runs it. Programs share no symbols with the kernel; they call it through **`int 0x80` syscalls** (args passed via a fixed mailbox, since Mort's `asm()` takes no operands). A read-line syscall polls the keyboard directly, so programs can take input too — `exec ask.bin` asks your name and greets you. Sample programs are in [`programs/`](programs/). See [`docs/memory-map.md`](docs/memory-map.md) for every fixed physical address the kernel uses.
 - **Users, login, and file permissions** — two built-in accounts, `root` and `mortuex`, with djb2-hashed passwords (`acct_init`, `kmain.mx:2904`); the shell auto-logs-in as the normal user and starts in `/home/mortuex` (`login_default`/`cwd_init`, `kmain.mx:2910`/`2916`), with `whoami`, `su`, `sudo`, and `passwd` on top. Every MortFS entry carries an owner uid and Unix-style mode bits, enforced on entry creation, `write`, and `rm` by `can_write` (`kmain.mx:2978`). See [`docs/accounts.md`](docs/accounts.md) for the model, and for which bits are enforced versus only displayed.
@@ -67,7 +63,7 @@ A proper session layer, the way you'd expect from a desktop OS. The top bar carr
 - **Terminal scrolling** and a cursor that tracks input (a drawn underline in graphics, the hardware cursor in text mode)
 - **Multiboot modules** — the bootloader passes ISO files as modules; `readme` prints one, and a second acts as a boot script the kernel runs at startup like an `/etc/rc`
 - **Tested in CI-style headless runs** — `test.py` and `test_fs.py` boot the real kernel in QEMU, inject keystrokes through the monitor, and assert on VGA memory (including the write→reboot→cat persistence path)
-- **PCI hardware detection, USB, and audio** — `hw_scan_pci` (`net/hardware.mx:12`) walks the PCI bus for Ethernet/Wi-Fi/audio/USB controllers; a UHCI USB 1.1 host-controller driver resets the controller and enumerates one root-port device at boot (`usb_boot_init`, `net/hci_usb.mx:195`, called from `kmain()` at `kmain.mx:3620`), setting a Bluetooth-HCI flag if the enumerated device's class matches (`net/hci_usb.mx:155`); an Intel AC'97 driver does PCI discovery, mixer volume, and PCM-out DMA (`ac97_init`, `net/audio.mx:9`), alongside a PIT-driven legacy PC-speaker beeper (`speaker_start`/`speaker_stop`, `net/hardware.mx:37`/`47`). All of it is surfaced live in the Settings app's "Hardware & Devices" page (`settings_hardware`, `net/settings.mx:280`). See [`docs/hardware.md`](docs/hardware.md) for how the PCI scan, USB enumeration, and AC'97 init actually work.
+- **PCI hardware detection, USB, and audio** — `hw_scan_pci` (`net/hardware.mx:12`) walks the PCI bus for Ethernet/Wi-Fi/audio/USB controllers; a UHCI USB 1.1 host-controller driver resets the controller and enumerates one root-port device at boot (`usb_boot_init`, `net/hci_usb.mx:195`, called from `kmain()` at `kmain.mx:3620`), setting a Bluetooth-HCI flag if the enumerated device's class matches (`net/hci_usb.mx:155`); an Intel AC'97 driver does PCI discovery, mixer volume, and PCM-out DMA (`ac97_init`, `net/audio.mx:9`), alongside a PIT-driven legacy PC-speaker beeper (`speaker_start`/`speaker_stop`, `net/hardware.mx:37`/`47`). All of it is surfaced live in the Machine stratum ([`docs/settings.md`](docs/settings.md)). See [`docs/hardware.md`](docs/hardware.md) for how the PCI scan, USB enumeration, and AC'97 init actually work.
 
 ## How it fits together
 
@@ -183,13 +179,13 @@ Automated tests (all drive the real kernel headless in QEMU):
 python test.py smoke      # boot + shell basics (text-mode -kernel path)
 python test_fs.py         # the disk stack, incl. write-reboot-cat persistence
 python test_exec.py       # build programs, seed, boot, exec, check syscall output
-python test_gfx.py        # boot the ISO, screendump, assert the desktop + console rendered
+python test_gfx.py        # boot the ISO, drive the Borehole interface, assert on screendumps and guest memory
 ```
 
 See [`docs/testing.md`](docs/testing.md) for what each script actually
 checks and the keyboard/screen-scrape harness they share.
 
-The graphical desktop comes up on the ISO path (`run-iso`), where Limine
+The Borehole interface comes up on the ISO path (`run-iso`), where Limine
 provides the framebuffer. The bare `-kernel` path has no framebuffer, so the
 kernel falls back to VGA text mode there — which is why the text-driven tests
 above still work.
@@ -212,11 +208,10 @@ trying to execute a `.exe`. `build`/`check`/`run`/`window`/`disk`/`prog`
 (and `test.py`/`test_fs.py`/`test_exec.py`) have no such restriction — they
 only need Zig (via `ziglang`) and QEMU, both cross-platform.
 
-This path boots straight to the **home launcher** screen (`open_launcher`,
-`kmain.mx:3366`) instead of a bare prompt — press `Esc` to reveal the
-terminal underneath, where the banner and the startup script baked into the
-ISO (`STARTUP_TXT`, `build.py:88`-`90`, run via `run_script(1)` at
-`kmain.mx:3612`) have already executed:
+This path boots to the **Borehole start screen** (`ui_start`, `ui/borehole.mx`)
+instead of a bare prompt — press `Enter` to bore into the shell, where the
+banner and the startup script baked into the ISO (`STARTUP_TXT`,
+`build.py:88`-`90`, run via `run_script(1)`) have already executed:
 
 ```
 MORT OS -- interrupt-driven. type 'help', Enter
@@ -244,10 +239,10 @@ Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) an
 
 ## Roadmap
 
-- [x] Everything above (multi-app desktop, ATA driver, MortFS, `exec`-ing real programs)
+- [x] Everything above (the Borehole interface, ATA driver, MortFS, `exec`-ing real programs)
 - [ ] Space reclamation for `rm` (the fixed-extent bump allocator never reclaims, in v1 or v2; re-mkfs to compact)
 - [ ] More syscalls (file I/O from programs, spawn) and a richer program ABI
-- [ ] A mouse (PS/2 IRQ12) and clickable window chrome — a real GUI
+- [ ] A mouse (PS/2 IRQ12) for the Borehole interface
 
 ## Related
 

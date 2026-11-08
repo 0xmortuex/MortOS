@@ -38,6 +38,9 @@ MONITOR_PROMPT = b"(qemu)"
 KEY_HOLD_MS = 40
 KEY_GAP_S = 0.07
 
+# Cap QEMU's guest RAM and translation cache so test runs stay light on the host.
+QEMU_LIMITS = ["-m", "256", "-accel", "tcg,tb-size=32"]
+
 # ----- char -> QEMU sendkey name -----
 
 _SYMS = {
@@ -167,7 +170,7 @@ def boot(disk_img=None, kernel_elf=ELF):
     if not os.path.exists(kernel_elf):
         raise RuntimeError(f"kernel not built: {kernel_elf}")
     cmd = [qemu, "-display", "none", "-monitor", "stdio",
-           "-kernel", kernel_elf]
+           "-kernel", kernel_elf, *QEMU_LIMITS]
     if disk_img:
         cmd += ["-hda", disk_img]
     proc = subprocess.Popen(

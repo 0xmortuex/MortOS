@@ -6,7 +6,7 @@ scan + the legacy PC speaker), `net/hci_usb.mx` (a UHCI USB 1.1
 host-controller driver), and `net/audio.mx` (an Intel AC'97 audio driver).
 They live under `net/` only because `build.py`'s glue loop compiles every
 `net/*.mx` file into the same translation unit as `kmain.mx`
-(`build.py:113`-`121`, per the header comment in `net/settings.mx`); none of
+(`build.py:113`-`121`); none of
 the three touch mortnet. `docs/networking.md` covers the actual TCP/IP
 stack.
 
@@ -27,9 +27,9 @@ device found it sets one of four capability flags by class/subclass:
 
 (`net/hardware.mx:26`-`29`). `g_hw_pci_count` counts every responding
 `(slot, func)` regardless of class. The scan is **not** run at boot — it
-only runs the first time the Settings app's Hardware page is opened
-(`if !g_hw_scanned { hw_scan_pci(); }`, `net/settings.mx:281`), or on a
-manual rescan (`net/settings.mx:504`, `529`).
+only runs the first time the Machine stratum is opened
+(`if !g_hw_scanned { hw_scan_pci(); }`, `ui_compose_machine`), or on a
+manual rescan from its "Rescan PCI devices" row.
 
 ## PC speaker (`net/hardware.mx:36`-`58`)
 
@@ -44,21 +44,19 @@ Only `speaker_start` and `speaker_test` check `g_speaker_enabled` (default
 (`net/hardware.mx:38`, `:53`) — `speaker_stop()` itself has no such check
 and always clears the gate bits regardless of the flag
 (`net/hardware.mx:47`-`50`). That asymmetry is intentional, not a gap: the
-Settings speaker toggle (`g_settings_sel == 1`, `net/settings.mx:530`)
-calls `speaker_stop()` unconditionally when turning the speaker *off*, so a
+Machine stratum's speaker toggle (`ui_machine_run`) calls `speaker_stop()` unconditionally when turning the speaker *off*, so a
 tone already playing is silenced immediately rather than left running
 until it finishes on its own. One consequence of `speaker_test` checking
-the flag itself: pressing the "Test" row (`g_settings_sel == 2`,
-`net/settings.mx:531`) while the speaker is disabled does nothing at
+the flag itself: pressing the "Test PC speaker" row while the speaker is disabled does nothing at
 all — no tone, no message, no visible feedback that the press registered.
 
 ## Ethernet disconnect (`net/hardware.mx:60`-`66`)
 
 `ethernet_disconnect()` clears `g_net_up` and, if the RTL8139 is up, writes
 `0x00` to its command register (I/O base + `0x37`) to stop the receiver and
-transmitter, then clears `g_rtl_ok`. Wired to the Settings network page's
-disconnect action (`net/settings.mx:543`). There is no matching "start" path
-here — reconnecting goes back through `net_dhcp` (`net/settings.mx:541`),
+transmitter, then clears `g_rtl_ok`. Wired to the Machine stratum's
+"Disconnect adapter" row. There is no matching "start" path
+here — reconnecting goes back through `net_dhcp`,
 which calls `rtl_init` itself (see `docs/networking.md`).
 
 ## USB: UHCI host controller (`net/hci_usb.mx`)
@@ -111,8 +109,7 @@ boot-time probe — no keyboard/mouse/mass-storage class drivers exist.
 ## AC'97 audio (`net/audio.mx`)
 
 Unlike USB, audio init is **on-demand**, not automatic at boot — it only
-runs when the Settings app's "Initialize AC97" control is used
-(`net/settings.mx:532`).
+runs when the Machine stratum's "Initialize AC97" row is used.
 
 - `ac97_init()` (`:9`-`31`) scans PCI bus 0 for vendor `0x8086`/device
   `0x2415` (Intel 82801AA AC'97), reads its native-audio-mixer (NAM) and
@@ -136,26 +133,12 @@ runs when the Settings app's "Initialize AC97" control is used
   `1024 / 48000` ≈ 21 ms of audio. `ac97_test_tone()` starts the DMA and
   returns immediately (`:56`-`68`) without waiting for it to finish, unlike
   `speaker_test()`'s busy-wait (see the PC speaker section above) — so
-  pressing Settings' "Test" plays a roughly 21 ms blip, not a sustained
+  pressing "Test AC97 tone" plays a roughly 21 ms blip, not a sustained
   tone.
 
-## Surfaced in Settings (`net/settings.mx`)
+## Surfaced in the Machine stratum (`ui/borehole.mx`)
 
-- **Hardware & Devices overview** — `settings_hardware()`
-  (`:280`-`298`) shows live-read rows for most of the state above
-  (`g_hw_ethernet`, `g_hw_wifi`, `g_usb_ok`/`g_usb_devices`/
-  `g_usb_addressed`/`g_usb_vid`/`g_usb_pid`/`g_usb_interface_class`,
-  `g_hw_audio`), plus `g_gfx` and `g_disk_ok` for the framebuffer and ATA
-  driver. One row is not a live reading: "PS/2 keyboard" always prints the
-  literal string `"Ready"` (`net/settings.mx:283`) — there's no keyboard
-  presence probe anywhere in the source, so that row is a label, not a
-  sensor.
-- **Device Controls** — `settings_draw_hardware_controls()`
-  (`:426`-`438`), dispatched from `settings_enter()`
-  (`:528`-`535`): rescan PCI, toggle/test the PC speaker, initialize AC'97,
-  cycle volume in steps of 25 (`(g_audio_volume + 25) % 125`, passed into
-  `ac97_set_volume`, whose own `> 100` clamp folds the one case that would
-  land on 120 down to 100 before it's stored — so the displayed value cycles
-  cleanly through 0/25/50/75/100, never above), and play the AC'97 test
-  tone. Wi-Fi and Bluetooth are shown as read-only rows sourced from
-  `g_hw_wifi`/`g_hw_bluetooth`.
+The readings and actions are listed in [`docs/settings.md`](settings.md). Volume
+cycles in steps of 25 (`(g_audio_volume + 25) % 125`, passed into
+`ac97_set_volume`, whose own `> 100` clamp folds the one case that would land on
+120 down to 100 before it's stored, so the value cycles through 0/25/50/75/100).

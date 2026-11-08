@@ -8,8 +8,8 @@ which file implements which layer, and how the two shell commands (`net`,
 
 Not every file under `net/` is part of the protocol stack: `net/hardware.mx`
 (generic PCI capability scan + PC-speaker audio), `net/audio.mx`,
-`net/hci_usb.mx` (USB host-controller enumeration), and `net/settings.mx`
-(the Settings app) live here too but are unrelated to mortnet. This document
+and `net/hci_usb.mx` (USB host-controller enumeration) live here too but are
+unrelated to mortnet. This document
 only covers the networking layers — see [`docs/hardware.md`](hardware.md)
 for the PCI/USB/audio side.
 
@@ -79,14 +79,14 @@ Both are shell commands dispatched in `run_command_impl`
   (`net/netapp.mx:182`-`187`) — unconditionally, with no `g_net_quiet` check
   around it (unlike every `net_dhcp` print above), since nothing in the
   source ever calls `net_httpd` from a quiet/GUI context the way
-  `net/settings.mx:541` calls `net_dhcp`. That `"(reboot to stop)"` means a
+  the Machine stratum calls `net_dhcp`. That `"(reboot to stop)"` means a
   physical reset, not the shell's own `reboot` command — every shell
   command runs synchronously inside the keyboard interrupt handler with CPU
   interrupts off, and `net_httpd`'s loop never returns to let that handler
   re-enable them, so no later keystroke can ever reach `on_key()` again;
   see [`docs/architecture.md`](architecture.md#a-shell-command-runs-inside-the-keyboard-isr-interrupts-off)
   for the full mechanism, including that `net`'s own DHCP wait (and
-  Settings' "Connect" button) freeze the clock and keyboard the same way,
+  the Machine stratum's "Connect with DHCP" row) freeze the clock and keyboard the same way,
   just for a shorter, bounded time.
 
 ### DHCP asks for a gateway and DNS server, then discards them

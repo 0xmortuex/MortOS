@@ -1,0 +1,1950 @@
+// Borehole: the MORT OS interface. See docs/borehole-concept.md.
+//
+// The whole screen is one geological section. A scene is composed off-screen
+// into g_back, revealed row by row on the timer, and anything that changes
+// between scenes (selection, the drill bit, the clock) is drawn straight onto
+// the framebuffer over a strip restored from g_back. The shell's console stays
+// in g_cells whether or not it is visible, so leaving the shell loses nothing.
+
+let SC_NONE: u32 = 0;
+let SC_SURFACE: u32 = 1;
+let SC_SHELL: u32 = 2;
+let SC_OBJECTS: u32 = 3;
+let SC_CORE: u32 = 4;
+let SC_MACHINE: u32 = 5;
+let SC_TERMINATE: u32 = 6;
+let SC_LOCK: u32 = 7;
+let SC_SLEEP: u32 = 8;
+
+let BONE: u32 = 0xE8DCC4;
+let BRIGHT: u32 = 0xF5EBD7;
+let DIM: u32 = 0xA89878;
+let VERM: u32 = 0xFF4B1F;
+let SHAFT: u32 = 0x0C0908;
+let GALLERY: u32 = 0x14100C;
+let SHADE: u32 = 0x120C08;
+let WARN: u32 = 0xFF6B4A;
+let SLAB: u32 = 0xD8C8A8;
+let INK: u32 = 0x2B1D12;
+let CORE_COLS: u32 = 66;
+let CORE_ROWS: u32 = 30;
+let BEDS_BOTTOM: u32 = 650;           // beds stay above the footer
+
+let CON_X: u32 = 120;                // console origin and cell pitch
+let CON_Y: u32 = 136;
+let CON_CW: u32 = 10;
+let CON_CH: u32 = 20;
+
+let g_scene: u32 = 0;                // SC_*
+let g_back: u32 = 0;                 // composed scene, 1024x768, pitch 4096
+let g_edge: [u32; 8] = [0; 8];       // top edge of each stratum, then the bottom
+let g_kind: [u32; 8] = [0; 8];       // lithology of each stratum
+let g_amp: u32 = 0;                  // how much the strata boundaries wander
+let g_surf_sel: u32 = 2;             // selected stratum on the surface (R)
+let g_ui_ext: bool = false;          // saw the 0xE0 extended-key prefix
+
+let g_wipe_on: bool = false;         // a reveal is running
+let g_wipe_y: u32 = 0;               // next row to reveal (down) or last revealed (up)
+let g_wipe_down: bool = true;
+let g_bit_y: u32 = 0;                // the drill bit, drawn on the framebuffer
+let g_bit_goal: u32 = 0;
+let g_bit_shown: bool = false;
+
+let g_cells: [u8; 4000] = [0; 4000]; // the shell console: (char, attr) x 80 x 25
+let g_clkbuf: [u8; 12] = [0; 12];
+let g_dir: u32 = 255;                // Objects: the directory open (255 = root)
+let g_items: [u32; 64] = [0; 64];    // Objects: entry indexes in display order
+let g_item_n: u32 = 0;
+let g_sel: u32 = 0;                  // Objects: selected item
+let g_first: u32 = 0;                // Objects: first visible item
+let g_bed_y: [u32; 64] = [0; 64];    // Objects: on-screen top of each visible bed
+let g_bed_h: [u32; 64] = [0; 64];
+let g_vis: u32 = 0;                  // Objects: how many beds fit
+let g_chain: [u32; 16] = [0; 16];    // the path, root first
+let g_chain_n: u32 = 0;
+let g_up: [u32; 16] = [0; 16];       // scratch while reversing the path
+let g_core_e: u32 = 0;               // Core: entry being read
+let g_core_size: u32 = 0;            // Core: bytes in FILEBUF
+let g_core_top: u32 = 0;             // Core: first visible visual line
+let g_core_lines: u32 = 0;           // Core: total visual lines
+let g_core_err: bool = false;        // Core: disk read failed
+let g_open_top: u32 = 0;             // top edge of the open path stratum
+let g_m_sel: u32 = 0;                // Machine: selected action
+let g_t_sel: u32 = 0;                // Terminate: selected action
+let g_return_scene: u32 = 1;         // where Lock and Sleep go back to
+let g_lock_len: u32 = 0;             // Lock: characters typed
+let g_lock_err: bool = false;        // Lock: last attempt was wrong
+let g_lockbuf: [u8; 24] = [0; 24];   // Lock: the password being typed
+let g_bold: bool = false;             // embolden the next enlarged glyphs
+
+// Two-octave sine in 0..16, and the 4x4 Bayer matrix used to dither the sky.
+let g_sin: [u8; 64] = [8, 9, 10, 11, 11, 12, 13, 14, 14, 15, 15, 15, 16, 16, 16, 16, 16, 16, 16, 16, 16, 15, 15, 15, 14, 14, 13, 12, 11, 11, 10, 9, 8, 7, 6, 5, 5, 4, 3, 2, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 5, 6, 7];
+let g_bayer: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
+// ----- errors -----
+
+// A failure the interface cannot run through. Reported on screen, then halted.
+fn ui_fatal(msg: *u8) {
+    ui_to_front();
+    fill_rect(0, 0, g_fb_w, 48, 0x7F1D0A);
+    ui_text("BOREHOLE FAILED", 16, 6, 0xFFFFFF);
+    ui_text(msg, 16, 26, 0xFFFFFF);
+    asm("cli");
+    while true {
+        asm("hlt");
+    }
+}
+
+// ----- pixels and text -----
+
+fn ui_to_back() {
+    g_tgt = g_back;
+    g_tgt_pitch = 4096;
+    g_tgt_w = 1024;
+    g_tgt_h = 768;
+}
+
+fn ui_to_front() {
+    g_tgt = g_fb;
+    g_tgt_pitch = g_fb_pitch;
+    g_tgt_w = g_fb_w;
+    g_tgt_h = g_fb_h;
+}
+
+fn ui_hash(x: u32, y: u32) -> u32 {
+    let h: u32 = x * 374761393 + y * 668265263;
+    h = (h ^ (h >> 13)) * 1274126177;
+    return h ^ (h >> 16);
+}
+
+// One glyph with a transparent background.
+fn ui_glyph(ch: u8, px: u32, py: u32, fg: u32) {
+    if px >= g_tgt_w || py >= g_tgt_h {
+        return;
+    }
+    let rows: u32 = 16;
+    if rows > g_tgt_h - py { rows = g_tgt_h - py; }
+    let cols: u32 = 8;
+    if cols > g_tgt_w - px { cols = g_tgt_w - px; }
+    let base: u32 = (ch as u32) * 16;
+    let row: u32 = 0;
+    while row < rows {
+        let bits: u8 = g_font[base + row];
+        let line: u32 = g_tgt + (py + row) * g_tgt_pitch + px * 4;
+        let col: u32 = 0;
+        while col < cols {
+            if ((bits >> (7 - col)) & 1) == 1 {
+                *((line + col * 4) as *u32) = fg;
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+// A NUL-terminated string, transparent background, 8 px advance.
+fn ui_text(s: *u8, x: u32, y: u32, fg: u32) {
+    let i: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        ui_glyph(*((s as u32 + i) as *u8), x + i * 8, y, fg);
+        i = i + 1;
+    }
+}
+
+fn ui_text_shadow(s: *u8, x: u32, y: u32, fg: u32) {
+    ui_text(s, x + 1, y + 1, SHADE);
+    ui_text(s, x, y, fg);
+}
+
+fn ui_fbit(ch: u32, c: i32, r: i32) -> bool {
+    if c < 0 || c > 7 || r < 0 || r > 15 {
+        return false;
+    }
+    let bits: u8 = g_font[ch * 16 + (r as u32)];
+    if g_bold && c > 0 && ((bits >> (8 - (c as u32))) & 1) == 1 {
+        return true;                     // carved letters are one pixel wider
+    }
+    return ((bits >> (7 - (c as u32))) & 1) == 1;
+}
+
+// One glyph enlarged with an EPX pass (diagonals stay smooth). sc is even.
+fn ui_big_glyph(ch: u8, x: u32, y: u32, sc: u32, fg: u32) {
+    let code: u32 = ch as u32;
+    let s: u32 = sc / 2;
+    let r: i32 = 0;
+    while r < 16 {
+        let c: i32 = 0;
+        while c < 8 {
+            let p: bool = ui_fbit(code, c, r);
+            let a: bool = ui_fbit(code, c, r - 1);
+            let b: bool = ui_fbit(code, c + 1, r);
+            let l: bool = ui_fbit(code, c - 1, r);
+            let d: bool = ui_fbit(code, c, r + 1);
+            let e0: bool = p;
+            let e1: bool = p;
+            let e2: bool = p;
+            let e3: bool = p;
+            if l == a && l != d && a != b { e0 = a; }
+            if a == b && a != l && b != d { e1 = b; }
+            if d == l && d != b && l != a { e2 = l; }
+            if b == d && b != a && d != l { e3 = d; }
+            let px: u32 = x + (c as u32) * sc;
+            let py: u32 = y + (r as u32) * sc;
+            if e0 { fill_rect(px, py, s, s, fg); }
+            if e1 { fill_rect(px + s, py, s, s, fg); }
+            if e2 { fill_rect(px, py + s, s, s, fg); }
+            if e3 { fill_rect(px + s, py + s, s, s, fg); }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+}
+
+// Enlarged string with a hard shadow, 8*sc advance.
+fn ui_big_text(s: *u8, x: u32, y: u32, sc: u32, fg: u32) {
+    let i: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        let ch: u8 = *((s as u32 + i) as *u8);
+        ui_big_glyph(ch, x + i * 8 * sc + sc / 2, y + sc / 2, sc, SHADE);
+        ui_big_glyph(ch, x + i * 8 * sc, y, sc, fg);
+        i = i + 1;
+    }
+}
+
+fn ui_disc(cx: u32, cy: u32, r: u32, color: u32) {
+    let dy: u32 = 0;
+    while dy <= r + r {
+        let oy: i32 = (dy as i32) - (r as i32);
+        let dx: u32 = 0;
+        while dx <= r + r {
+            let ox: i32 = (dx as i32) - (r as i32);
+            if ox * ox + oy * oy <= ((r * r) as i32) {
+                put_pixel(cx - r + dx, cy - r + dy, color);
+            }
+            dx = dx + 1;
+        }
+        dy = dy + 1;
+    }
+}
+
+fn ui_line(x0: u32, y0: u32, x1: u32, y1: u32, color: u32) {
+    let x: i32 = x0 as i32;
+    let y: i32 = y0 as i32;
+    let dx: i32 = (x1 as i32) - x;
+    let dy: i32 = (y1 as i32) - y;
+    if dx < 0 { dx = 0 - dx; }
+    if dy < 0 { dy = 0 - dy; }
+    let sx: i32 = 1;
+    let sy: i32 = 1;
+    if x0 > x1 { sx = -1; }
+    if y0 > y1 { sy = -1; }
+    let err: i32 = dx - dy;
+    while true {
+        put_pixel(x as u32, y as u32, color);
+        if x == (x1 as i32) && y == (y1 as i32) {
+            return;
+        }
+        let e2: i32 = 2 * err;
+        if e2 > (0 - dy) { err = err - dy; x = x + sx; }
+        if e2 < dx { err = err + dx; y = y + sy; }
+    }
+}
+
+// Copy a rectangle from the composed scene back onto the framebuffer.
+fn ui_restore(x: u32, y: u32, w: u32, h: u32) {
+    if x >= 1024 || y >= 768 {
+        return;
+    }
+    if w > 1024 - x { w = 1024 - x; }
+    if h > 768 - y { h = 768 - y; }
+    let yy: u32 = 0;
+    while yy < h {
+        let src: u32 = g_back + (y + yy) * 4096 + x * 4;
+        let dst: u32 = g_fb + (y + yy) * g_fb_pitch + x * 4;
+        let xx: u32 = 0;
+        while xx < w {
+            *((dst + xx * 4) as *u32) = *((src + xx * 4) as *u32);
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+}
+
+// ----- rock -----
+
+fn ui_wave(x: u32, k: u32) -> u32 {
+    return (g_sin[((x * (3 + k)) / 8 + k * 13) & 63] as u32) * g_amp / 8;
+}
+
+// The colour of a pixel of lithology `kind` at (x, y).
+fn ui_rock(kind: u32, x: u32, y: u32) -> u32 {
+    if kind == 0 {                       // sandstone: grain
+        let h: u32 = ui_hash(x / 2, y / 2) & 31;
+        if h == 0 { return 0x5E3D1B; }
+        if h == 1 { return 0x936A3A; }
+        return 0x7A5228;
+    }
+    if kind == 1 {                       // limestone: coursed blocks
+        if (y % 16) == 0 { return 0x4F4336; }
+        let off: u32 = 0;
+        if ((y / 16) % 2) == 1 { off = 12; }
+        if ((x + off) % 24) == 0 { return 0x4F4336; }
+        if (ui_hash(x, y) & 63) == 0 { return 0x7B6C5A; }
+        return 0x6A5B4A;
+    }
+    if kind == 2 {                       // shale: broken laminae
+        let wob: u32 = (g_sin[(x / 6) & 63] as u32) / 4;
+        if ((y + wob) % 8) == 0 && (ui_hash(x / 16, y / 8) & 3) != 0 {
+            return 0x34201A;
+        }
+        if (ui_hash(x, y) & 127) == 0 { return 0x5B3A2C; }
+        return 0x4A2B20;
+    }
+    let h: u32 = ui_hash(x, y) & 31;     // granite: speckle
+    if h < 3 { return 0x3D3535; }
+    if h < 5 { return 0x191515; }
+    return 0x262020;
+}
+
+// Paint n strata from g_edge/g_kind, with wandering boundaries, into g_back.
+fn ui_paint_strata(n: u32) {
+    let x: u32 = 0;
+    while x < 1024 {
+        let y: u32 = g_edge[0];
+        let k: u32 = 0;
+        while k < n {
+            let bottom: u32 = 768;
+            if k + 1 < n {
+                bottom = g_edge[k + 1] + ui_wave(x, k) - g_amp;
+            }
+            while y < bottom {
+                put_pixel(x, y, ui_rock(g_kind[k], x, y));
+                y = y + 1;
+            }
+            k = k + 1;
+        }
+        x = x + 1;
+    }
+}
+
+// ----- sky, derrick, shaft, ruler -----
+
+fn ui_rtc_h() -> u32 {
+    let stb: u8 = rtc_reg(0x0B);
+    return rtc_conv(rtc_reg(4), (stb & 4) != 0) as u32;
+}
+
+fn ui_rtc_m() -> u32 {
+    let stb: u8 = rtc_reg(0x0B);
+    return rtc_conv(rtc_reg(2), (stb & 4) != 0) as u32;
+}
+
+fn ui_sky_colour(hour: u32, step: u32) -> u32 {
+    if hour >= 8 && hour < 17 {          // day
+        if step == 0 { return 0x6A8FA8; }
+        if step == 1 { return 0x8FA8B0; }
+        if step == 2 { return 0xC2B79B; }
+        if step == 3 { return 0xE1CDA0; }
+        return 0xEADCB2;
+    }
+    if (hour >= 5 && hour < 8) || (hour >= 17 && hour < 22) {   // dawn, dusk
+        if step == 0 { return 0x241A35; }
+        if step == 1 { return 0x4A2640; }
+        if step == 2 { return 0x883A45; }
+        if step == 3 { return 0xC8603F; }
+        return 0xE8915F;
+    }
+    if step == 0 { return 0x0E0A16; }    // night
+    if step == 1 { return 0x171029; }
+    if step == 2 { return 0x221531; }
+    if step == 3 { return 0x2D1A38; }
+    return 0x361F3E;
+}
+
+// Dithered sky, the sun or moon on its arc, and the ridge line, in g_back.
+fn ui_paint_sky(h: u32) {
+    let hour: u32 = ui_rtc_h();
+    let minute: u32 = ui_rtc_m();
+    let y: u32 = 0;
+    while y < h {
+        let level: u32 = y * 64 / h;
+        let idx: u32 = level / 16;
+        let frac: u32 = level % 16;
+        let x: u32 = 0;
+        while x < 1024 {
+            let step: u32 = idx;
+            if frac > (g_bayer[(x & 3) + (y & 3) * 4] as u32) { step = idx + 1; }
+            if step > 4 { step = 4; }
+            put_pixel(x, y, ui_sky_colour(hour, step));
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    let mins: u32 = hour * 60 + minute;
+    let cx: u32 = 96 + mins * 880 / 1440;
+    let dist: u32 = 0;
+    if cx > 536 { dist = cx - 536; } else { dist = 536 - cx; }
+    let arc: u32 = 0;                    // the short sky has no room for an arc
+    if h > 60 { arc = h - 60; }
+    let cy: u32 = 26 + dist * dist * arc / 193600;
+    if hour >= 6 && hour < 20 {
+        ui_disc(cx, cy, 18, 0xFFD27A);
+    } else {
+        ui_disc(cx, cy, 15, 0xE8E0CF);
+        ui_disc(cx + 6, cy - 3, 12, ui_sky_colour(hour, 0));
+    }
+    let x: u32 = 0;
+    while x < 1024 {
+        let top: u32 = h - 8 - (g_sin[(x * 3 / 8) & 63] as u32) / 2 - (ui_hash(x / 3, 91) & 3);
+        let yy: u32 = top;
+        while yy < h {
+            put_pixel(x, yy, 0x1B120E);
+            yy = yy + 1;
+        }
+        x = x + 1;
+    }
+}
+
+fn ui_paint_derrick(ground: u32, height: u32) {
+    let c: u32 = 0x2A1C14;
+    let lx: u32 = 54 - 22;
+    let rx: u32 = 54 + 22;
+    let top: u32 = ground - height;
+    ui_line(lx, ground, 54, top, c);
+    ui_line(lx + 1, ground, 55, top, c);
+    ui_line(rx, ground, 54, top, c);
+    ui_line(rx - 1, ground, 53, top, c);
+    let y: u32 = ground - 16;
+    while y > top + 8 {
+        let half: u32 = (y - top) * 22 / height;
+        fill_rect(54 - half, y, half * 2, 2, c);
+        y = y - 16;
+    }
+    fill_rect(48, top - 3, 12, 3, VERM);
+}
+
+fn ui_paint_shaft(top: u32) {
+    fill_rect(46, top, 2, 768 - top, 0x2A201A);
+    fill_rect(60, top, 2, 768 - top, 0x2A201A);
+    fill_rect(48, top, 12, 768 - top, SHAFT);
+}
+
+// The depth ruler down the left edge, in metres from the surface.
+fn ui_paint_ruler(top: u32) {
+    let y: u32 = top + 20;
+    while y < 760 {
+        let major: bool = ((y - top) % 100) == 0;
+        let w: u32 = 6;
+        if major { w = 14; }
+        fill_rect(30 - w, y, w, 1, DIM);
+        if major {
+            num_to_str((y - top) / 2, g_numbuf);
+            ui_text_shadow(g_numbuf, 2, y + 3, DIM);
+        }
+        y = y + 20;
+    }
+}
+
+// ----- the drill bit -----
+
+fn ui_bit_rect_restore(y: u32) {
+    let ty: u32 = y - 20;
+    if y < 20 { ty = 0; }
+    ui_restore(40, ty, 28, 54);
+}
+
+fn ui_draw_bit(y: u32) {
+    fill_rect(48, y - 18, 12, 28, VERM);
+    let s: u32 = 0;
+    while s < 28 {
+        fill_rect(48, y - 18 + s, 12, 1, 0xC2330F);
+        s = s + 6;
+    }
+    fill_rect(44, y + 10, 20, 3, 0xFFD4A0);
+    let t: u32 = 0;
+    while t < 10 {
+        fill_rect(54 - (10 - t), y + 13 + t, (10 - t) * 2, 1, VERM);
+        t = t + 1;
+    }
+}
+
+fn ui_draw_spark(y: u32) {
+    let h: u32 = ui_hash(g_ticks, y);
+    let n: u32 = 0;
+    while n < 4 {
+        let dx: u32 = (h >> (n * 4)) & 7;
+        let dy: u32 = (h >> (n * 3 + 8)) & 7;
+        put_pixel(50 + dx, y + 23 + dy, 0xFFD27A);
+        n = n + 1;
+    }
+}
+
+fn ui_bit_show(y: u32) {
+    if g_bit_shown {
+        ui_bit_rect_restore(g_bit_y);
+    }
+    ui_draw_bit(y);
+    ui_draw_spark(y);
+    g_bit_y = y;
+    g_bit_shown = true;
+}
+
+// ----- the reveal -----
+
+fn ui_copy_row(y: u32) {
+    if y >= 768 {
+        return;
+    }
+    let src: u32 = g_back + y * 4096;
+    let dst: u32 = g_fb + y * g_fb_pitch;
+    let x: u32 = 0;
+    while x < 1024 {
+        *((dst + x * 4) as *u32) = *((src + x * 4) as *u32);
+        x = x + 1;
+    }
+}
+
+fn ui_reveal(down: bool) {
+    g_wipe_on = true;
+    g_wipe_down = down;
+    g_bit_shown = false;
+    if down { g_wipe_y = 0; } else { g_wipe_y = 768; }
+}
+
+fn ui_reveal_step() {
+    let n: u32 = 0;
+    while n < 24 {
+        if g_wipe_down {
+            if g_wipe_y >= 768 { ui_reveal_done(); return; }
+            ui_copy_row(g_wipe_y);
+            g_wipe_y = g_wipe_y + 1;
+        } else {
+            if g_wipe_y == 0 { ui_reveal_done(); return; }
+            g_wipe_y = g_wipe_y - 1;
+            ui_copy_row(g_wipe_y);
+        }
+        n = n + 1;
+    }
+    let by: u32 = g_wipe_y;
+    if by < 30 { by = 30; }
+    if by > 730 { by = 730; }
+    ui_bit_show(by);
+}
+
+fn ui_reveal_done() {
+    if g_wipe_on {
+        g_wipe_on = false;
+        ui_restore(0, 0, 1024, 768);
+        g_bit_shown = false;
+        ui_overlay();
+    }
+}
+
+// ----- clock -----
+
+fn ui_clock_text() -> *u8 {
+    let stb: u8 = rtc_reg(0x0B);
+    let binmode: bool = (stb & 4) != 0;
+    let s: u8 = rtc_conv(rtc_reg(0), binmode);
+    let m: u8 = rtc_conv(rtc_reg(2), binmode);
+    let h: u8 = rtc_conv(rtc_reg(4), binmode);
+    let b: u64 = &g_clkbuf as u64;
+    write2(b, 0, h);
+    *((b + 2) as *u8) = 58;
+    write2(b, 3, m);
+    *((b + 5) as *u8) = 58;
+    write2(b, 6, s);
+    *((b + 8) as *u8) = 0;
+    return (&g_clkbuf as u64) as *u8;
+}
+
+fn ui_draw_clock() {
+    ui_restore(928, 8, 88, 20);
+    ui_text_shadow(ui_clock_text(), 936, 12, BONE);
+}
+
+// ----- console seam (called from kmain.mx) -----
+
+fn ui_cell_draw(row: u32, col: u32, ch: u8, color: u8) {
+    let fg: u32 = vga_rgb(color & 15);
+    let bghi: u8 = (color >> 4) & 15;
+    let bg: u32 = GALLERY;
+    if bghi != 0 { bg = vga_rgb(bghi); }
+    let px: u32 = CON_X + col * CON_CW;
+    let py: u32 = CON_Y + row * CON_CH;
+    fill_rect(px, py, CON_CW, CON_CH, bg);
+    let draw: u8 = ch;
+    if draw == 0 { draw = 32; }
+    draw_glyph(draw, px + 1, py + 2, fg, bg);
+}
+
+fn ui_put_cell(row: u32, col: u32, ch: u8, color: u8) {
+    if row >= 25 || col >= 80 {
+        return;
+    }
+    let off: u32 = (row * 80 + col) * 2;
+    g_cells[off] = ch;
+    g_cells[off + 1] = color;
+    if g_scene == SC_SHELL && !g_wipe_on {
+        ui_cell_draw(row, col, ch, color);
+    }
+}
+
+fn ui_cursor_erase() {
+    fill_rect(CON_X + g_cur_c * CON_CW + 1, CON_Y + g_cur_r * CON_CH + 18, 8, 2, GALLERY);
+}
+
+fn ui_cursor_draw() {
+    fill_rect(CON_X + g_cur_c * CON_CW + 1, CON_Y + g_cur_r * CON_CH + 18, 8, 2, VERM);
+}
+
+fn ui_move_cursor(row: u32, col: u32) {
+    let visible: bool = g_scene == SC_SHELL && !g_wipe_on;
+    if visible { ui_cursor_erase(); }
+    g_cur_r = row;
+    g_cur_c = col;
+    if visible { ui_cursor_draw(); }
+}
+
+fn ui_console_clear() {
+    let i: u32 = 0;
+    while i < 4000 {
+        g_cells[i] = 0;
+        i = i + 1;
+    }
+    if g_scene == SC_SHELL && !g_wipe_on {
+        fill_rect(CON_X, CON_Y, 80 * CON_CW, 25 * CON_CH, GALLERY);
+    }
+}
+
+fn ui_console_scroll() {
+    let i: u32 = 0;
+    while i < 3840 {
+        g_cells[i] = g_cells[i + 160];
+        i = i + 1;
+    }
+    while i < 4000 {
+        g_cells[i] = 0;
+        i = i + 1;
+    }
+    if g_scene == SC_SHELL && !g_wipe_on {
+        ui_cursor_erase();
+        let y: u32 = 0;
+        while y < 24 * CON_CH {
+            let dst: u32 = g_fb + (CON_Y + y) * g_fb_pitch + CON_X * 4;
+            let src: u32 = g_fb + (CON_Y + CON_CH + y) * g_fb_pitch + CON_X * 4;
+            let x: u32 = 0;
+            while x < 80 * CON_CW {
+                *((dst + x * 4) as *u32) = *((src + x * 4) as *u32);
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        fill_rect(CON_X, CON_Y + 24 * CON_CH, 80 * CON_CW, CON_CH, GALLERY);
+    }
+}
+
+// ----- the four strata -----
+
+fn ui_name(i: u32) -> *u8 {
+    if i == 0 { return "MACHINE"; }
+    if i == 1 { return "OBJECTS"; }
+    if i == 2 { return "RUN"; }
+    return "TERMINATE";
+}
+
+fn ui_caption(i: u32) -> *u8 {
+    if i == 0 { return "the machine -- what it is made of"; }
+    if i == 1 { return "objects on MortFS -- dig through the files"; }
+    if i == 2 { return "run -- the shell, talk to the machine"; }
+    return "terminate -- lock, sleep, restart, halt";
+}
+
+fn ui_letter(i: u32) -> u8 {
+    if i == 0 { return 77; }             // M
+    if i == 1 { return 79; }             // O
+    if i == 2 { return 82; }             // R
+    return 84;                           // T
+}
+
+fn ui_carved(i: u32) -> u32 {
+    if i == 0 { return 0xB4843F; }
+    if i == 1 { return 0xA59578; }
+    if i == 2 { return 0x8A5240; }
+    return 0x6E6464;
+}
+
+fn ui_compose_surface() {
+    ui_to_back();
+    g_edge[0] = 180; g_edge[1] = 327; g_edge[2] = 474; g_edge[3] = 621;
+    g_kind[0] = 0; g_kind[1] = 1; g_kind[2] = 2; g_kind[3] = 3;
+    g_amp = 5;
+    ui_paint_sky(180);
+    ui_paint_strata(4);
+    ui_paint_ruler(180);
+    ui_paint_derrick(180, 78);
+    ui_paint_shaft(172);
+    ui_text_shadow("MORT OS  -  BOREHOLE No. 1", 80, 12, BONE);
+    let i: u32 = 0;
+    while i < 4 {
+        let e: u32 = g_edge[i];
+        g_bold = true;
+        ui_big_glyph(ui_letter(i), 872 - 3, e + 7, 8, SHADE);
+        ui_big_glyph(ui_letter(i), 872, e + 10, 8, ui_carved(i));
+        g_bold = false;
+        ui_big_text(ui_name(i), 152, e + 28, 4, BONE);
+        ui_text_shadow(ui_caption(i), 152, e + 100, BONE);
+        fill_rect(88, e + 28, 32, 32, 0x1B120E);
+        fill_rect(89, e + 29, 30, 30, GALLERY);
+        ui_big_glyph(ui_letter(i), 96, e + 28, 2, BONE);
+        i = i + 1;
+    }
+    ui_text_shadow("Up/Down or M O R T   Enter: bore in   Esc: climb out", 152, 748, DIM);
+    ui_to_front();
+}
+
+fn ui_surface_mark(i: u32) {
+    let e: u32 = g_edge[i];
+    fill_rect(72, e + 3, 948, 2, VERM);
+    fill_rect(72, e + 143, 948, 2, VERM);
+    fill_rect(88, e + 28, 32, 32, VERM);
+    ui_big_glyph(ui_letter(i), 96, e + 28, 2, GALLERY);
+    ui_big_text(ui_name(i), 152, e + 28, 4, BRIGHT);
+}
+
+fn ui_surface_unmark(i: u32) {
+    let e: u32 = g_edge[i];
+    ui_restore(72, e + 3, 948, 2);
+    ui_restore(72, e + 143, 948, 2);
+    ui_restore(88, e + 28, 32, 32);
+    ui_restore(152, e + 28, 304, 70);
+}
+
+fn ui_surface_overlay() {
+    ui_surface_mark(g_surf_sel);
+    g_bit_goal = g_edge[g_surf_sel] + 73;
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_surface_move(next: u32) {
+    if next == g_surf_sel { return; }
+    ui_surface_unmark(g_surf_sel);
+    g_surf_sel = next;
+    ui_surface_mark(g_surf_sel);
+    g_bit_goal = g_edge[g_surf_sel] + 73;
+}
+
+fn ui_surface_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 && g_surf_sel > 0 { ui_surface_move(g_surf_sel - 1); }
+        if sc == 80 && g_surf_sel < 3 { ui_surface_move(g_surf_sel + 1); }
+        return;
+    }
+    if sc == 50 { ui_open(0); return; }  // M
+    if sc == 24 { ui_open(1); return; }  // O
+    if sc == 19 { ui_open(2); return; }  // R
+    if sc == 20 { ui_open(3); return; }  // T
+    if sc == 28 { ui_open(g_surf_sel); return; }
+}
+
+// ----- the accordion: one open stratum, the others collapse to slivers -----
+
+// Sky 56, closed strata 26 px, the stratum `open` (0..3) takes the rest.
+fn ui_layout_open(open: u32) {
+    g_edge[0] = 56;
+    let k: u32 = 1;
+    while k < 4 {
+        if k <= open { g_edge[k] = 56 + k * 26; }
+        else { g_edge[k] = 768 - (4 - k) * 26; }
+        k = k + 1;
+    }
+    g_kind[0] = 0; g_kind[1] = 1; g_kind[2] = 2; g_kind[3] = 3;
+    g_amp = 1;
+}
+
+fn ui_lower_name(i: u32) -> *u8 {
+    if i == 0 { return "machine"; }
+    if i == 1 { return "objects"; }
+    if i == 2 { return "run"; }
+    return "terminate";
+}
+
+// Sky, strata, ruler and shaft for a scene with one open stratum.
+fn ui_paint_column(open: u32) {
+    ui_layout_open(open);
+    ui_paint_sky(56);
+    ui_paint_strata(4);
+    ui_paint_ruler(56);
+    ui_paint_derrick(56, 40);
+    ui_paint_shaft(52);
+    ui_text_shadow("MORT OS", 80, 12, BONE);
+    let i: u32 = 0;
+    while i < 4 {
+        let y: u32 = g_edge[i] + 5;
+        ui_glyph(ui_letter(i), 72, y, BONE);
+        ui_text_shadow(ui_lower_name(i), 100, y, BONE);
+        i = i + 1;
+    }
+}
+
+// ----- R: the shell gallery -----
+
+// A rough gallery hacked out of the shale, with the console inside it.
+fn ui_compose_shell() {
+    ui_to_back();
+    ui_paint_column(2);
+    let y: u32 = 124;
+    while y < 726 {
+        let left: u32 = 90 + (ui_hash(y / 3, 7) & 11);
+        let right: u32 = 938 + (ui_hash(y / 3, 19) & 11);
+        fill_rect(left, y, right - left, 1, GALLERY);
+        y = y + 1;
+    }
+    let x: u32 = 96;
+    while x < 944 {
+        let up: u32 = 116 + (ui_hash(x / 4, 3) & 7);
+        fill_rect(x, up, 1, 124 - up + 8, GALLERY);
+        let dn: u32 = 726 + (ui_hash(x / 4, 41) & 7);
+        fill_rect(x, 720, 1, dn - 720, GALLERY);
+        x = x + 1;
+    }
+    ui_replay_console();
+    ui_glyph(82, 72, g_edge[2] + 5, BONE);   // the R sliver label, over the gallery's rough top
+    ui_text_shadow("run", 100, g_edge[2] + 5, BONE);
+    ui_text("Esc: climb back to the surface", 130, 668, DIM);
+    ui_to_front();
+}
+
+// Redraw every console cell into the current target.
+fn ui_replay_console() {
+    let row: u32 = 0;
+    while row < 25 {
+        let col: u32 = 0;
+        while col < 80 {
+            let off: u32 = (row * 80 + col) * 2;
+            if g_cells[off] != 0 {
+                ui_cell_draw(row, col, g_cells[off], g_cells[off + 1]);
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+fn ui_shell_overlay() {
+    ui_cursor_draw();
+    g_bit_goal = 640;
+    ui_bit_show(g_bit_goal);
+}
+
+// ----- O: objects, the MortFS directory tree as depth -----
+
+fn ui_fs_used(i: u32) -> bool {
+    return *((fs_entry_addr(i) + 24) as *u32) == 1;
+}
+
+// Directories first, then files, each in table order.
+fn ui_scan_dir() {
+    g_item_n = 0;
+    let pass: u32 = 0;
+    while pass < 2 {
+        let i: u32 = 0;
+        while i < 64 {
+            if ui_fs_used(i) && (fs_parent(i) as u32) == g_dir {
+                let isdir: bool = fs_type(i) == 1;
+                if (pass == 0 && isdir) || (pass == 1 && !isdir) {
+                    g_items[g_item_n] = i;
+                    g_item_n = g_item_n + 1;
+                }
+            }
+            i = i + 1;
+        }
+        pass = pass + 1;
+    }
+}
+
+// g_chain = the path from the root down to g_dir.
+fn ui_build_path() {
+    let n: u32 = 0;
+    let d: u32 = g_dir;
+    while d != 255 && n < 15 {
+        g_up[n] = d;
+        n = n + 1;
+        d = fs_parent(d) as u32;
+    }
+    g_chain[0] = 255;
+    g_chain_n = 1;
+    while n > 0 {
+        n = n - 1;
+        g_chain[g_chain_n] = g_up[n];
+        g_chain_n = g_chain_n + 1;
+    }
+}
+
+// A bed's thickness grows with the log of the file's size.
+fn ui_bed_height(i: u32) -> u32 {
+    if fs_type(i) == 1 {
+        return 34;
+    }
+    let size: u32 = *((fs_entry_addr(i) + 28) as *u32);
+    let log: u32 = 0;
+    while size > 1 {
+        size = size / 2;
+        log = log + 1;
+    }
+    let h: u32 = 26 + log * 2;
+    if h > 46 { h = 46; }
+    return h;
+}
+
+fn ui_bed_colour(i: u32) -> u32 {
+    let h: u32 = ui_hash(i, 1234) & 7;
+    if h == 0 { return 0x3A2B20; }
+    if h == 1 { return 0x453424; }
+    if h == 2 { return 0x2E2219; }
+    if h == 3 { return 0x3F2E28; }
+    if h == 4 { return 0x332820; }
+    if h == 5 { return 0x41301F; }
+    if h == 6 { return 0x2F241C; }
+    return 0x38291F;
+}
+
+// The specimen in a bed: a hollow for a directory, a spiral for text, a
+// crystal for a program.
+fn ui_fossil(kind: u32, cx: u32, cy: u32) {
+    if kind == 0 {
+        fill_rect(cx - 11, cy - 8, 22, 16, 0x0B0806);
+        fill_rect(cx - 7, cy - 11, 14, 3, 0x0B0806);
+        return;
+    }
+    if kind == 1 {
+        ui_disc(cx, cy, 9, 0xC8B58F);
+        ui_disc(cx, cy, 6, 0x6E5F4C);
+        ui_disc(cx + 2, cy, 3, 0xC8B58F);
+        return;
+    }
+    let t: u32 = 0;
+    while t < 10 {
+        fill_rect(cx - t, cy - 10 + t, t * 2 + 1, 1, 0x8FB6A8);
+        fill_rect(cx - t, cy + 10 - t, t * 2 + 1, 1, 0x5F8578);
+        t = t + 1;
+    }
+}
+
+fn ui_is_prog(i: u32) -> bool {
+    return (fs_mode(i) & 73) != 0;       // any execute bit
+}
+
+fn ui_write_octal(v: u32, x: u32, y: u32, fg: u32) {
+    ui_glyph((48 + ((v >> 6) & 7)) as u8, x, y, fg);
+    ui_glyph((48 + ((v >> 3) & 7)) as u8, x + 8, y, fg);
+    ui_glyph((48 + (v & 7)) as u8, x + 16, y, fg);
+}
+
+fn ui_draw_bed(e: u32, y: u32, h: u32) {
+    let base: u32 = fs_entry_addr(e);
+    fill_rect(72, y, 948, h, ui_bed_colour(e));
+    fill_rect(72, y + h, 948, 1, 0x1B120E);
+    let mid: u32 = y + (h - 16) / 2;
+    let kind: u32 = 2;
+    if fs_type(e) == 1 { kind = 0; }
+    else if !ui_is_prog(e) { kind = 1; }
+    ui_fossil(kind, 100, y + h / 2);
+    ui_text(base as *u8, 150, mid, BONE);
+    if kind == 0 {
+        ui_text("cavity", 620, mid, DIM);
+    } else {
+        num_to_str(*((base + 28) as *u32), g_numbuf);
+        ui_text(g_numbuf, 620, mid, DIM);
+        ui_text("bytes", 620 + (g_numlen + 1) * 8, mid, DIM);
+    }
+    ui_write_octal(fs_mode(e), 790, mid, DIM);
+    ui_text("uid", 840, mid, DIM);
+    num_to_str(fs_uid(e) as u32, g_numbuf);
+    ui_text(g_numbuf, 872, mid, DIM);
+}
+
+// One stratum per path segment; the deepest is open and full of beds.
+fn ui_compose_objects() {
+    ui_fit_selection();
+    ui_to_back();
+    ui_paint_chain("Up/Down: pick a bed   Enter: bore in   Esc: climb out");
+    ui_paint_beds();
+    ui_to_front();
+}
+
+// Sky, the path strata and the shaft for Objects and Core. Sets g_edge.
+fn ui_paint_chain(hint: *u8) {
+    ui_build_path();
+    let n: u32 = g_chain_n;
+    if n > 7 { n = 7; }
+    let start: u32 = g_chain_n - n;      // very deep paths keep their last 7 segments
+    let k: u32 = 0;
+    while k < n {
+        g_edge[k] = 56 + k * 26;
+        g_kind[k] = (1 + k) % 4;
+        k = k + 1;
+    }
+    g_amp = 1;
+    ui_paint_sky(56);
+    ui_paint_strata(n);
+    ui_paint_ruler(56);
+    ui_paint_derrick(56, 40);
+    ui_paint_shaft(52);
+    ui_text_shadow("MORT OS", 80, 12, BONE);
+    ui_text_shadow(hint, 200, 12, BONE);
+    ui_glyph(79, 72, g_edge[0] + 5, BONE);
+    k = 0;
+    while k < n {
+        let dir: u32 = g_chain[start + k];
+        let ly: u32 = g_edge[k] + 5;
+        if dir == 255 {
+            ui_text_shadow("/", 100, ly, BONE);
+        } else {
+            ui_text_shadow(fs_entry_addr(dir) as *u8, 100, ly, BONE);
+        }
+        k = k + 1;
+    }
+    g_open_top = g_edge[n - 1];
+}
+
+// The directory's name stencilled at the bottom right, shrunk if it would not
+// fit at full size. A name is at most 23 characters, so x2 always fits.
+fn ui_paint_name(name: *u8) {
+    let len: u32 = str_len(name);
+    if len <= 10 {
+        ui_big_text(name, 690, 666, 4, 0x8A7A62);
+        return;
+    }
+    ui_big_text(name, 1020 - len * 16, 690, 2, 0x8A7A62);
+}
+
+// Where each bed goes, from g_first down to the footer. Sets g_vis.
+fn ui_layout_beds() {
+    let n: u32 = g_chain_n;
+    if n > 7 { n = 7; }
+    let y: u32 = 56 + (n - 1) * 26 + 30;
+    g_vis = 0;
+    let i: u32 = g_first;
+    let fits: bool = true;
+    while i < g_item_n && fits {
+        let h: u32 = ui_bed_height(g_items[i]);
+        if y + h > BEDS_BOTTOM {
+            fits = false;
+        } else {
+            g_bed_y[g_vis] = y;
+            g_bed_h[g_vis] = h;
+            g_vis = g_vis + 1;
+            y = y + h + 2;
+            i = i + 1;
+        }
+    }
+}
+
+// Scroll so the selected bed is on screen. Beds differ in height, so the number
+// that fit changes with g_first and has to be recounted each step.
+fn ui_fit_selection() {
+    ui_build_path();
+    if g_item_n == 0 {
+        g_first = 0;
+        g_vis = 0;
+        return;
+    }
+    if g_sel < g_first { g_first = g_sel; }
+    ui_layout_beds();
+    while g_sel >= g_first + g_vis {
+        g_first = g_first + 1;
+        ui_layout_beds();
+    }
+}
+
+fn ui_paint_beds() {
+    let top: u32 = g_open_top + 30;
+    let k: u32 = 0;
+    while k < g_vis {
+        ui_draw_bed(g_items[g_first + k], g_bed_y[k], g_bed_h[k]);
+        k = k + 1;
+    }
+    if !g_fs_ok {
+        ui_text_shadow("no disk / no MortFS -- boot with a disk attached", 150, top + 10, WARN);
+    } else if g_item_n == 0 {
+        ui_text_shadow("(empty stratum -- Esc climbs out)", 150, top + 10, BONE);
+    }
+    let tail: u32 = 255;
+    if g_chain_n > 1 { tail = g_chain[g_chain_n - 1]; }
+    if tail == 255 {
+        g_bold = true;
+        ui_big_text("ROOT", 690, 666, 8, 0x8A7A62);
+        g_bold = false;
+    } else {
+        ui_paint_name(fs_entry_addr(tail) as *u8);
+    }
+    num_to_str(g_item_n, g_numbuf);
+    ui_text_shadow(g_numbuf, 150, 730, BONE);
+    ui_text_shadow("objects in this stratum", 150 + (g_numlen + 1) * 8, 730, BONE);
+    if g_vis < g_item_n {
+        num_to_str(g_first + 1, g_numbuf);
+        ui_text_shadow(g_numbuf, 150, 706, BONE);
+        let px: u32 = 150 + g_numlen * 8;
+        ui_text_shadow("-", px, 706, BONE);
+        num_to_str(g_first + g_vis, g_numbuf);
+        ui_text_shadow(g_numbuf, px + 8, 706, BONE);
+        ui_text_shadow("shown, Up/Down scrolls", px + 8 + (g_numlen + 1) * 8, 706, BONE);
+    }
+}
+
+fn ui_mark_bed(k: u32) {
+    let y: u32 = g_bed_y[k];
+    let h: u32 = g_bed_h[k];
+    fill_rect(72, y, 4, h, VERM);
+    fill_rect(1016, y, 4, h, VERM);
+    let e: u32 = g_items[g_first + k];
+    ui_text(fs_entry_addr(e) as *u8, 150, y + (h - 16) / 2, BRIGHT);
+}
+
+fn ui_objects_overlay() {
+    if g_item_n == 0 {
+        g_bit_goal = 130;
+        ui_bit_show(g_bit_goal);
+        return;
+    }
+    let k: u32 = g_sel - g_first;
+    ui_mark_bed(k);
+    g_bit_goal = g_bed_y[k] + g_bed_h[k] / 2;
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_objects_compose_now() {
+    ui_compose_objects();
+    ui_restore(0, 0, 1024, 768);
+    g_bit_shown = false;
+    ui_overlay();
+}
+
+fn ui_objects_select(next: u32) {
+    if g_item_n == 0 { return; }
+    if next < g_first || next >= g_first + g_vis {
+        g_sel = next;
+        ui_objects_compose_now();        // scrolls the selection into view
+        return;
+    }
+    let k: u32 = g_sel - g_first;
+    ui_restore(72, g_bed_y[k], 948, g_bed_h[k]);
+    g_sel = next;
+    k = g_sel - g_first;
+    ui_mark_bed(k);
+    g_bit_goal = g_bed_y[k] + g_bed_h[k] / 2;
+}
+
+fn ui_open_objects() {
+    g_scene = SC_OBJECTS;
+    g_dir = 255;
+    g_sel = 0;
+    g_first = 0;
+    g_item_n = 0;
+    if g_fs_ok {
+        ui_scan_dir();
+    }
+    ui_compose_objects();
+    ui_reveal(true);
+}
+
+fn ui_objects_descend() {
+    if g_item_n == 0 { return; }
+    let e: u32 = g_items[g_sel];
+    if fs_type(e) != 1 {
+        ui_open_core(e);
+        return;
+    }
+    g_dir = e;
+    g_sel = 0;
+    g_first = 0;
+    ui_scan_dir();
+    ui_compose_objects();
+    ui_reveal(true);
+}
+
+fn ui_objects_ascend() {
+    if g_dir == 255 {
+        ui_show_surface();
+        return;
+    }
+    let left: u32 = g_dir;
+    g_dir = fs_parent(g_dir) as u32;
+    ui_scan_dir();
+    g_sel = 0;
+    g_first = 0;
+    let i: u32 = 0;
+    while i < g_item_n {                 // re-find where we came from, at any depth
+        if g_items[i] == left {
+            g_sel = i;
+        }
+        i = i + 1;
+    }
+    ui_compose_objects();
+    ui_reveal(false);
+}
+
+fn ui_objects_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 && g_sel > 0 { ui_objects_select(g_sel - 1); }
+        if sc == 80 && g_sel + 1 < g_item_n { ui_objects_select(g_sel + 1); }
+        return;
+    }
+    if sc == 28 { ui_objects_descend(); return; }
+    if sc == 1 || sc == 14 { ui_objects_ascend(); return; }
+}
+
+// ----- the core sample: reading a file -----
+
+fn ui_core_next(p: u32) -> u32 {
+    let i: u32 = p;
+    let col: u32 = 0;
+    while i < g_core_size {
+        let ch: u8 = *((0x00810000 + i) as *u8);
+        i = i + 1;
+        if ch == 10 { return i; }
+        if ch != 13 {
+            col = col + 1;
+            if col >= CORE_COLS { return i; }
+        }
+    }
+    return g_core_size;
+}
+
+fn ui_core_count() -> u32 {
+    let n: u32 = 0;
+    let p: u32 = 0;
+    while p < g_core_size {
+        p = ui_core_next(p);
+        n = n + 1;
+    }
+    return n;
+}
+
+fn ui_compose_core() {
+    ui_to_back();
+    ui_paint_chain("Up/Down PgUp/PgDn: scroll   Esc: back to the bed");
+    let x: u32 = 160;
+    while x < 920 {
+        let up: u32 = 96 + (ui_hash(x / 3, 777) & 7);
+        let dn: u32 = 752 + (ui_hash(x / 3, 778) & 7);
+        let c: u32 = SLAB;
+        if x < 170 || x >= 910 { c = 0x9C8B6E; }
+        else if x < 182 || x >= 898 { c = 0xC0B193; }
+        fill_rect(x, up, 1, dn - up, c);
+        x = x + 1;
+    }
+    ui_text(fs_entry_addr(g_core_e) as *u8, 190, 106, INK);
+    num_to_str(g_core_size, g_numbuf);
+    ui_text(g_numbuf, 560, 106, INK);
+    ui_text("bytes", 560 + (g_numlen + 1) * 8, 106, INK);
+    ui_to_front();
+}
+
+fn ui_core_lastline(a: u32) -> u32 {
+    let b: u32 = g_core_lines;
+    if a + CORE_ROWS < b { b = a + CORE_ROWS; }
+    return b;
+}
+
+fn ui_core_text() {
+    ui_restore(186, 128, 724, 620);
+    if g_core_err {
+        ui_text("could not read this file from the disk", 190, 130, WARN);
+        return;
+    }
+    if g_core_size == 0 {
+        ui_text("(empty file)", 190, 130, 0x7A6A55);
+    }
+    let p: u32 = 0;
+    let i: u32 = 0;
+    while i < g_core_top {
+        p = ui_core_next(p);
+        i = i + 1;
+    }
+    let row: u32 = 0;
+    while row < CORE_ROWS && p < g_core_size {
+        let next: u32 = ui_core_next(p);
+        let col: u32 = 0;
+        let q: u32 = p;
+        while q < next {
+            let ch: u8 = *((0x00810000 + q) as *u8);
+            if ch != 10 && ch != 13 {
+                if ch < 32 || ch > 126 { ch = 46; }
+                ui_glyph(ch, 190 + col * 10, 130 + row * 20, INK);
+                col = col + 1;
+            }
+            q = q + 1;
+        }
+        p = next;
+        row = row + 1;
+    }
+    if g_core_lines > 0 {
+        ui_text("lines", 190, 736, 0x7A6A55);
+        num_to_str(g_core_top + 1, g_numbuf);
+        ui_text(g_numbuf, 238, 736, 0x7A6A55);
+        let x: u32 = 238 + g_numlen * 8;
+        ui_text("-", x, 736, 0x7A6A55);
+        num_to_str(ui_core_lastline(g_core_top), g_numbuf);
+        ui_text(g_numbuf, x + 8, 736, 0x7A6A55);
+        let x2: u32 = x + 8 + g_numlen * 8;
+        ui_text("of", x2 + 8, 736, 0x7A6A55);
+        num_to_str(g_core_lines, g_numbuf);
+        ui_text(g_numbuf, x2 + 32, 736, 0x7A6A55);
+    }
+}
+
+fn ui_core_overlay() {
+    ui_core_text();
+    let span: u32 = g_core_lines;
+    if span == 0 { span = 1; }
+    g_bit_goal = 150 + g_core_top * 560 / span;
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_open_core(e: u32) {
+    g_scene = SC_CORE;
+    g_core_e = e;
+    g_core_top = 0;
+    let want: u32 = *((fs_entry_addr(e) + 28) as *u32);
+    g_core_size = fs_read_file(e);
+    g_core_err = want != 0 && g_core_size == 0;
+    g_core_lines = ui_core_count();
+    ui_compose_core();
+    ui_reveal(true);
+}
+
+fn ui_core_scroll(dn: bool, by: u32) {
+    let max: u32 = 0;
+    if g_core_lines > CORE_ROWS { max = g_core_lines - CORE_ROWS; }
+    if dn {
+        g_core_top = g_core_top + by;
+        if g_core_top > max { g_core_top = max; }
+    } else {
+        if g_core_top < by { g_core_top = 0; } else { g_core_top = g_core_top - by; }
+    }
+    ui_core_text();
+    let span: u32 = g_core_lines;
+    if span == 0 { span = 1; }
+    g_bit_goal = 150 + g_core_top * 560 / span;
+}
+
+fn ui_core_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 { ui_core_scroll(false, 1); }
+        if sc == 80 { ui_core_scroll(true, 1); }
+        if sc == 73 { ui_core_scroll(false, CORE_ROWS); }
+        if sc == 81 { ui_core_scroll(true, CORE_ROWS); }
+        return;
+    }
+    if sc == 57 { ui_core_scroll(true, CORE_ROWS); return; }
+    if sc == 1 || sc == 14 {
+        g_scene = SC_OBJECTS;
+        ui_compose_objects();
+        ui_reveal(false);
+    }
+}
+
+// ----- list rows shared by Machine and Terminate -----
+
+fn ui_row_mark(y: u32, h: u32) {
+    fill_rect(72, y, 4, h, VERM);
+    fill_rect(1016, y, 4, h, VERM);
+}
+
+fn ui_row(label: *u8, y: u32, h: u32, value: *u8) {
+    fill_rect(72, y, 948, h, 0x38291F);
+    fill_rect(72, y + h, 948, 1, 0x1B120E);
+    ui_text(label, 150, y + (h - 16) / 2, BONE);
+    if *(value as *u8) != 0 {
+        ui_text(value, 640, y + (h - 16) / 2, DIM);
+    }
+}
+
+// ----- M: the machine -----
+
+fn ui_ram_mib() -> u32 {
+    let flags: u32 = *(g_mbinfo as *u32);
+    if (flags & 64) == 0 {               // no memory map from the bootloader
+        return 0;
+    }
+    let len: u32 = *((g_mbinfo + 44) as *u32);
+    let addr: u32 = *((g_mbinfo + 48) as *u32);
+    let total: u32 = 0;
+    let p: u32 = addr;
+    let stop: u32 = addr + len;
+    while p < stop {
+        let size: u32 = *(p as *u32);
+        if *((p + 20) as *u32) == 1 {
+            total = total + *((p + 12) as *u32);
+        }
+        p = p + size + 4;
+    }
+    return total / 1048576;
+}
+
+fn ui_kv(label: *u8, y: u32) {
+    ui_text_shadow(label, 150, y, BONE);
+}
+
+fn ui_kv_num(n: u32, unit: *u8, y: u32) {
+    num_to_str(n, g_numbuf);
+    ui_text_shadow(g_numbuf, 294, y, BONE);
+    ui_text_shadow(unit, 294 + (g_numlen + 1) * 8, y, BONE);
+}
+
+fn ui_kv_text(v: *u8, y: u32) {
+    ui_text_shadow(v, 294, y, BONE);
+}
+
+fn ui_yesno(b: bool) -> *u8 {
+    if b { return "ready"; }
+    return "not found";
+}
+
+fn ui_machine_label(i: u32) -> *u8 {
+    if i == 0 { return "Connect with DHCP"; }
+    if i == 1 { return "Disconnect adapter"; }
+    if i == 2 { return "Rescan PCI devices"; }
+    if i == 3 { return "PC speaker on or off"; }
+    if i == 4 { return "Test PC speaker"; }
+    if i == 5 { return "Initialize AC97"; }
+    if i == 6 { return "Raise audio volume"; }
+    return "Test AC97 tone";
+}
+
+fn ui_machine_value(i: u32) -> *u8 {
+    if i == 0 || i == 1 {
+        if g_net_up { return "lease held"; }
+        return "no lease";
+    }
+    if i == 3 {
+        if g_speaker_enabled { return "on"; }
+        return "off";
+    }
+    if i == 5 {
+        if g_ac97_ok { return "ready"; }
+        return "not initialized";
+    }
+    if i == 6 {
+        num_to_str(g_audio_volume, g_numbuf);
+        return g_numbuf;
+    }
+    return "";
+}
+
+fn ui_machine_row_y(i: u32) -> u32 {
+    return 340 + i * 38;
+}
+
+fn ui_compose_machine() {
+    ui_to_back();
+    ui_paint_column(0);
+    ui_text_shadow("Up/Down: pick   Enter: run   Esc: climb out", 200, 12, BONE);
+    if !g_hw_scanned { hw_scan_pci(); }
+    let y: u32 = 96;
+    ui_kv("RAM", y);
+    let ram: u32 = ui_ram_mib();
+    if ram == 0 { ui_kv_text("no memory map from the bootloader", y); }
+    else { ui_kv_num(ram, "MiB", y); }
+    y = y + 24;
+    ui_kv("Heap used", y);
+    ui_kv_num((g_heap_brk - g_heap_base) / 1024, "KiB", y);
+    y = y + 24;
+    ui_kv("Uptime", y);
+    y = y + 24;
+    ui_kv("Disk", y);
+    ui_kv_text(ui_yesno(g_disk_ok), y);
+    y = y + 24;
+    ui_kv("MortFS", y);
+    ui_kv_text(ui_yesno(g_fs_ok), y);
+    y = y + 24;
+    ui_kv("Display", y);
+    ui_kv_text("1024 x 768, 32-bit", y);
+    y = y + 24;
+    ui_kv("Network", y);
+    if g_net_up {
+        let px: u32 = 294;
+        let i: u32 = 0;
+        while i < 4 {
+            num_to_str(g_our_ip[i] as u32, g_numbuf);
+            ui_text_shadow(g_numbuf, px, y, BONE);
+            px = px + g_numlen * 8;
+            if i < 3 { ui_text_shadow(".", px, y, BONE); px = px + 8; }
+            i = i + 1;
+        }
+    } else if g_rtl_ok {
+        ui_kv_text("adapter ready, no lease", y);
+    } else {
+        ui_kv_text("no adapter", y);
+    }
+    y = y + 24;
+    ui_kv("USB", y);
+    if g_usb_ok { ui_kv_num(g_usb_devices, "devices", y); }
+    else { ui_kv_text("no controller", y); }
+    let i: u32 = 0;
+    while i < 8 {
+        ui_row(ui_machine_label(i), ui_machine_row_y(i), 32, ui_machine_value(i));
+        i = i + 1;
+    }
+    ui_to_front();
+}
+
+fn ui_machine_uptime() {
+    ui_restore(294, 144, 160, 20);
+    ui_kv_num(g_ticks / 100, "s", 144);
+}
+
+fn ui_machine_mark() {
+    ui_row_mark(ui_machine_row_y(g_m_sel), 32);
+    ui_text(ui_machine_label(g_m_sel), 150, ui_machine_row_y(g_m_sel) + 8, BRIGHT);
+    g_bit_goal = ui_machine_row_y(g_m_sel) + 16;
+}
+
+fn ui_machine_overlay() {
+    ui_machine_uptime();
+    ui_machine_mark();
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_machine_compose_now() {
+    ui_compose_machine();
+    ui_restore(0, 0, 1024, 768);
+    g_bit_shown = false;
+    ui_overlay();
+}
+
+fn ui_machine_run(i: u32) {
+    ui_to_front();
+    ui_text_shadow("working...", 150, 656, BRIGHT);
+    if i == 0 { g_net_quiet = true; net_dhcp(); g_net_quiet = false; }
+    if i == 1 { ethernet_disconnect(); }
+    if i == 2 { hw_scan_pci(); }
+    if i == 3 {
+        g_speaker_enabled = !g_speaker_enabled;
+        if !g_speaker_enabled { speaker_stop(); }
+    }
+    if i == 4 { speaker_test(); }
+    if i == 5 { ac97_init(); hw_scan_pci(); }
+    if i == 6 { ac97_set_volume((g_audio_volume + 25) % 125); }
+    if i == 7 { ac97_test_tone(); }
+    ui_machine_compose_now();
+}
+
+fn ui_machine_select(next: u32) {
+    ui_restore(72, ui_machine_row_y(g_m_sel), 948, 32);
+    g_m_sel = next;
+    ui_machine_mark();
+}
+
+fn ui_machine_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 && g_m_sel > 0 { ui_machine_select(g_m_sel - 1); }
+        if sc == 80 && g_m_sel < 7 { ui_machine_select(g_m_sel + 1); }
+        return;
+    }
+    if sc == 28 { ui_machine_run(g_m_sel); return; }
+    if sc == 1 || sc == 14 { ui_show_surface(); return; }
+}
+
+// ----- T: terminate -----
+
+fn ui_term_label(i: u32) -> *u8 {
+    if i == 0 { return "Lock"; }
+    if i == 1 { return "Sleep"; }
+    if i == 2 { return "Restart"; }
+    return "Shut down";
+}
+
+fn ui_term_note(i: u32) -> *u8 {
+    if i == 0 { return "seal the section until the password is given"; }
+    if i == 1 { return "bank the fire until a key is pressed"; }
+    if i == 2 { return "pull the drill and start over"; }
+    return "cap the hole and turn the machine off";
+}
+
+fn ui_term_y(i: u32) -> u32 {
+    return 250 + i * 76;
+}
+
+fn ui_compose_terminate() {
+    ui_to_back();
+    ui_paint_column(3);
+    ui_text_shadow("Up/Down: pick   Enter: do it   Esc: climb out", 200, 12, BONE);
+    let i: u32 = 0;
+    while i < 4 {
+        ui_row(ui_term_label(i), ui_term_y(i), 56, ui_term_note(i));
+        i = i + 1;
+    }
+    ui_big_text("TERMINATE", 150, 160, 4, 0x6E6464);
+    ui_to_front();
+}
+
+fn ui_term_mark() {
+    ui_row_mark(ui_term_y(g_t_sel), 56);
+    ui_text(ui_term_label(g_t_sel), 150, ui_term_y(g_t_sel) + 20, BRIGHT);
+    g_bit_goal = ui_term_y(g_t_sel) + 28;
+}
+
+fn ui_term_select(next: u32) {
+    ui_restore(72, ui_term_y(g_t_sel), 948, 56);
+    g_t_sel = next;
+    ui_term_mark();
+}
+
+fn ui_open_terminate() {
+    if !g_gfx {
+        feed();
+        print_string("power needs the graphical interface", g_row, 12);
+        return;
+    }
+    g_scene = SC_TERMINATE;
+    g_t_sel = 0;
+    ui_compose_terminate();
+    ui_reveal(true);
+}
+
+fn ui_terminate_overlay() {
+    ui_term_mark();
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_terminate_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 && g_t_sel > 0 { ui_term_select(g_t_sel - 1); }
+        if sc == 80 && g_t_sel < 3 { ui_term_select(g_t_sel + 1); }
+        return;
+    }
+    if sc == 1 || sc == 14 { ui_show_surface(); return; }
+    if sc == 28 {
+        if g_t_sel == 0 { ui_open_lock(); return; }
+        if g_t_sel == 1 { ui_open_sleep(); return; }
+        if g_t_sel == 2 { reboot(); return; }
+        poweroff();
+    }
+}
+
+// ----- lock and sleep -----
+
+// The section sealed in granite, with one slit for the password.
+fn ui_compose_lock() {
+    ui_to_back();
+    g_edge[0] = 0;
+    g_kind[0] = 3;
+    g_amp = 0;
+    ui_paint_strata(1);
+    ui_big_text("SEALED", 320, 200, 8, 0x4A4242);
+    fill_rect(290, 340, 444, 120, GALLERY);
+    fill_rect(290, 340, 444, 2, 0x3D3535);
+    fill_rect(290, 458, 444, 2, 0x3D3535);
+    ui_text("password", 300, 356, BONE);
+    ui_to_front();
+}
+
+fn ui_lock_field() {
+    ui_restore(300, 382, 424, 70);
+    let i: u32 = 0;
+    while i < g_lock_len {
+        ui_glyph(42, 300 + i * 12, 386, BRIGHT);
+        i = i + 1;
+    }
+    if g_lock_err {
+        ui_text("wrong password", 300, 420, WARN);
+    }
+}
+
+fn ui_lock_overlay() {
+    ui_lock_field();
+}
+
+fn ui_open_lock() {
+    if !g_gfx {
+        feed();
+        print_string("lock needs the graphical interface", g_row, 12);
+        return;
+    }
+    if g_scene != SC_LOCK && g_scene != SC_SLEEP { g_return_scene = g_scene; }
+    g_scene = SC_LOCK;
+    g_lock_len = 0;
+    g_lock_err = false;
+    ui_compose_lock();
+    ui_reveal(true);
+}
+
+fn ui_lock_ok() -> bool {
+    let ai: u32 = acct_find((&g_username as u64) as *u8);
+    if ai == 64 {
+        return false;
+    }
+    g_lockbuf[g_lock_len] = 0;
+    return g_acct_hash[ai] == hash_pw((&g_lockbuf as u64) as *u8);
+}
+
+fn ui_lock_key(sc: u8, ext: bool) {
+    if ext { return; }
+    if sc == 28 {
+        if ui_lock_ok() {
+            ui_show_scene(g_return_scene, false);
+        } else {
+            g_lock_err = true;
+            g_lock_len = 0;
+            ui_lock_field();
+        }
+        return;
+    }
+    if sc == 14 {
+        if g_lock_len > 0 {
+            g_lock_len = g_lock_len - 1;
+            ui_lock_field();
+        }
+        return;
+    }
+    let ch: u8 = scancode_to_ascii(sc, g_shift);
+    if ch != 0 && g_lock_len < 16 {
+        g_lockbuf[g_lock_len] = ch;
+        g_lock_len = g_lock_len + 1;
+        g_lock_err = false;
+        ui_lock_field();
+    }
+}
+
+fn ui_compose_sleep() {
+    ui_to_back();
+    fill_rect(0, 0, 1024, 768, 0x050302);
+    ui_to_front();
+}
+
+fn ui_open_sleep() {
+    if !g_gfx {
+        feed();
+        print_string("sleep needs the graphical interface", g_row, 12);
+        return;
+    }
+    if g_scene != SC_LOCK && g_scene != SC_SLEEP { g_return_scene = g_scene; }
+    g_scene = SC_SLEEP;
+    ui_compose_sleep();
+    ui_reveal(true);
+}
+
+fn ui_sleep_overlay() {
+    ui_disc(512, 384, 3, 0x7A2A10);      // a banked ember, nothing else
+}
+
+// ----- drawprobe: every primitive, on purpose, outside the screen -----
+//
+// test_gfx.py runs this and diffs guest memory: nothing may land outside the
+// surface being drawn on. `front` limits it to calls entirely off the visible
+// screen, because the framebuffer is not recomposed afterwards.
+fn ui_drawprobe_calls(front: bool) {
+    let c: u32 = 0xFF00FF;
+    put_pixel(1030, 100, c);
+    put_pixel(5, 800, c);
+    put_pixel(0xFFFFFFF0, 10, c);
+    put_pixel(5, 0xFFFFFFFF, c);
+    fill_rect(1030, 200, 40, 40, c);
+    fill_rect(10, 800, 20, 40, c);
+    fill_rect(0xFFFFFFF0, 300, 32, 16, c);
+    draw_glyph(65, 1030, 100, c, c);
+    draw_glyph(65, 100, 800, c, c);
+    ui_glyph(65, 1030, 100, c);
+    ui_glyph(65, 100, 800, c);
+    ui_text("probe", 1030, 120, c);
+    ui_big_glyph(77, 1040, 100, 8, c);
+    ui_big_glyph(77, 100, 800, 8, c);
+    ui_big_text("PROBE", 1030, 140, 4, c);
+    ui_disc(1100, 100, 30, c);
+    ui_disc(100, 900, 30, c);
+    ui_line(1030, 10, 1100, 200, c);
+    ui_line(10, 800, 200, 900, c);
+    if !front {
+        fill_rect(1000, 400, 200, 20, c);
+        fill_rect(400, 750, 20, 200, c);
+        ui_big_text("PROBE PROBE PROBE", 800, 500, 8, c);
+        ui_disc(1000, 740, 60, c);
+        ui_disc(8, 8, 30, c);
+    }
+}
+
+fn ui_probe_num(label: *u8, n: u32, col: u32) -> u32 {
+    print_at(label, g_row, col, 7);
+    let c: u32 = col + str_len(label);
+    num_to_str(n, g_numbuf);
+    print_at(g_numbuf, g_row, c, 7);
+    return c + g_numlen + 1;
+}
+
+// `drawprobe info` only reports where the surfaces live.
+fn ui_drawprobe(run: bool) {
+    if !g_gfx || g_scene != SC_SHELL {
+        feed();
+        print_string("drawprobe needs the shell gallery", g_row, 12);
+        return;
+    }
+    if run {
+        ui_to_back();
+        ui_drawprobe_calls(false);
+        ui_to_front();
+        ui_drawprobe_calls(true);
+        ui_compose_shell();              // wipes what the probe left in the back buffer
+        ui_restore(1000, 700, 100, 100);
+        ui_copy_row(800);
+    }
+    feed();
+    let col: u32 = ui_probe_num("back=", g_back, 0);
+    col = ui_probe_num("fb=", g_fb, col);
+    ui_probe_num("pitch=", g_fb_pitch, col);
+}
+
+// ----- scene switching -----
+
+// Recompose any scene: used when Lock and Sleep hand the screen back.
+fn ui_show_scene(sc: u32, down: bool) {
+    g_scene = sc;
+    if sc == SC_SHELL { ui_compose_shell(); }
+    else if sc == SC_OBJECTS { ui_compose_objects(); }
+    else if sc == SC_CORE { ui_compose_core(); }
+    else if sc == SC_MACHINE { ui_compose_machine(); }
+    else if sc == SC_TERMINATE { ui_compose_terminate(); }
+    else { g_scene = SC_SURFACE; ui_compose_surface(); }
+    ui_reveal(down);
+}
+
+fn ui_overlay() {
+    if g_scene == SC_SURFACE { ui_surface_overlay(); }
+    if g_scene == SC_SHELL { ui_shell_overlay(); }
+    if g_scene == SC_OBJECTS { ui_objects_overlay(); }
+    if g_scene == SC_CORE { ui_core_overlay(); }
+    if g_scene == SC_MACHINE { ui_machine_overlay(); }
+    if g_scene == SC_TERMINATE { ui_terminate_overlay(); }
+    if g_scene == SC_LOCK { ui_lock_overlay(); return; }
+    if g_scene == SC_SLEEP { ui_sleep_overlay(); return; }
+    ui_draw_clock();
+}
+
+fn ui_show_surface() {
+    g_scene = SC_SURFACE;
+    ui_compose_surface();
+    ui_reveal(false);
+}
+
+// Put the shell back on screen at once, from anywhere: no reveal, so a caller
+// outside the keyboard path (the serial console) can draw immediately after.
+fn restore_desktop() {
+    g_wipe_on = false;
+    g_scene = SC_SHELL;
+    ui_compose_shell();
+    ui_restore(0, 0, 1024, 768);
+    g_bit_shown = false;
+    ui_overlay();
+}
+
+fn ui_open(i: u32) {
+    g_surf_sel = i;
+    if i == 2 {
+        g_scene = SC_SHELL;
+        ui_compose_shell();
+        ui_reveal(true);
+    }
+    if i == 1 { ui_open_objects(); }
+    if i == 0 {
+        g_scene = SC_MACHINE;
+        g_m_sel = 0;
+        ui_compose_machine();
+        ui_reveal(true);
+    }
+    if i == 3 { ui_open_terminate(); }
+}
+
+
+// ----- kernel hooks -----
+
+fn ui_init() {
+    if g_fb_w != 1024 || g_fb_h != 768 {
+        ui_fatal("this interface needs a 1024x768 framebuffer");
+    }
+    g_back = kmalloc(1024 * 768 * 4);
+    if g_back == 0 {
+        ui_fatal("no memory for the back buffer");
+    }
+}
+
+fn ui_start() {
+    g_scene = SC_SURFACE;
+    ui_compose_surface();
+    ui_reveal(true);
+}
+
+fn ui_tick() {
+    if g_scene == SC_NONE {
+        return;
+    }
+    if g_wipe_on {
+        ui_reveal_step();
+        return;
+    }
+    if g_scene == SC_LOCK || g_scene == SC_SLEEP {
+        return;                          // sealed: no bit, no clock
+    }
+    if g_bit_y != g_bit_goal {
+        let next: u32 = g_bit_goal;
+        if g_bit_y + 14 < g_bit_goal { next = g_bit_y + 14; }
+        if g_bit_y > g_bit_goal + 14 { next = g_bit_y - 14; }
+        ui_bit_show(next);
+    } else if (g_ticks % 12) == 0 {
+        ui_bit_show(g_bit_goal);
+    }
+    if (g_ticks % 100) == 0 {
+        ui_draw_clock();
+        if g_scene == SC_MACHINE { ui_machine_uptime(); }
+    }
+}
+
+fn ui_on_key(sc: u8) -> bool {
+    if g_scene == SC_NONE {
+        return false;
+    }
+    ui_reveal_done();
+    if sc == 42 || sc == 54 { g_shift = true; }
+    if sc == 170 || sc == 182 { g_shift = false; }
+    if g_scene == SC_SHELL {
+        if sc == 1 {
+            ui_show_surface();
+            return true;
+        }
+        return false;
+    }
+    if sc == 224 {
+        g_ui_ext = true;
+        return true;
+    }
+    let ext: bool = g_ui_ext;
+    g_ui_ext = false;
+    if sc >= 128 {
+        return true;
+    }
+    if g_scene == SC_SURFACE { ui_surface_key(sc, ext); }
+    else if g_scene == SC_OBJECTS { ui_objects_key(sc, ext); }
+    else if g_scene == SC_CORE { ui_core_key(sc, ext); }
+    else if g_scene == SC_MACHINE { ui_machine_key(sc, ext); }
+    else if g_scene == SC_TERMINATE { ui_terminate_key(sc, ext); }
+    else if g_scene == SC_LOCK { ui_lock_key(sc, ext); }
+    else if g_scene == SC_SLEEP { ui_show_scene(g_return_scene, false); }
+    return true;
+}
+
+fn ui_fault(vec: u32) {
+    ui_to_front();
+    fill_rect(0, 708, 1024, 60, 0x7F1D0A);
+    ui_text("*** CPU EXCEPTION #", 16, 722, 0xFFFFFF);
+    num_to_str(vec, g_numbuf);
+    ui_text(g_numbuf, 16 + 19 * 8, 722, 0xFFFFFF);
+    ui_text(" -- HALTED ***", 16 + (19 + g_numlen) * 8, 722, 0xFFFFFF);
+}
+
+fn ui_capped() {
+    ui_to_front();
+    fill_rect(0, 0, 1024, 768, 0x0B0806);
+    ui_big_text("CAPPED", 368, 300, 6, BONE);
+    ui_text("It is now safe to turn off your computer.", 348, 420, DIM);
+}

@@ -122,8 +122,8 @@ hands back `blk + 8`, i.e. the address right after the header.
   (e.g. `kmain.mx:401-416`) are pixel colors, not memory addresses, and are
   intentionally left out of this table.
 - **The linear framebuffer's base address and pitch are dynamic, but the
-  desktop drawn on top of it is not**: `fb_init()` only checks the pixel
-  format (32-bpp direct-RGB) before enabling graphics mode, never that
-  `g_fb_w`/`g_fb_h` are large enough for the desktop's fixed-size window
-  frame. See [`docs/architecture.md`](architecture.md#the-desktop--window-manager)
-  for the full trace.
+  interface drawn on it is laid out for exactly 1024x768**: `fb_init()` checks
+  only the pixel format, and `ui_init()` then halts with an on-screen error
+  for any other size. `ui_init()` also takes the first 3 MiB of the heap
+  (1024x768x4, at `0x01000008` on a boot with no earlier `kmalloc`) as the
+  back buffer. See [`docs/architecture.md`](architecture.md#the-borehole-interface).
