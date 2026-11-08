@@ -657,10 +657,8 @@ def phase_full_dir(vm):
           not any(s.rgb(x, y) in BED_COLOURS for y in range(FOOTER_Y, 768) for x in range(76, 1016, 5)))
     check("full dir: the stencilled name stays clear of the beds",
           LABEL not in colours(s, 600, 86, 420, FOOTER_Y - 86))
-    vm.key("down", 0.02)
-    for _ in range(42):
-        vm.key("down", 0.08)
-    vm.key("down", 0.08)
+    for _ in range(44):
+        vm.key("down", 0.4)              # scrolling recomposes; do not outrun the PS/2 queue
     s = vm.shot()
     check("full dir: scrolling reaches the last bed",
           s.find_text(150, 86, 650, "f39.txt", {BRIGHT}) is not None)
@@ -670,7 +668,7 @@ def phase_full_dir(vm):
     check("full dir: the top beds have scrolled away",
           s.find_text(150, 86, 650, "bin", {BONE, BRIGHT}) is None)
     for _ in range(44):
-        vm.key("up", 0.08)
+        vm.key("up", 0.4)
     s = vm.shot()
     check("full dir: scrolling back reaches the first bed",
           s.find_text(150, 86, 650, "bin", {BRIGHT}) is not None)

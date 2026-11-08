@@ -28,6 +28,7 @@ let SLAB: u32 = 0xD8C8A8;
 let INK: u32 = 0x2B1D12;
 let CORE_COLS: u32 = 66;
 let CORE_ROWS: u32 = 30;
+let BEDS_BOTTOM: u32 = 650;           // beds stay above the footer
 
 let CON_X: u32 = 120;                // console origin and cell pitch
 let CON_Y: u32 = 136;
@@ -968,6 +969,7 @@ fn ui_draw_bed(e: u32, y: u32, h: u32) {
 
 // One stratum per path segment; the deepest is open and full of beds.
 fn ui_compose_objects() {
+    ui_fit_selection();
     ui_to_back();
     ui_paint_chain("Up/Down: pick a bed   Enter: bore in   Esc: climb out");
     ui_paint_beds();
@@ -1020,25 +1022,51 @@ fn ui_paint_name(name: *u8) {
     ui_big_text(name, 1020 - len * 16, 690, 2, 0x8A7A62);
 }
 
-fn ui_paint_beds() {
-    let top: u32 = g_open_top + 30;
+// Where each bed goes, from g_first down to the footer. Sets g_vis.
+fn ui_layout_beds() {
+    let n: u32 = g_chain_n;
+    if n > 7 { n = 7; }
+    let y: u32 = 56 + (n - 1) * 26 + 30;
     g_vis = 0;
     let i: u32 = g_first;
-    let y: u32 = top;
     let fits: bool = true;
     while i < g_item_n && fits {
-        let e: u32 = g_items[i];
-        let h: u32 = ui_bed_height(e);
-        if y + h > 756 {
+        let h: u32 = ui_bed_height(g_items[i]);
+        if y + h > BEDS_BOTTOM {
             fits = false;
         } else {
-            ui_draw_bed(e, y, h);
             g_bed_y[g_vis] = y;
             g_bed_h[g_vis] = h;
             g_vis = g_vis + 1;
             y = y + h + 2;
             i = i + 1;
         }
+    }
+}
+
+// Scroll so the selected bed is on screen. Beds differ in height, so the number
+// that fit changes with g_first and has to be recounted each step.
+fn ui_fit_selection() {
+    ui_build_path();
+    if g_item_n == 0 {
+        g_first = 0;
+        g_vis = 0;
+        return;
+    }
+    if g_sel < g_first { g_first = g_sel; }
+    ui_layout_beds();
+    while g_sel >= g_first + g_vis {
+        g_first = g_first + 1;
+        ui_layout_beds();
+    }
+}
+
+fn ui_paint_beds() {
+    let top: u32 = g_open_top + 30;
+    let k: u32 = 0;
+    while k < g_vis {
+        ui_draw_bed(g_items[g_first + k], g_bed_y[k], g_bed_h[k]);
+        k = k + 1;
     }
     if !g_fs_ok {
         ui_text_shadow("no disk / no MortFS -- boot with a disk attached", 150, top + 10, WARN);
@@ -1057,6 +1085,15 @@ fn ui_paint_beds() {
     num_to_str(g_item_n, g_numbuf);
     ui_text_shadow(g_numbuf, 150, 730, BONE);
     ui_text_shadow("objects in this stratum", 150 + (g_numlen + 1) * 8, 730, BONE);
+    if g_vis < g_item_n {
+        num_to_str(g_first + 1, g_numbuf);
+        ui_text_shadow(g_numbuf, 150, 706, BONE);
+        let px: u32 = 150 + g_numlen * 8;
+        ui_text_shadow("-", px, 706, BONE);
+        num_to_str(g_first + g_vis, g_numbuf);
+        ui_text_shadow(g_numbuf, px + 8, 706, BONE);
+        ui_text_shadow("shown, Up/Down scrolls", px + 8 + (g_numlen + 1) * 8, 706, BONE);
+    }
 }
 
 fn ui_mark_bed(k: u32) {
@@ -1089,16 +1126,9 @@ fn ui_objects_compose_now() {
 
 fn ui_objects_select(next: u32) {
     if g_item_n == 0 { return; }
-    if next < g_first {
+    if next < g_first || next >= g_first + g_vis {
         g_sel = next;
-        g_first = next;
-        ui_objects_compose_now();
-        return;
-    }
-    if next >= g_first + g_vis {
-        g_sel = next;
-        g_first = next + 1 - g_vis;
-        ui_objects_compose_now();
+        ui_objects_compose_now();        // scrolls the selection into view
         return;
     }
     let k: u32 = g_sel - g_first;
