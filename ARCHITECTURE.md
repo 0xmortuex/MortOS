@@ -134,9 +134,9 @@ syscall (a program returns), no argv, no file I/O, no exit status.
 
 `build.py` compiles each piece with the Mort compiler and Zig.
 
-1. The Mort compiler comes from `$MORT_HOME`, else `../Mort`, else a fresh
-   `git clone --depth 1` of Mort's default branch into `.mort/` (`build.py:32-44`). The version
-   is not pinned.
+1. The Mort compiler comes from `$MORT_HOME`, else `../Mort`, else a fetch of exactly the commit
+   pinned by `MORT_COMMIT` into `.mort/` (`_find_mort` in `build.py`). A developer's own checkout
+   may differ from the pin, and the build prints a note when it does.
 2. `net/*.mx` (sorted) plus `kmain.mx` are concatenated into one translation unit and passed to
    `mortc.compile_to_c(..., freestanding=True)`, giving `build/kmain.c` (`build.py:109-122`).
 3. `zig cc` compiles C with `-mno-sse -mno-sse2 -mno-mmx -O2` and assembles `boot.s` and `idt.s`.

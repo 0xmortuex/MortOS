@@ -3,6 +3,8 @@
 
     python build.py build     # compile + link -> build/kernel.elf
     python build.py check     # build, then verify it's a valid multiboot kernel
+    python build.py boot      # build, then boot headless: the shell is on this terminal (COM1)
+    python build.py boot-check  # build, boot headless, exit 0 once the shell prompt is up
     python build.py run       # build, then boot it fullscreen in QEMU
     python build.py window    # same, but in a normal window
     python build.py iso       # build a bootable mort.iso (Limine + xorriso)
@@ -16,31 +18,57 @@ with the Zig backend, and links them with linker.ld into a multiboot ELF.
 
 The Mort compiler lives in its own repo. This script looks for it in $MORT_HOME,
 then in a sibling ../Mort checkout, then in ./.mort — and if none of those
-exist, it clones it into ./.mort automatically.
+exist, it fetches the pinned commit (MORT_COMMIT) into ./.mort automatically.
 """
 import os
+import re
 import shutil
 import struct
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = HERE
 MORT_REPO = "https://github.com/0xmortuex/Mort"
+# The exact compiler a clean checkout builds with. Bump it on purpose, in its
+# own commit, after the boot tests pass with the new compiler.
+MORT_COMMIT = "69c7052bf6aa2b35b7eaac4eaca46e59eb8e9ae8"
+
+
+def _git_head(path):
+    """The commit checked out at path, or None if it is not a git checkout."""
+    done = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"],
+                          capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def _fetch_pinned_mort(dest):
+    """Make dest a checkout of exactly MORT_COMMIT (a fresh dest or a stale .mort)."""
+    print(f"Fetching Mort compiler {MORT_COMMIT[:12]} into .mort/ ...")
+    os.makedirs(dest, exist_ok=True)
+    if not os.path.exists(os.path.join(dest, ".git")):
+        subprocess.run(["git", "-C", dest, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", dest, "remote", "add", "origin", MORT_REPO], check=True)
+    subprocess.run(["git", "-C", dest, "fetch", "-q", "--depth", "1", "origin", MORT_COMMIT],
+                   check=True)
+    subprocess.run(["git", "-C", dest, "checkout", "-q", "--detach", "FETCH_HEAD"], check=True)
+    if _git_head(dest) != MORT_COMMIT:
+        sys.exit(f"could not check out Mort {MORT_COMMIT} in {dest}")
 
 
 def _find_mort():
-    candidates = [
-        os.environ.get("MORT_HOME"),
-        os.path.join(os.path.dirname(HERE), "Mort"),
-        os.path.join(HERE, ".mort"),
-    ]
-    for c in candidates:
+    """A developer's own checkout wins and may differ from the pin; .mort never does."""
+    for c in (os.environ.get("MORT_HOME"), os.path.join(os.path.dirname(HERE), "Mort")):
         if c and os.path.isfile(os.path.join(c, "mortc.py")):
+            head = _git_head(c)
+            if head != MORT_COMMIT:
+                print(f"note: building with the Mort checkout at {c} ({head or 'not git'}), "
+                      f"not the pinned {MORT_COMMIT[:12]}")
             return c
     dest = os.path.join(HERE, ".mort")
-    print(f"Mort compiler not found -- cloning {MORT_REPO} into .mort/ ...")
-    subprocess.run(["git", "clone", "--depth", "1", MORT_REPO, dest], check=True)
+    if not os.path.isfile(os.path.join(dest, "mortc.py")) or _git_head(dest) != MORT_COMMIT:
+        _fetch_pinned_mort(dest)
     return dest
 
 
@@ -422,6 +450,59 @@ def _run(fullscreen):
     subprocess.run(cmd)
 
 
+QEMU_HEADLESS = ["-display", "none", "-m", "256", "-accel", "tcg,tb-size=32"]
+SHELL_PROMPT = re.compile(r"(?:^|\n)[~/][^\r\n]* [$#] $")
+BOOT_CHECK_TIMEOUT_S = 60
+
+
+def _headless_qemu():
+    """Build everything a headless boot needs, and return the QEMU binary."""
+    build()
+    ensure_disk()
+    qemu = _find_qemu()
+    if not qemu:
+        sys.exit("qemu-system-i386 not found — install QEMU to boot the kernel.")
+    return qemu
+
+
+def boot():
+    """Boot with no display at all: the shell runs on this terminal, over COM1."""
+    qemu = _headless_qemu()
+    print("Booting MORT OS on this terminal. Ctrl+A then X quits QEMU.", flush=True)
+    done = subprocess.run([qemu, *QEMU_HEADLESS, "-serial", "mon:stdio",
+                           "-kernel", ELF, "-hda", DISK])
+    sys.exit(done.returncode)
+
+
+def boot_check():
+    """Boot headless and exit 0 once COM1 shows the banner and a shell prompt."""
+    qemu = _headless_qemu()
+    log = os.path.join(BUILD, "boot-check.log")
+    if os.path.exists(log):
+        os.remove(log)
+    proc = subprocess.Popen([qemu, *QEMU_HEADLESS, "-monitor", "none", "-serial",
+                             f"file:{os.path.relpath(log, HERE).replace(os.sep, '/')}",
+                             "-kernel", ELF, "-hda", DISK], cwd=HERE)
+    started = time.monotonic()
+    text = ""
+    try:
+        while time.monotonic() - started < BOOT_CHECK_TIMEOUT_S and proc.poll() is None:
+            if os.path.exists(log):
+                with open(log, encoding="ascii", errors="replace", newline="") as fh:
+                    text = fh.read()
+            if "MORT OS" in text and SHELL_PROMPT.search(text):
+                print(text)
+                print(f"OK: booted to the shell prompt in "
+                      f"{time.monotonic() - started:.1f} s")
+                return
+            time.sleep(0.1)
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+    sys.exit(f"boot-check FAILED: no shell prompt on COM1 within {BOOT_CHECK_TIMEOUT_S} s "
+             f"(QEMU exit: {proc.returncode}); COM1 so far:\n{text}")
+
+
 def run():
     _run(fullscreen=True)
 
@@ -430,7 +511,8 @@ def run_windowed():
     _run(fullscreen=False)
 
 
-COMMANDS = {"build": build, "check": check, "run": run, "window": run_windowed,
+COMMANDS = {"build": build, "check": check, "boot": boot, "boot-check": boot_check,
+            "run": run, "window": run_windowed,
             "iso": iso, "run-iso": run_iso, "disk": disk, "prog": prog}
 
 if __name__ == "__main__":
