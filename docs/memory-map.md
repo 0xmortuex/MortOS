@@ -62,7 +62,7 @@ hands back `blk + 8`, i.e. the address right after the header.
 - **`heap_used()`** (`kmain.mx:1121-1131`) walks the same block chain and
   sums the `size` of every block marked used — but has no caller anywhere
   in the repo (confirmed by grep across every `.mx` file). `mem`
-  (`kmain.mx:2127`, `docs/shell.md`) reports total RAM from the multiboot
+  (`kmain.mx:917-942`, `docs/shell.md`) reports total RAM from the multiboot
   memory map, not heap usage; `heap_used` isn't wired into it or anywhere
   else.
 - **`kmalloc`/`kfree` themselves have exactly one caller pair in the whole

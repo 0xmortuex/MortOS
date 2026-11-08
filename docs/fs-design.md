@@ -141,7 +141,7 @@ The shell prompt hits a second, shallower version of the same gap through a
 different, smaller buffer. `draw_prompt` (`kmain.mx:709`-`727`) builds the
 displayed path into a local `disp: [u8; 64]` (`kmain.mx:710`): it copies
 `g_cwdpath` into `disp` via the same unbounded `str_copy`
-(`kmain.mx:739`-`748`) — substituting a leading `~` for the home prefix when
+(`kmain.mx:739`-`749`) — substituting a leading `~` for the home prefix when
 the cwd is under `/home/<user>` (`kmain.mx:714`-`720`), but otherwise with no
 length check at all — then records the written length in `g_prompt_len`
 (`kmain.mx:726`) so the input line starts right after it. Since each path

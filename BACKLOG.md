@@ -2135,11 +2135,87 @@ behavior, add a backlog item describing it and stop.
   broken).
 
 ## Doc quality (found 2026-11-06, not yet done)
-- [ ] The file-by-file citation-drift audit still hasn't covered
+- [x] The file-by-file citation-drift audit still hasn't covered
   `docs/memory-map.md`, `docs/fs-design.md`, or `docs/programs.md` —
   `docs/networking.md`, `docs/hardware.md`, `docs/shell.md`,
   `docs/architecture.md`, `docs/accounts.md`, and `README.md` are now
   done (2026-08-27 through 2026-11-06); these three are what's left.
   Each needs the same direct read-the-actual-cited-line verification,
   not just the range-check script. Found 2026-11-06 while finishing the
-  `docs/networking.md` pass.
+  `docs/networking.md` pass. Partial progress 2026-11-07
+  (`docs/memory-map.md` only, per this item's own ordering —
+  `docs/fs-design.md` and `docs/programs.md` are still unaudited by this
+  method and split out as a new follow-up below): read every one of
+  `docs/memory-map.md`'s ~45 `` `file:line` `` citations directly against
+  current `kmain.mx`/`linker.ld`/`boot.s`/`net/settings.mx` source,
+  including the full kernel-heap section this doc added after its own
+  2026-08-30 audit (predating that pass, so never checked this way).
+  Found one real drift: the "`mem` has no caller wired to `heap_used`"
+  paragraph cited `mem` at `kmain.mx:2127` — that line is real (the shell
+  dispatch's `if streq(cmd, "mem")` condition) but, unlike `docs/shell.md`'s
+  own `mem` row (`kmain.mx:2127, kmain.mx:917` — both the dispatch line
+  *and* the function), this doc cited only the dispatch line while
+  describing what the function itself does ("reports total RAM from the
+  multiboot memory map"), so a reader following the citation lands on a
+  one-line `if` and not the 26-line function the sentence is actually
+  about. Confirmed `fn mem()` runs `kmain.mx:917`-`942` (closing brace at
+  942) by reading it in full. Fixed the citation to `kmain.mx:917-942`.
+  Every other citation checked out exactly, including ones that looked
+  likely to have drifted: the whole syscall-mailbox field table
+  (`kmain.mx:1779`-`1920`), `SECBUF`/`TABCACHE`/`FILEBUF` and all of their
+  usage-site citations (`kmain.mx:1698`-`2690`), the `kmalloc`/`kfree`/
+  `heap_used`/`heap_init` ranges (`kmain.mx:1031`-`1131`), `memtest`'s
+  allocation-size math (`kmain.mx:980-981`, `1066`, `1003-1004`), both
+  Settings heap-display citations (`net/settings.mx:233-234`, `320`,
+  `325-326` — both exact, byte offsets and all), the boot-stack note
+  (`boot.s:33-37`), and all three markdown links/anchors in this doc
+  (`programs.md#typing-a-long-answer-to-syscall-4-corrupts-the-row-below-it`,
+  `settings.md`, `architecture.md#the-desktop--window-manager`). Doc-only
+  change, no kernel logic touched.
+
+## Doc quality (found 2026-11-07, not yet done)
+- [x] The citation-drift audit above covered `docs/memory-map.md`;
+  `docs/fs-design.md` and `docs/programs.md` are the two docs left in
+  the original 2026-11-06 list. Same method: read every `` `file:line` ``
+  citation's actual cited line against current source, not just a
+  range-check. Found 2026-11-07 while finishing the `docs/memory-map.md`
+  pass. Done 2026-11-08: read both docs' citations directly against current
+  source — `docs/programs.md` (~55 `kmain.mx`/`build.py`/`programs/*.mx`/
+  `programs/*.s`/`*.ld` citations, including every syscall-table range,
+  `exec_file`/`exec_enter`/`on_syscall`/`read_line`/`print_inline`/
+  `kread_line`/`put_cell_at`/`put_index` and all three `programs/*.mx`
+  samples) came back with **zero drift** — every single citation matched
+  exactly, down to one-line ranges like the 19-character prompt string
+  claim (`programs/ask.mx:25`) and the 60-char `kread_line` cap
+  (`kmain.mx:2961`). `docs/fs-design.md`'s live intro section (everything
+  above "## 0. Verified language ground rules" — the historical Sections
+  0-7 below that are pre-implementation design prose kept as-is per this
+  doc's own established convention, not live citations, so left untouched
+  same as every prior pass) checked out almost as cleanly: ~45 citations,
+  one real one-line drift found. `str_copy`'s range was cited as
+  `kmain.mx:739`-`748`, but `fn str_copy` (`kmain.mx:739`-`749`) actually
+  closes one line later, at 749 — the cited range stopped at the closing
+  brace of its inner `while true` loop and missed the function's own
+  closing brace. Fixed to `739`-`749`. While verifying this doc's
+  `fs_create` dead-code note, also found and fixed a stale citation in
+  the *source comment itself* (not a doc file, but in scope as a source
+  comment, same as the `net/rtl8139.mx`/`draw_topbar()` comment fixes in
+  earlier passes): `fs_create`'s header comment (`kmain.mx:1587`) pointed
+  at `write`'s creation path as `kmain.mx:2302-2311`, but that range now
+  lands in the *permission-check* branch above it — the real `if i == 64`
+  creation block (resolve parent via `fs_parent_of`, call
+  `fs_create_full`) is `kmain.mx:2306`-`2316`, a 4-line shift consistent
+  with the same untracked-4-line-insertion pattern the 2026-08-27 pass
+  found elsewhere in this file. Fixed the comment to cite `2306-2316`;
+  confirmed `wc -l kmain.mx` is still 3629 lines before and after (comment
+  text length changed by 0 net characters' worth of lines, so no citation
+  below it needed adjusting). Re-ran the citation-range checker (698
+  `` `path:line` `` citations across `README.md` + all `docs/*.md`, 0 out
+  of range) and the link/anchor-resolution checker (76 links, 0 broken).
+  This closes out the `docs/memory-map.md`/`docs/fs-design.md`/
+  `docs/programs.md` follow-up list in full — every doc in the repo
+  (`README.md`, `docs/architecture.md`, `docs/accounts.md`,
+  `docs/shell.md`, `docs/hardware.md`, `docs/networking.md`,
+  `docs/memory-map.md`, `docs/fs-design.md`, `docs/programs.md`) has now
+  had its citations verified line-by-line against current source, not
+  just range-checked.
