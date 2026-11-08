@@ -39,6 +39,18 @@ let g_envscratch: [u8; 80] = [0; 80];                         // scratch for com
 let g_cmdexp: [u8; 256] = [0; 256];                           // a command line after $VAR expansion
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
 let g_pcol: u32 = 0;                                           // program-output cursor column (syscalls)
+let g_serial_ok: bool = false;                                 // COM1 passed its loopback check
+let g_ser_row: u32 = 0;                                        // console cell the COM1 stream has reached
+let g_ser_col: u32 = 0;
+let g_ser_last_cr: bool = false;                               // last COM1 byte was CR (folds CRLF into one Enter)
+let g_ser_esc: u32 = 0;                                        // escape parser: 0 none, 1 ESC, 2 CSI, 3 SS3
+let g_ser_ring: [u8; 512] = [0; 512];                          // COM1 receive ring (one slot stays free)
+let g_ser_head: u32 = 0;
+let g_ser_tail: u32 = 0;
+let g_ser_overrun: u32 = 0;                                    // UART reported losing bytes (LSR overrun)
+let g_ser_lost: u32 = 0;                                       // input dropped because the ring was full
+let g_ser_txdrop: u32 = 0;                                     // output dropped while the reader was stalled
+let g_ser_tx_stalled: bool = false;                            // output is being dropped until THRE returns
 let g_gfx: bool = false;                                       // a linear framebuffer is available
 let g_fb: u32 = 0;                                             // framebuffer base address
 let g_fb_pitch: u32 = 0;                                       // bytes per scanline
@@ -435,6 +447,292 @@ fn draw_text_abs(s: *u8, px: u32, py: u32, fg: u32, bg: u32) {
     }
 }
 
+// ----- COM1 serial console (16550 UART at 0x3F8, 115200 8N1, polled) -----
+//
+// Output mirrors the console: put_cell_at is its one write path, so the stream
+// is rebuilt from cell positions (a gap pads with spaces, a step back emits
+// backspaces, a new row emits CRLF). Received bytes wait in a ring, filled by
+// serial_pump on every transmit and read loop so the 16-byte FIFO keeps
+// draining while a command runs with interrupts off. IRQ4 goes to default_isr,
+// which only needs to wake the idle loop's hlt. The idle loop, or a command's
+// read loop, turns ring bytes into the keys that would type them. The idle loop
+// handles a bounded batch per wake and opens the interrupt window between
+// batches, so a flood of input cannot starve the timer or the keyboard.
+//
+// Losses are counted, and the `serial` command prints the counters. Scripts
+// should still send a line and wait for the prompt: a program that spins
+// without making syscalls leaves nothing to drain the FIFO. The UART is drained
+// even when the ring is full, so a transport's backpressure never reaches the
+// sender: a burst over about 512 bytes can lose bytes unless the sender paces.
+
+// Program the UART and prove it exists with a loopback round trip. On failure
+// g_serial_ok stays false and every serial path below does nothing.
+fn serial_init() {
+    outb(0x3F9, 0x00);                  // IER: no UART interrupts, we poll
+    outb(0x3FB, 0x80);                  // LCR: DLAB on, to reach the divisor
+    outb(0x3F8, 0x01);                  // divisor low: 115200 baud
+    outb(0x3F9, 0x00);                  // divisor high
+    outb(0x3FB, 0x03);                  // LCR: 8N1, DLAB off
+    outb(0x3FA, 0xC7);                  // FCR: FIFO on and cleared, trigger 14
+    outb(0x3FC, 0x1E);                  // MCR: loopback
+    outb(0x3F8, 0xAE);
+    let wait: u32 = 0;
+    while (inb(0x3FD) & 1) == 0 {
+        wait = wait + 1;
+        if wait >= 100000 {
+            return;
+        }
+    }
+    if inb(0x3F8) != 0xAE {
+        return;
+    }
+    outb(0x3FC, 0x0B);                  // MCR: normal operation, DTR + RTS + OUT2 (IRQ gate)
+    outb(0x3F9, 0x01);                  // IER: wake on received data
+    outb(0x21, inb(0x21) & 0xEF);       // PIC: unmask IRQ4
+    g_serial_ok = true;
+}
+
+// Read the line status. The read clears the overrun bit, so once the UART is
+// live every read goes through here and an overrun is never lost.
+fn serial_lsr() -> u8 {
+    let lsr: u8 = inb(0x3FD);
+    if (lsr & 2) != 0 {                     // LSR bit 1: the UART lost a byte
+        g_ser_overrun = g_ser_overrun + 1;
+    }
+    return lsr;
+}
+
+// Move everything the UART holds into the ring, noting any loss.
+fn serial_pump() {
+    if !g_serial_ok {
+        return;
+    }
+    let budget: u32 = 32;
+    while budget > 0 {
+        if (serial_lsr() & 1) == 0 {
+            return;
+        }
+        let b: u8 = inb(0x3F8);
+        let next: u32 = (g_ser_head + 1) % 512;
+        if next == g_ser_tail {
+            g_ser_lost = g_ser_lost + 1;
+        } else {
+            g_ser_ring[g_ser_head] = b;
+            g_ser_head = next;
+        }
+        budget = budget - 1;
+    }
+}
+
+// The next ring byte, or 256 when the ring is empty.
+fn serial_pop() -> u32 {
+    if g_ser_tail == g_ser_head {
+        return 256;
+    }
+    let b: u32 = g_ser_ring[g_ser_tail] as u32;
+    g_ser_tail = (g_ser_tail + 1) % 512;
+    return b;
+}
+
+fn serial_puts(s: *u8) {
+    let i: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        serial_putc(*((s as u32 + i) as *u8));
+        i = i + 1;
+    }
+}
+
+// The `serial` shell command.
+fn serial_status() {
+    feed();
+    if !g_serial_ok {
+        print_string("serial: COM1 unavailable", g_row, 12);
+        return;
+    }
+    print_string("serial: COM1 115200  overrun ", g_row, 7);
+    let col: u32 = 29;
+    num_to_str(g_ser_overrun, g_numbuf);
+    print_at(g_numbuf, g_row, col, 15);
+    col = col + g_numlen;
+    print_at(" ring-lost ", g_row, col, 7);
+    col = col + 11;
+    num_to_str(g_ser_lost, g_numbuf);
+    print_at(g_numbuf, g_row, col, 15);
+    col = col + g_numlen;
+    print_at(" tx-dropped ", g_row, col, 7);
+    col = col + 12;
+    num_to_str(g_ser_txdrop, g_numbuf);
+    print_at(g_numbuf, g_row, col, 15);
+}
+
+fn serial_putc(ch: u8) {
+    if !g_serial_ok {
+        return;
+    }
+    serial_pump();
+    let wait: u32 = 0;
+    while (serial_lsr() & 32) == 0 {    // LSR bit 5: transmitter ready
+        if g_ser_tx_stalled {           // already stuck: drop without spinning
+            g_ser_txdrop = g_ser_txdrop + 1;
+            return;
+        }
+        wait = wait + 1;
+        if wait >= 100000 {             // never let a stuck reader wedge the kernel
+            g_ser_tx_stalled = true;
+            g_ser_txdrop = g_ser_txdrop + 1;
+            return;
+        }
+    }
+    g_ser_tx_stalled = false;
+    outb(0x3F8, ch);
+}
+
+fn serial_newline() {
+    serial_putc(13);
+    serial_putc(10);
+    g_ser_col = 0;
+}
+
+fn serial_mirror(row: u32, col: u32, ch: u8) {
+    if row != g_ser_row {
+        serial_newline();
+        g_ser_row = row;
+    }
+    while g_ser_col < col {
+        serial_putc(32);
+        g_ser_col = g_ser_col + 1;
+    }
+    while g_ser_col > col {
+        serial_putc(8);
+        g_ser_col = g_ser_col - 1;
+    }
+    if ch < 32 || ch == 127 {           // a raw control byte would drive the terminal
+        serial_putc(63);                // '?'
+    } else {
+        serial_putc(ch);
+    }
+    g_ser_col = col + 1;
+}
+
+// Turn one received byte into the key that types it: low byte is the scancode,
+// bit 8 means Shift. Returns 0 for a byte no key produces, and for any part of
+// an escape sequence (arrow keys and the like are ignored).
+fn serial_decode(ch: u8) -> u32 {
+    if g_ser_esc == 1 {
+        g_ser_esc = 0;
+        if ch == 91 { g_ser_esc = 2; return 0; }      // ESC [ : CSI
+        if ch == 79 { g_ser_esc = 3; return 0; }      // ESC O : SS3
+    } else if g_ser_esc == 3 {
+        g_ser_esc = 0;
+        return 0;
+    } else if g_ser_esc == 2 {
+        if ch >= 32 && ch <= 126 {
+            if ch >= 64 { g_ser_esc = 0; }            // the final byte
+            return 0;
+        }
+        g_ser_esc = 0;                                // malformed: decode it normally
+    }
+    if ch == 27 {
+        g_ser_esc = 1;
+        return 0;
+    }
+    let was_cr: bool = g_ser_last_cr;
+    g_ser_last_cr = ch == 13;
+    if ch == 13 { return 28; }                  // Enter
+    if ch == 10 {
+        if was_cr { return 0; }                 // the LF of a CRLF
+        return 28;
+    }
+    if ch == 8 || ch == 127 { return 14; }      // Backspace
+    if ch < 32 || ch > 126 { return 0; }
+    let sc: u32 = 2;
+    while sc <= 57 {
+        if scancode_to_ascii(sc as u8, false) == ch { return sc; }
+        if scancode_to_ascii(sc as u8, true) == ch { return sc + 256; }
+        sc = sc + 1;
+    }
+    return 0;
+}
+
+// The next key waiting on COM1, or 0 when there is none yet.
+fn serial_read_key() -> u32 {
+    serial_pump();
+    while true {
+        let b: u32 = serial_pop();
+        if b == 256 {
+            return 0;
+        }
+        let key: u32 = serial_decode(b as u8);
+        if key != 0 {
+            return key;
+        }
+    }
+    return 0;
+}
+
+// Block until a key arrives from PS/2 (a raw scancode) or COM1 (see above).
+fn input_wait() -> u32 {
+    while true {
+        if (inb(0x64) & 1) != 0 {
+            return inb(0x60) as u32;
+        }
+        let key: u32 = serial_read_key();
+        if key != 0 {
+            return key;
+        }
+    }
+    return 0;
+}
+
+// The lock, sleep and terminate screens refuse serial input outright. It is
+// discarded, not held, so nothing typed there can run after an unlock.
+fn serial_refused() -> bool {
+    if !g_gfx {
+        return false;
+    }
+    return g_scene == SC_LOCK || g_scene == SC_SLEEP || g_scene == SC_TERMINATE;
+}
+
+// True when received bytes are waiting for serial_service.
+fn serial_pending() -> bool {
+    serial_pump();
+    return g_ser_tail != g_ser_head;
+}
+
+// Run waiting COM1 input through the shell, bringing the shell up from any
+// other screen first. Called from the idle loop with interrupts off, the same
+// context on_key runs commands in. Handles at most one batch: the idle loop
+// lets the timer and keyboard in before the next one.
+fn serial_service() {
+    let budget: u32 = 8;
+    while budget > 0 {
+        serial_pump();                  // the last command may have run for a while
+        let b: u32 = serial_pop();
+        if b == 256 {
+            return;
+        }
+        if serial_refused() {
+            g_ser_esc = 0;
+            g_ser_last_cr = false;
+        } else {
+            let key: u32 = serial_decode(b as u8);
+            if key != 0 {
+                if g_gfx && g_scene != SC_SHELL {
+                    ui_show_scene(SC_SHELL, false);
+                }
+                let saved_shift: bool = g_shift;
+                let saved_ext: bool = g_ext;
+                g_shift = (key & 256) != 0;
+                g_ext = false;
+                key_event((key & 255) as u8);
+                g_shift = saved_shift;
+                g_ext = saved_ext;
+            }
+        }
+        budget = budget - 1;
+    }
+}
+
 // ----- text output (framebuffer glyphs when g_gfx, else VGA text memory) -----
 
 fn put_index(index: u32, ch: u8, color: u8) {
@@ -444,6 +742,7 @@ fn put_index(index: u32, ch: u8, color: u8) {
 }
 
 fn put_cell_at(row: u32, col: u32, ch: u8, color: u8) {
+    serial_mirror(row, col, ch);
     if g_gfx {
         ui_put_cell(row, col, ch, color);
         return;
@@ -523,6 +822,8 @@ fn feed() {
     } else {
         g_row = g_row + 1;
     }
+    serial_newline();
+    g_ser_row = g_row;
 }
 
 // ----- scancode -> ASCII (Shift-aware) -----
@@ -1734,9 +2035,8 @@ fn read_line() {
     let shift: bool = false;
     move_cursor(g_row, g_pcol);
     while true {
-        while (inb(0x64) & 1) == 0 {                // wait for a byte
-        }
-        let sc: u8 = inb(0x60);
+        let key: u32 = input_wait();                // PS/2 or COM1
+        let sc: u8 = (key & 255) as u8;
         if sc == 42 || sc == 54 {                   // Shift down
             shift = true;
         } else {
@@ -1760,7 +2060,7 @@ fn read_line() {
                         }
                     } else {
                         if sc < 128 {               // a key press (ignore releases)
-                            let ch: u8 = scancode_to_ascii(sc, shift);
+                            let ch: u8 = scancode_to_ascii(sc, shift || (key & 256) != 0);
                             if ch != 0 {
                                 if len < 120 {
                                     *((buf + len) as *u8) = ch;
@@ -2028,7 +2328,7 @@ fn run_command_impl(cmd: *u8) -> bool {
     }
     if streq(cmd, "help") {
         feed();
-        print_string("help clear about echo uptime crash readme mem", g_row, 7);
+        print_string("help clear about echo uptime crash readme mem serial", g_row, 7);
         feed();
         print_string("files: pwd cd ls cat write rm mkdir rmdir run exec", g_row, 7);
         feed();
@@ -2516,6 +2816,10 @@ fn run_command_impl(cmd: *u8) -> bool {
         g_row = 0;
         return true;
     }
+    if streq(cmd, "serial") {
+        serial_status();
+        return false;
+    }
     if streq(cmd, "about") {
         feed();
         print_string("MORT OS -- written in Mort, a language built from scratch", g_row, 7);
@@ -2555,6 +2859,12 @@ fn on_tick() {
 // assembly stub halts afterwards.
 fn on_exception(vec: u32) {
     if g_gfx {
+        serial_newline();
+        serial_puts("*** CPU EXCEPTION #");
+        num_to_str(vec, g_numbuf);
+        serial_puts(g_numbuf);
+        serial_puts(" -- HALTED ***");
+        serial_newline();
         ui_fault(vec);
         return;
     }
@@ -2649,9 +2959,8 @@ fn kread_line(buf: u64, mask: bool) -> u32 {
     let shift: bool = false;
     move_cursor(g_row, g_col);
     while true {
-        while (inb(0x64) & 1) == 0 {
-        }
-        let sc: u8 = inb(0x60);
+        let key: u32 = input_wait();            // PS/2 or COM1
+        let sc: u8 = (key & 255) as u8;
         if sc == 42 || sc == 54 {
             shift = true;
         } else if sc == 170 || sc == 182 {
@@ -2669,7 +2978,7 @@ fn kread_line(buf: u64, mask: bool) -> u32 {
                 move_cursor(g_row, g_col);
             }
         } else if sc < 128 {
-            let ch: u8 = scancode_to_ascii(sc, shift);
+            let ch: u8 = scancode_to_ascii(sc, shift || (key & 256) != 0);
             if ch != 0 && len < 60 {
                 *((buf + (len as u64)) as *u8) = ch;
                 len = len + 1;
@@ -2750,6 +3059,9 @@ fn write2(buf: u64, off: u32, v: u8) {
 
 fn poweroff() {
     if g_gfx {
+        serial_newline();
+        serial_puts("It is now safe to turn off your computer.");
+        serial_newline();
         ui_capped();
     } else {
         print_at("It is now safe to turn off your computer.", 24, 0, 15);
@@ -2766,8 +3078,10 @@ fn poweroff() {
 }
 
 fn on_key() {
-    let sc: u8 = inb(0x60);
+    key_event(inb(0x60));
+}
 
+fn key_event(sc: u8) {
     if g_gfx && ui_on_key(sc) {      // the interface owns every key the shell does not
         return;
     }
@@ -2848,8 +3162,12 @@ fn kmain(mbinfo: u32) {
 
     clear_screen();
     enable_cursor();
+    serial_init();                   // COM1: everything printed from here on is mirrored
     print_string("MORT OS -- interrupt-driven. type 'help', Enter", 0, 10);
-    fs_init();                       // detect the disk + mount MortFS (safe without either)
+    if !g_serial_ok {
+        print_string("serial: COM1 unavailable", 1, 12);   // between banner and first shell line
+    }
+    fs_init();                      // detect the disk + mount MortFS (safe without either)
     fs_ensure_layout();              // seed /bin /etc /home /var if this is a fresh disk (as root)
     fs_populate_bin();               // move seeded *.bin programs into /bin, executable
     acct_init();                     // load the account table (root + a normal user)
@@ -2870,8 +3188,13 @@ fn kmain(mbinfo: u32) {
     if g_gfx {
         ui_start();                  // compose the start screen; the timer reveals it
     }
-    asm("sti");                      // enable interrupts (keyboard IRQ1 + timer IRQ0)
     while true {
-        asm("hlt");                  // sleep until the next interrupt
+        if serial_pending() {
+            asm("sti; nop; cli");    // more input: take any pending IRQ, but do not sleep
+        } else {
+            asm("sti; hlt");         // one statement: no IRQ can slip between them
+            asm("cli");
+        }
+        serial_service();            // the IRQ that woke us may be COM1
     }
 }

@@ -164,9 +164,22 @@ uv run --no-project --with ziglang --with cryptography python build.py run-iso
 | `python test_fs.py` | Disk stack and persistence |
 | `python test_exec.py` | Compiled programs |
 | `python test_gfx.py` | ISO Borehole interface by screendump |
+| `python test_serial.py` | COM1 console, on the text and ISO paths |
 
-The harnesses type through the QEMU monitor (`sendkey`) and read VGA memory (`memsave`), or
-screendumps in `test_gfx.py`. They do not use serial: the kernel has no serial driver.
+The harnesses other than `test_serial.py` type through the QEMU monitor (`sendkey`) and read VGA
+memory (`memsave`), or screendumps in `test_gfx.py`. `test_serial.py` drives the shell over COM1,
+the 16550 UART console in `kmain.mx`.
+
+Serial boot tests must not write several bytes at once to QEMU's stdio backend on Windows. That
+backend drops a byte instead of waiting when the guest's receive FIFO is at its trigger level, and
+it can outrun a halted guest, so a one-shot write loses bytes. Pace stdio input byte by byte, as
+`test_serial.py` does. The backend also strips CR, so stdio lines end in LF.
+
+A TCP serial port does not make large bursts safe. The kernel drains the UART even when its
+512-byte receive ring is full, so TCP backpressure never reaches the sender, and a burst over about
+512 bytes can lose bytes. Measured: a single 1,080-byte TCP write ran 21 of 40 lines with
+`ring-lost 438`, while 540 bytes was fine. Pace the sender, or wait for the prompt after each
+command. The `serial` command counts what was dropped.
 
 On low-memory machines cap QEMU. With only `-m 256`, a run reached a 1.4 GB working set on this
 Windows host; the audit runs added `-m 256 -accel tcg,tb-size=32`. The test scripts have no
