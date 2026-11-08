@@ -1828,6 +1828,17 @@ fn ui_show_surface() {
     ui_reveal(false);
 }
 
+// Put the shell back on screen at once, from anywhere: no reveal, so a caller
+// outside the keyboard path (the serial console) can draw immediately after.
+fn restore_desktop() {
+    g_wipe_on = false;
+    g_scene = SC_SHELL;
+    ui_compose_shell();
+    ui_restore(0, 0, 1024, 768);
+    g_bit_shown = false;
+    ui_overlay();
+}
+
 fn ui_open(i: u32) {
     g_surf_sel = i;
     if i == 2 {
