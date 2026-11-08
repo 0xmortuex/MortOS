@@ -60,9 +60,6 @@ let g_first: u32 = 0;                // Objects: first visible item
 let g_bed_y: [u32; 64] = [0; 64];    // Objects: on-screen top of each visible bed
 let g_bed_h: [u32; 64] = [0; 64];
 let g_vis: u32 = 0;                  // Objects: how many beds fit
-let g_stack_sel: [u32; 16] = [0; 16];
-let g_stack_first: [u32; 16] = [0; 16];
-let g_depth: u32 = 0;                // how many directories we have descended
 let g_chain: [u32; 16] = [0; 16];    // the path, root first
 let g_chain_n: u32 = 0;
 let g_up: [u32; 16] = [0; 16];       // scratch while reversing the path
@@ -1142,7 +1139,6 @@ fn ui_objects_select(next: u32) {
 fn ui_open_objects() {
     g_scene = SC_OBJECTS;
     g_dir = 255;
-    g_depth = 0;
     g_sel = 0;
     g_first = 0;
     g_item_n = 0;
@@ -1160,11 +1156,6 @@ fn ui_objects_descend() {
         ui_open_core(e);
         return;
     }
-    if g_depth < 16 {
-        g_stack_sel[g_depth] = g_sel;
-        g_stack_first[g_depth] = g_first;
-        g_depth = g_depth + 1;
-    }
     g_dir = e;
     g_sel = 0;
     g_first = 0;
@@ -1178,14 +1169,17 @@ fn ui_objects_ascend() {
         ui_show_surface();
         return;
     }
+    let left: u32 = g_dir;
     g_dir = fs_parent(g_dir) as u32;
     ui_scan_dir();
     g_sel = 0;
     g_first = 0;
-    if g_depth > 0 {
-        g_depth = g_depth - 1;
-        g_sel = g_stack_sel[g_depth];
-        g_first = g_stack_first[g_depth];
+    let i: u32 = 0;
+    while i < g_item_n {                 // re-find where we came from, at any depth
+        if g_items[i] == left {
+            g_sel = i;
+        }
+        i = i + 1;
     }
     ui_compose_objects();
     ui_reveal(false);
