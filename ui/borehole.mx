@@ -694,10 +694,101 @@ fn ui_surface_key(sc: u8, ext: bool) {
     if sc == 28 { ui_open(g_surf_sel); return; }
 }
 
+// ----- the accordion: one open stratum, the others collapse to slivers -----
+
+// Sky 56, closed strata 26 px, the stratum `open` (0..3) takes the rest.
+fn ui_layout_open(open: u32) {
+    g_edge[0] = 56;
+    let k: u32 = 1;
+    while k < 4 {
+        if k <= open { g_edge[k] = 56 + k * 26; }
+        else { g_edge[k] = 768 - (4 - k) * 26; }
+        k = k + 1;
+    }
+    g_kind[0] = 0; g_kind[1] = 1; g_kind[2] = 2; g_kind[3] = 3;
+    g_amp = 1;
+}
+
+fn ui_lower_name(i: u32) -> *u8 {
+    if i == 0 { return "machine"; }
+    if i == 1 { return "objects"; }
+    if i == 2 { return "run"; }
+    return "terminate";
+}
+
+// Sky, strata, ruler and shaft for a scene with one open stratum.
+fn ui_paint_column(open: u32) {
+    ui_layout_open(open);
+    ui_paint_sky(56);
+    ui_paint_strata(4);
+    ui_paint_ruler(56);
+    ui_paint_derrick(56, 40);
+    ui_paint_shaft(52);
+    ui_text_shadow("MORT OS", 80, 12, BONE);
+    let i: u32 = 0;
+    while i < 4 {
+        let y: u32 = g_edge[i] + 5;
+        ui_glyph(ui_letter(i), 72, y, BONE);
+        ui_text_shadow(ui_lower_name(i), 100, y, BONE);
+        i = i + 1;
+    }
+}
+
+// ----- R: the shell gallery -----
+
+// A rough gallery hacked out of the shale, with the console inside it.
+fn ui_compose_shell() {
+    ui_to_back();
+    ui_paint_column(2);
+    let y: u32 = 124;
+    while y < 726 {
+        let left: u32 = 90 + (ui_hash(y / 3, 7) & 11);
+        let right: u32 = 938 + (ui_hash(y / 3, 19) & 11);
+        fill_rect(left, y, right - left, 1, GALLERY);
+        y = y + 1;
+    }
+    let x: u32 = 96;
+    while x < 944 {
+        let up: u32 = 116 + (ui_hash(x / 4, 3) & 7);
+        fill_rect(x, up, 1, 124 - up + 8, GALLERY);
+        let dn: u32 = 726 + (ui_hash(x / 4, 41) & 7);
+        fill_rect(x, 720, 1, dn - 720, GALLERY);
+        x = x + 1;
+    }
+    ui_replay_console();
+    ui_glyph(82, 72, g_edge[2] + 5, BONE);   // the R sliver label, over the gallery's rough top
+    ui_text_shadow("run", 100, g_edge[2] + 5, BONE);
+    ui_text("Esc: climb back to the surface", 130, 668, DIM);
+    ui_to_front();
+}
+
+// Redraw every console cell into the current target.
+fn ui_replay_console() {
+    let row: u32 = 0;
+    while row < 25 {
+        let col: u32 = 0;
+        while col < 80 {
+            let off: u32 = (row * 80 + col) * 2;
+            if g_cells[off] != 0 {
+                ui_cell_draw(row, col, g_cells[off], g_cells[off + 1]);
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+fn ui_shell_overlay() {
+    ui_cursor_draw();
+    g_bit_goal = 640;
+    ui_bit_show(g_bit_goal);
+}
+
 // ----- scene switching -----
 
 fn ui_overlay() {
     if g_scene == SC_SURFACE { ui_surface_overlay(); }
+    if g_scene == SC_SHELL { ui_shell_overlay(); }
     ui_draw_clock();
 }
 
@@ -709,7 +800,11 @@ fn ui_show_surface() {
 
 fn ui_open(i: u32) {
     g_surf_sel = i;
-    // Machine, Objects, Run and Terminate arrive in their own commits.
+    if i == 2 {
+        g_scene = SC_SHELL;
+        ui_compose_shell();
+        ui_reveal(true);
+    }
 }
 
 fn ui_open_terminate() { }
@@ -763,6 +858,10 @@ fn ui_on_key(sc: u8) -> bool {
     if sc == 42 || sc == 54 { g_shift = true; }
     if sc == 170 || sc == 182 { g_shift = false; }
     if g_scene == SC_SHELL {
+        if sc == 1 {
+            ui_show_surface();
+            return true;
+        }
         return false;
     }
     if sc == 224 {
