@@ -452,23 +452,33 @@ def session_iso_flood():
 
 
 def session_lsr_overrun():
-    """An overrun latched while serial_putc waits to transmit must be counted.
+    """Overruns reach the counter, and no LSR read can eat one uncounted.
 
-    Reading the LSR clears its overrun bit, so a transmit wait that ignores it
-    loses the report. A throttled reader keeps the guest in that wait; each
-    round pauses the guest and overfills the receive FIFO through UART loopback,
-    which is the one route to a real overrun in QEMU.
+    Reading the LSR clears its overrun bit, so a read that ignores the bit loses
+    the report. A guest paused by the monitor rarely sits between the receive
+    read and the transmit wait's read, and while the backend refuses output a
+    loopback write makes no overrun at all, so the boot below catches a lost
+    report only sometimes. The dependable guard is the source check: only these
+    two functions may read the LSR.
     """
-    rounds = 24
-    cats = 30                    # the ring holds them; the drop path runs them quickly
-    t = TcpSerial("-kernel", build.ELF, "-hda", BIGIMG, rcvbuf=2048, sndbuf=4096)
+    with open(os.path.join(HERE, "kmain.mx"), encoding="utf-8") as fh:
+        source = fh.read()
+    readers = set()
+    for chunk in re.split(r"(?m)^(?=fn )", source)[1:]:
+        if "inb(0x3FD)" in chunk:
+            readers.add(re.match(r"fn (\w+)", chunk).group(1))
+    check("lsr: every LSR read after init goes through serial_lsr",
+          readers == {"serial_init", "serial_lsr"}, repr(sorted(readers)))
+
+    rounds = 10
+    t = TcpSerial("-kernel", build.ELF, "-hda", BIGIMG)
     try:
         t.start_reading()
         if not check("lsr: shell is up", wait_serial_prompt(t), t.seen()[-200:]):
             return
-        t.read_gap_s = 1.5           # all but stop reading, so transmit backs up
-        for _ in range(cats):
-            t.typed("cat /big.txt\r")
+        start = len(t.seen())
+        t.typed("cat /big.txt\r")
+        check("lsr: cat started", t.until("0123456789", start), t.seen(start)[-200:])
         for _ in range(rounds):
             T._monitor(t.h, "stop")
             T._monitor(t.h, "o /b 0x3fc 0x1e")       # MCR: loopback
@@ -476,8 +486,7 @@ def session_lsr_overrun():
                 T._monitor(t.h, "o /b 0x3f8 0x2e")   # more than the FIFO holds
             T._monitor(t.h, "o /b 0x3fc 0x0b")       # MCR: normal operation
             T._monitor(t.h, "cont")
-            time.sleep(0.12)
-        t.read_gap_s = 0
+            time.sleep(0.1)
         wait_quiet(t, idle_s=2)
         t.typed("\r")
         wait_quiet(t)
