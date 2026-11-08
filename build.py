@@ -110,13 +110,14 @@ def build():
     # mortnet network stack in net/*.mx (ordered so declarations resolve; Mort
     # emits prototypes first, so calls across files work regardless). All one
     # translation unit, compiled together.
-    net_dir = os.path.join(HERE, "net")
     net_src = ""
-    if os.path.isdir(net_dir):
-        for name in sorted(os.listdir(net_dir)):
-            if name.endswith(".mx"):
-                with open(os.path.join(net_dir, name), encoding="utf-8") as fh:
-                    net_src += fh.read() + "\n"
+    for sub in ("net", "ui"):
+        src_dir = os.path.join(HERE, sub)
+        if os.path.isdir(src_dir):
+            for name in sorted(os.listdir(src_dir)):
+                if name.endswith(".mx"):
+                    with open(os.path.join(src_dir, name), encoding="utf-8") as fh:
+                        net_src += fh.read() + "\n"
     with open(os.path.join(HERE, "kmain.mx"), encoding="utf-8") as fh:
         combined = net_src + fh.read()
     c_source = mortc.compile_to_c(combined, freestanding=True)

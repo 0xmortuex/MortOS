@@ -1,0 +1,795 @@
+// Borehole: the MORT OS interface. See docs/borehole-concept.md.
+//
+// The whole screen is one geological section. A scene is composed off-screen
+// into g_back, revealed row by row on the timer, and anything that changes
+// between scenes (selection, the drill bit, the clock) is drawn straight onto
+// the framebuffer over a strip restored from g_back. The shell's console stays
+// in g_cells whether or not it is visible, so leaving the shell loses nothing.
+
+let SC_NONE: u32 = 0;
+let SC_SURFACE: u32 = 1;
+let SC_SHELL: u32 = 2;
+
+let BONE: u32 = 0xE8DCC4;
+let BRIGHT: u32 = 0xF5EBD7;
+let DIM: u32 = 0xA89878;
+let VERM: u32 = 0xFF4B1F;
+let SHAFT: u32 = 0x0C0908;
+let GALLERY: u32 = 0x14100C;
+let SHADE: u32 = 0x120C08;
+
+let CON_X: u32 = 120;                // console origin and cell pitch
+let CON_Y: u32 = 136;
+let CON_CW: u32 = 10;
+let CON_CH: u32 = 20;
+
+let g_scene: u32 = 0;                // SC_*
+let g_back: u32 = 0;                 // composed scene, 1024x768, pitch 4096
+let g_edge: [u32; 8] = [0; 8];       // top edge of each stratum, then the bottom
+let g_kind: [u32; 8] = [0; 8];       // lithology of each stratum
+let g_amp: u32 = 0;                  // how much the strata boundaries wander
+let g_surf_sel: u32 = 2;             // selected stratum on the surface (R)
+let g_ui_ext: bool = false;          // saw the 0xE0 extended-key prefix
+
+let g_wipe_on: bool = false;         // a reveal is running
+let g_wipe_y: u32 = 0;               // next row to reveal (down) or last revealed (up)
+let g_wipe_down: bool = true;
+let g_bit_y: u32 = 0;                // the drill bit, drawn on the framebuffer
+let g_bit_goal: u32 = 0;
+let g_bit_shown: bool = false;
+
+let g_cells: [u8; 4000] = [0; 4000]; // the shell console: (char, attr) x 80 x 25
+let g_clkbuf: [u8; 12] = [0; 12];
+let g_bold: bool = false;             // embolden the next enlarged glyphs
+
+// Two-octave sine in 0..16, and the 4x4 Bayer matrix used to dither the sky.
+let g_sin: [u8; 64] = [8, 9, 10, 11, 11, 12, 13, 14, 14, 15, 15, 15, 16, 16, 16, 16, 16, 16, 16, 16, 16, 15, 15, 15, 14, 14, 13, 12, 11, 11, 10, 9, 8, 7, 6, 5, 5, 4, 3, 2, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 5, 6, 7];
+let g_bayer: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
+// ----- errors -----
+
+// A failure the interface cannot run through. Reported on screen, then halted.
+fn ui_fatal(msg: *u8) {
+    g_tgt = g_fb;
+    g_tgt_pitch = g_fb_pitch;
+    let w: u32 = g_fb_w;
+    if w > 1024 { w = 1024; }
+    fill_rect(0, 0, w, 48, 0x7F1D0A);
+    ui_text("BOREHOLE FAILED", 16, 6, 0xFFFFFF);
+    ui_text(msg, 16, 26, 0xFFFFFF);
+    asm("cli");
+    while true {
+        asm("hlt");
+    }
+}
+
+// ----- pixels and text -----
+
+fn ui_to_back() {
+    g_tgt = g_back;
+    g_tgt_pitch = 4096;
+}
+
+fn ui_to_front() {
+    g_tgt = g_fb;
+    g_tgt_pitch = g_fb_pitch;
+}
+
+fn ui_hash(x: u32, y: u32) -> u32 {
+    let h: u32 = x * 374761393 + y * 668265263;
+    h = (h ^ (h >> 13)) * 1274126177;
+    return h ^ (h >> 16);
+}
+
+// One glyph with a transparent background.
+fn ui_glyph(ch: u8, px: u32, py: u32, fg: u32) {
+    let base: u32 = (ch as u32) * 16;
+    let row: u32 = 0;
+    while row < 16 {
+        let bits: u8 = g_font[base + row];
+        let line: u32 = g_tgt + (py + row) * g_tgt_pitch + px * 4;
+        let col: u32 = 0;
+        while col < 8 {
+            if ((bits >> (7 - col)) & 1) == 1 {
+                *((line + col * 4) as *u32) = fg;
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+}
+
+// A NUL-terminated string, transparent background, 8 px advance.
+fn ui_text(s: *u8, x: u32, y: u32, fg: u32) {
+    let i: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        ui_glyph(*((s as u32 + i) as *u8), x + i * 8, y, fg);
+        i = i + 1;
+    }
+}
+
+fn ui_text_shadow(s: *u8, x: u32, y: u32, fg: u32) {
+    ui_text(s, x + 1, y + 1, SHADE);
+    ui_text(s, x, y, fg);
+}
+
+fn ui_fbit(ch: u32, c: i32, r: i32) -> bool {
+    if c < 0 || c > 7 || r < 0 || r > 15 {
+        return false;
+    }
+    let bits: u8 = g_font[ch * 16 + (r as u32)];
+    if g_bold && c > 0 && ((bits >> (8 - (c as u32))) & 1) == 1 {
+        return true;                     // carved letters are one pixel wider
+    }
+    return ((bits >> (7 - (c as u32))) & 1) == 1;
+}
+
+// One glyph enlarged with an EPX pass (diagonals stay smooth). sc is even.
+fn ui_big_glyph(ch: u8, x: u32, y: u32, sc: u32, fg: u32) {
+    let code: u32 = ch as u32;
+    let s: u32 = sc / 2;
+    let r: i32 = 0;
+    while r < 16 {
+        let c: i32 = 0;
+        while c < 8 {
+            let p: bool = ui_fbit(code, c, r);
+            let a: bool = ui_fbit(code, c, r - 1);
+            let b: bool = ui_fbit(code, c + 1, r);
+            let l: bool = ui_fbit(code, c - 1, r);
+            let d: bool = ui_fbit(code, c, r + 1);
+            let e0: bool = p;
+            let e1: bool = p;
+            let e2: bool = p;
+            let e3: bool = p;
+            if l == a && l != d && a != b { e0 = a; }
+            if a == b && a != l && b != d { e1 = b; }
+            if d == l && d != b && l != a { e2 = l; }
+            if b == d && b != a && d != l { e3 = d; }
+            let px: u32 = x + (c as u32) * sc;
+            let py: u32 = y + (r as u32) * sc;
+            if e0 { fill_rect(px, py, s, s, fg); }
+            if e1 { fill_rect(px + s, py, s, s, fg); }
+            if e2 { fill_rect(px, py + s, s, s, fg); }
+            if e3 { fill_rect(px + s, py + s, s, s, fg); }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+}
+
+// Enlarged string with a hard shadow, 8*sc advance.
+fn ui_big_text(s: *u8, x: u32, y: u32, sc: u32, fg: u32) {
+    let i: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        let ch: u8 = *((s as u32 + i) as *u8);
+        ui_big_glyph(ch, x + i * 8 * sc + sc / 2, y + sc / 2, sc, SHADE);
+        ui_big_glyph(ch, x + i * 8 * sc, y, sc, fg);
+        i = i + 1;
+    }
+}
+
+fn ui_disc(cx: u32, cy: u32, r: u32, color: u32) {
+    let dy: u32 = 0;
+    while dy <= r + r {
+        let oy: i32 = (dy as i32) - (r as i32);
+        let dx: u32 = 0;
+        while dx <= r + r {
+            let ox: i32 = (dx as i32) - (r as i32);
+            if ox * ox + oy * oy <= ((r * r) as i32) {
+                put_pixel(cx - r + dx, cy - r + dy, color);
+            }
+            dx = dx + 1;
+        }
+        dy = dy + 1;
+    }
+}
+
+fn ui_line(x0: u32, y0: u32, x1: u32, y1: u32, color: u32) {
+    let x: i32 = x0 as i32;
+    let y: i32 = y0 as i32;
+    let dx: i32 = (x1 as i32) - x;
+    let dy: i32 = (y1 as i32) - y;
+    if dx < 0 { dx = 0 - dx; }
+    if dy < 0 { dy = 0 - dy; }
+    let sx: i32 = 1;
+    let sy: i32 = 1;
+    if x0 > x1 { sx = -1; }
+    if y0 > y1 { sy = -1; }
+    let err: i32 = dx - dy;
+    while true {
+        put_pixel(x as u32, y as u32, color);
+        if x == (x1 as i32) && y == (y1 as i32) {
+            return;
+        }
+        let e2: i32 = 2 * err;
+        if e2 > (0 - dy) { err = err - dy; x = x + sx; }
+        if e2 < dx { err = err + dx; y = y + sy; }
+    }
+}
+
+// Copy a rectangle from the composed scene back onto the framebuffer.
+fn ui_restore(x: u32, y: u32, w: u32, h: u32) {
+    let yy: u32 = 0;
+    while yy < h {
+        let src: u32 = g_back + (y + yy) * 4096 + x * 4;
+        let dst: u32 = g_fb + (y + yy) * g_fb_pitch + x * 4;
+        let xx: u32 = 0;
+        while xx < w {
+            *((dst + xx * 4) as *u32) = *((src + xx * 4) as *u32);
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+}
+
+// ----- rock -----
+
+fn ui_wave(x: u32, k: u32) -> u32 {
+    return (g_sin[((x * (3 + k)) / 8 + k * 13) & 63] as u32) * g_amp / 8;
+}
+
+// The colour of a pixel of lithology `kind` at (x, y).
+fn ui_rock(kind: u32, x: u32, y: u32) -> u32 {
+    if kind == 0 {                       // sandstone: grain
+        let h: u32 = ui_hash(x / 2, y / 2) & 31;
+        if h == 0 { return 0x5E3D1B; }
+        if h == 1 { return 0x936A3A; }
+        return 0x7A5228;
+    }
+    if kind == 1 {                       // limestone: coursed blocks
+        if (y % 16) == 0 { return 0x4F4336; }
+        let off: u32 = 0;
+        if ((y / 16) % 2) == 1 { off = 12; }
+        if ((x + off) % 24) == 0 { return 0x4F4336; }
+        if (ui_hash(x, y) & 63) == 0 { return 0x7B6C5A; }
+        return 0x6A5B4A;
+    }
+    if kind == 2 {                       // shale: broken laminae
+        let wob: u32 = (g_sin[(x / 6) & 63] as u32) / 4;
+        if ((y + wob) % 8) == 0 && (ui_hash(x / 16, y / 8) & 3) != 0 {
+            return 0x34201A;
+        }
+        if (ui_hash(x, y) & 127) == 0 { return 0x5B3A2C; }
+        return 0x4A2B20;
+    }
+    let h: u32 = ui_hash(x, y) & 31;     // granite: speckle
+    if h < 3 { return 0x3D3535; }
+    if h < 5 { return 0x191515; }
+    return 0x262020;
+}
+
+// Paint n strata from g_edge/g_kind, with wandering boundaries, into g_back.
+fn ui_paint_strata(n: u32) {
+    let x: u32 = 0;
+    while x < 1024 {
+        let y: u32 = g_edge[0];
+        let k: u32 = 0;
+        while k < n {
+            let bottom: u32 = 768;
+            if k + 1 < n {
+                bottom = g_edge[k + 1] + ui_wave(x, k) - g_amp;
+            }
+            while y < bottom {
+                *((g_back + y * 4096 + x * 4) as *u32) = ui_rock(g_kind[k], x, y);
+                y = y + 1;
+            }
+            k = k + 1;
+        }
+        x = x + 1;
+    }
+}
+
+// ----- sky, derrick, shaft, ruler -----
+
+fn ui_rtc_h() -> u32 {
+    let stb: u8 = rtc_reg(0x0B);
+    return rtc_conv(rtc_reg(4), (stb & 4) != 0) as u32;
+}
+
+fn ui_rtc_m() -> u32 {
+    let stb: u8 = rtc_reg(0x0B);
+    return rtc_conv(rtc_reg(2), (stb & 4) != 0) as u32;
+}
+
+fn ui_sky_colour(hour: u32, step: u32) -> u32 {
+    if hour >= 8 && hour < 17 {          // day
+        if step == 0 { return 0x6A8FA8; }
+        if step == 1 { return 0x8FA8B0; }
+        if step == 2 { return 0xC2B79B; }
+        if step == 3 { return 0xE1CDA0; }
+        return 0xEADCB2;
+    }
+    if (hour >= 5 && hour < 8) || (hour >= 17 && hour < 22) {   // dawn, dusk
+        if step == 0 { return 0x241A35; }
+        if step == 1 { return 0x4A2640; }
+        if step == 2 { return 0x883A45; }
+        if step == 3 { return 0xC8603F; }
+        return 0xE8915F;
+    }
+    if step == 0 { return 0x0E0A16; }    // night
+    if step == 1 { return 0x171029; }
+    if step == 2 { return 0x221531; }
+    if step == 3 { return 0x2D1A38; }
+    return 0x361F3E;
+}
+
+// Dithered sky, the sun or moon on its arc, and the ridge line, in g_back.
+fn ui_paint_sky(h: u32) {
+    let hour: u32 = ui_rtc_h();
+    let minute: u32 = ui_rtc_m();
+    let y: u32 = 0;
+    while y < h {
+        let level: u32 = y * 64 / h;
+        let idx: u32 = level / 16;
+        let frac: u32 = level % 16;
+        let x: u32 = 0;
+        while x < 1024 {
+            let step: u32 = idx;
+            if frac > (g_bayer[(x & 3) + (y & 3) * 4] as u32) { step = idx + 1; }
+            if step > 4 { step = 4; }
+            *((g_back + y * 4096 + x * 4) as *u32) = ui_sky_colour(hour, step);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    let mins: u32 = hour * 60 + minute;
+    let cx: u32 = 96 + mins * 880 / 1440;
+    let dist: u32 = 0;
+    if cx > 536 { dist = cx - 536; } else { dist = 536 - cx; }
+    let cy: u32 = 26 + dist * dist * (h - 60) / 193600;
+    if hour >= 6 && hour < 20 {
+        ui_disc(cx, cy, 18, 0xFFD27A);
+    } else {
+        ui_disc(cx, cy, 15, 0xE8E0CF);
+        ui_disc(cx + 6, cy - 3, 12, ui_sky_colour(hour, 0));
+    }
+    let x: u32 = 0;
+    while x < 1024 {
+        let top: u32 = h - 8 - (g_sin[(x * 3 / 8) & 63] as u32) / 2 - (ui_hash(x / 3, 91) & 3);
+        let yy: u32 = top;
+        while yy < h {
+            *((g_back + yy * 4096 + x * 4) as *u32) = 0x1B120E;
+            yy = yy + 1;
+        }
+        x = x + 1;
+    }
+}
+
+fn ui_paint_derrick(ground: u32, height: u32) {
+    let c: u32 = 0x2A1C14;
+    let lx: u32 = 54 - 22;
+    let rx: u32 = 54 + 22;
+    let top: u32 = ground - height;
+    ui_line(lx, ground, 54, top, c);
+    ui_line(lx + 1, ground, 55, top, c);
+    ui_line(rx, ground, 54, top, c);
+    ui_line(rx - 1, ground, 53, top, c);
+    let y: u32 = ground - 16;
+    while y > top + 8 {
+        let half: u32 = (y - top) * 22 / height;
+        fill_rect(54 - half, y, half * 2, 2, c);
+        y = y - 16;
+    }
+    fill_rect(48, top - 3, 12, 3, VERM);
+}
+
+fn ui_paint_shaft(top: u32) {
+    fill_rect(46, top, 2, 768 - top, 0x2A201A);
+    fill_rect(60, top, 2, 768 - top, 0x2A201A);
+    fill_rect(48, top, 12, 768 - top, SHAFT);
+}
+
+// The depth ruler down the left edge, in metres from the surface.
+fn ui_paint_ruler(top: u32) {
+    let y: u32 = top + 20;
+    while y < 760 {
+        let major: bool = ((y - top) % 100) == 0;
+        let w: u32 = 6;
+        if major { w = 14; }
+        fill_rect(30 - w, y, w, 1, DIM);
+        if major {
+            num_to_str((y - top) / 2, g_numbuf);
+            ui_text_shadow(g_numbuf, 2, y + 3, DIM);
+        }
+        y = y + 20;
+    }
+}
+
+// ----- the drill bit -----
+
+fn ui_bit_rect_restore(y: u32) {
+    let ty: u32 = y - 20;
+    if y < 20 { ty = 0; }
+    ui_restore(40, ty, 28, 54);
+}
+
+fn ui_draw_bit(y: u32) {
+    fill_rect(48, y - 18, 12, 28, VERM);
+    let s: u32 = 0;
+    while s < 28 {
+        fill_rect(48, y - 18 + s, 12, 1, 0xC2330F);
+        s = s + 6;
+    }
+    fill_rect(44, y + 10, 20, 3, 0xFFD4A0);
+    let t: u32 = 0;
+    while t < 10 {
+        fill_rect(54 - (10 - t), y + 13 + t, (10 - t) * 2, 1, VERM);
+        t = t + 1;
+    }
+}
+
+fn ui_draw_spark(y: u32) {
+    let h: u32 = ui_hash(g_ticks, y);
+    let n: u32 = 0;
+    while n < 4 {
+        let dx: u32 = (h >> (n * 4)) & 7;
+        let dy: u32 = (h >> (n * 3 + 8)) & 7;
+        put_pixel(50 + dx, y + 23 + dy, 0xFFD27A);
+        n = n + 1;
+    }
+}
+
+fn ui_bit_show(y: u32) {
+    if g_bit_shown {
+        ui_bit_rect_restore(g_bit_y);
+    }
+    ui_draw_bit(y);
+    ui_draw_spark(y);
+    g_bit_y = y;
+    g_bit_shown = true;
+}
+
+// ----- the reveal -----
+
+fn ui_copy_row(y: u32) {
+    let src: u32 = g_back + y * 4096;
+    let dst: u32 = g_fb + y * g_fb_pitch;
+    let x: u32 = 0;
+    while x < 1024 {
+        *((dst + x * 4) as *u32) = *((src + x * 4) as *u32);
+        x = x + 1;
+    }
+}
+
+fn ui_reveal(down: bool) {
+    g_wipe_on = true;
+    g_wipe_down = down;
+    g_bit_shown = false;
+    if down { g_wipe_y = 0; } else { g_wipe_y = 768; }
+}
+
+fn ui_reveal_step() {
+    let n: u32 = 0;
+    while n < 24 {
+        if g_wipe_down {
+            if g_wipe_y >= 768 { ui_reveal_done(); return; }
+            ui_copy_row(g_wipe_y);
+            g_wipe_y = g_wipe_y + 1;
+        } else {
+            if g_wipe_y == 0 { ui_reveal_done(); return; }
+            g_wipe_y = g_wipe_y - 1;
+            ui_copy_row(g_wipe_y);
+        }
+        n = n + 1;
+    }
+    let by: u32 = g_wipe_y;
+    if by < 30 { by = 30; }
+    if by > 730 { by = 730; }
+    ui_bit_show(by);
+}
+
+fn ui_reveal_done() {
+    if g_wipe_on {
+        g_wipe_on = false;
+        ui_restore(0, 0, 1024, 768);
+        g_bit_shown = false;
+        ui_overlay();
+    }
+}
+
+// ----- clock -----
+
+fn ui_clock_text() -> *u8 {
+    let stb: u8 = rtc_reg(0x0B);
+    let binmode: bool = (stb & 4) != 0;
+    let s: u8 = rtc_conv(rtc_reg(0), binmode);
+    let m: u8 = rtc_conv(rtc_reg(2), binmode);
+    let h: u8 = rtc_conv(rtc_reg(4), binmode);
+    let b: u64 = &g_clkbuf as u64;
+    write2(b, 0, h);
+    *((b + 2) as *u8) = 58;
+    write2(b, 3, m);
+    *((b + 5) as *u8) = 58;
+    write2(b, 6, s);
+    *((b + 8) as *u8) = 0;
+    return (&g_clkbuf as u64) as *u8;
+}
+
+fn ui_draw_clock() {
+    ui_restore(928, 8, 88, 20);
+    ui_text_shadow(ui_clock_text(), 936, 12, BONE);
+}
+
+// ----- console seam (called from kmain.mx) -----
+
+fn ui_cell_draw(row: u32, col: u32, ch: u8, color: u8) {
+    let fg: u32 = vga_rgb(color & 15);
+    let bghi: u8 = (color >> 4) & 15;
+    let bg: u32 = GALLERY;
+    if bghi != 0 { bg = vga_rgb(bghi); }
+    let px: u32 = CON_X + col * CON_CW;
+    let py: u32 = CON_Y + row * CON_CH;
+    fill_rect(px, py, CON_CW, CON_CH, bg);
+    let draw: u8 = ch;
+    if draw == 0 { draw = 32; }
+    draw_glyph(draw, px + 1, py + 2, fg, bg);
+}
+
+fn ui_put_cell(row: u32, col: u32, ch: u8, color: u8) {
+    if row >= 25 || col >= 80 {
+        return;
+    }
+    let off: u32 = (row * 80 + col) * 2;
+    g_cells[off] = ch;
+    g_cells[off + 1] = color;
+    if g_scene == SC_SHELL && !g_wipe_on {
+        ui_cell_draw(row, col, ch, color);
+    }
+}
+
+fn ui_cursor_erase() {
+    fill_rect(CON_X + g_cur_c * CON_CW + 1, CON_Y + g_cur_r * CON_CH + 18, 8, 2, GALLERY);
+}
+
+fn ui_cursor_draw() {
+    fill_rect(CON_X + g_cur_c * CON_CW + 1, CON_Y + g_cur_r * CON_CH + 18, 8, 2, VERM);
+}
+
+fn ui_move_cursor(row: u32, col: u32) {
+    let visible: bool = g_scene == SC_SHELL && !g_wipe_on;
+    if visible { ui_cursor_erase(); }
+    g_cur_r = row;
+    g_cur_c = col;
+    if visible { ui_cursor_draw(); }
+}
+
+fn ui_console_clear() {
+    let i: u32 = 0;
+    while i < 4000 {
+        g_cells[i] = 0;
+        i = i + 1;
+    }
+    if g_scene == SC_SHELL && !g_wipe_on {
+        fill_rect(CON_X, CON_Y, 80 * CON_CW, 25 * CON_CH, GALLERY);
+    }
+}
+
+fn ui_console_scroll() {
+    let i: u32 = 0;
+    while i < 3840 {
+        g_cells[i] = g_cells[i + 160];
+        i = i + 1;
+    }
+    while i < 4000 {
+        g_cells[i] = 0;
+        i = i + 1;
+    }
+    if g_scene == SC_SHELL && !g_wipe_on {
+        ui_cursor_erase();
+        let y: u32 = 0;
+        while y < 24 * CON_CH {
+            let dst: u32 = g_fb + (CON_Y + y) * g_fb_pitch + CON_X * 4;
+            let src: u32 = g_fb + (CON_Y + CON_CH + y) * g_fb_pitch + CON_X * 4;
+            let x: u32 = 0;
+            while x < 80 * CON_CW {
+                *((dst + x * 4) as *u32) = *((src + x * 4) as *u32);
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        fill_rect(CON_X, CON_Y + 24 * CON_CH, 80 * CON_CW, CON_CH, GALLERY);
+    }
+}
+
+// ----- the four strata -----
+
+fn ui_name(i: u32) -> *u8 {
+    if i == 0 { return "MACHINE"; }
+    if i == 1 { return "OBJECTS"; }
+    if i == 2 { return "RUN"; }
+    return "TERMINATE";
+}
+
+fn ui_caption(i: u32) -> *u8 {
+    if i == 0 { return "the machine -- what it is made of"; }
+    if i == 1 { return "objects on MortFS -- dig through the files"; }
+    if i == 2 { return "run -- the shell, talk to the machine"; }
+    return "terminate -- lock, sleep, restart, halt";
+}
+
+fn ui_letter(i: u32) -> u8 {
+    if i == 0 { return 77; }             // M
+    if i == 1 { return 79; }             // O
+    if i == 2 { return 82; }             // R
+    return 84;                           // T
+}
+
+fn ui_carved(i: u32) -> u32 {
+    if i == 0 { return 0xB4843F; }
+    if i == 1 { return 0xA59578; }
+    if i == 2 { return 0x8A5240; }
+    return 0x6E6464;
+}
+
+fn ui_compose_surface() {
+    ui_to_back();
+    g_edge[0] = 180; g_edge[1] = 327; g_edge[2] = 474; g_edge[3] = 621;
+    g_kind[0] = 0; g_kind[1] = 1; g_kind[2] = 2; g_kind[3] = 3;
+    g_amp = 5;
+    ui_paint_sky(180);
+    ui_paint_strata(4);
+    ui_paint_ruler(180);
+    ui_paint_derrick(180, 78);
+    ui_paint_shaft(172);
+    ui_text_shadow("MORT OS  -  BOREHOLE No. 1", 80, 12, BONE);
+    let i: u32 = 0;
+    while i < 4 {
+        let e: u32 = g_edge[i];
+        g_bold = true;
+        ui_big_glyph(ui_letter(i), 872 - 3, e + 7, 8, SHADE);
+        ui_big_glyph(ui_letter(i), 872, e + 10, 8, ui_carved(i));
+        g_bold = false;
+        ui_big_text(ui_name(i), 152, e + 28, 4, BONE);
+        ui_text_shadow(ui_caption(i), 152, e + 100, BONE);
+        fill_rect(88, e + 28, 32, 32, 0x1B120E);
+        fill_rect(89, e + 29, 30, 30, GALLERY);
+        ui_big_glyph(ui_letter(i), 96, e + 28, 2, BONE);
+        i = i + 1;
+    }
+    ui_text_shadow("Up/Down or M O R T   Enter: bore in   Esc: climb out", 152, 748, DIM);
+    ui_to_front();
+}
+
+fn ui_surface_mark(i: u32) {
+    let e: u32 = g_edge[i];
+    fill_rect(72, e + 3, 948, 2, VERM);
+    fill_rect(72, e + 143, 948, 2, VERM);
+    fill_rect(88, e + 28, 32, 32, VERM);
+    ui_big_glyph(ui_letter(i), 96, e + 28, 2, GALLERY);
+    ui_big_text(ui_name(i), 152, e + 28, 4, BRIGHT);
+}
+
+fn ui_surface_unmark(i: u32) {
+    let e: u32 = g_edge[i];
+    ui_restore(72, e + 3, 948, 2);
+    ui_restore(72, e + 143, 948, 2);
+    ui_restore(88, e + 28, 32, 32);
+    ui_restore(152, e + 28, 304, 70);
+}
+
+fn ui_surface_overlay() {
+    ui_surface_mark(g_surf_sel);
+    g_bit_goal = g_edge[g_surf_sel] + 73;
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_surface_move(next: u32) {
+    if next == g_surf_sel { return; }
+    ui_surface_unmark(g_surf_sel);
+    g_surf_sel = next;
+    ui_surface_mark(g_surf_sel);
+    g_bit_goal = g_edge[g_surf_sel] + 73;
+}
+
+fn ui_surface_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 && g_surf_sel > 0 { ui_surface_move(g_surf_sel - 1); }
+        if sc == 80 && g_surf_sel < 3 { ui_surface_move(g_surf_sel + 1); }
+        return;
+    }
+    if sc == 50 { ui_open(0); return; }  // M
+    if sc == 24 { ui_open(1); return; }  // O
+    if sc == 19 { ui_open(2); return; }  // R
+    if sc == 20 { ui_open(3); return; }  // T
+    if sc == 28 { ui_open(g_surf_sel); return; }
+}
+
+// ----- scene switching -----
+
+fn ui_overlay() {
+    if g_scene == SC_SURFACE { ui_surface_overlay(); }
+    ui_draw_clock();
+}
+
+fn ui_show_surface() {
+    g_scene = SC_SURFACE;
+    ui_compose_surface();
+    ui_reveal(false);
+}
+
+fn ui_open(i: u32) {
+    g_surf_sel = i;
+    // Machine, Objects, Run and Terminate arrive in their own commits.
+}
+
+fn ui_open_terminate() { }
+fn ui_open_lock() { }
+fn ui_open_sleep() { }
+
+// ----- kernel hooks -----
+
+fn ui_init() {
+    if g_fb_w != 1024 || g_fb_h != 768 {
+        ui_fatal("this interface needs a 1024x768 framebuffer");
+    }
+    g_back = kmalloc(1024 * 768 * 4);
+    if g_back == 0 {
+        ui_fatal("no memory for the back buffer");
+    }
+}
+
+fn ui_start() {
+    g_scene = SC_SURFACE;
+    ui_compose_surface();
+    ui_reveal(true);
+}
+
+fn ui_tick() {
+    if g_scene == SC_NONE {
+        return;
+    }
+    if g_wipe_on {
+        ui_reveal_step();
+        return;
+    }
+    if g_bit_y != g_bit_goal {
+        let next: u32 = g_bit_goal;
+        if g_bit_y + 14 < g_bit_goal { next = g_bit_y + 14; }
+        if g_bit_y > g_bit_goal + 14 { next = g_bit_y - 14; }
+        ui_bit_show(next);
+    } else if (g_ticks % 12) == 0 {
+        ui_bit_show(g_bit_goal);
+    }
+    if (g_ticks % 100) == 0 {
+        ui_draw_clock();
+    }
+}
+
+fn ui_on_key(sc: u8) -> bool {
+    if g_scene == SC_NONE {
+        return false;
+    }
+    ui_reveal_done();
+    if sc == 42 || sc == 54 { g_shift = true; }
+    if sc == 170 || sc == 182 { g_shift = false; }
+    if g_scene == SC_SHELL {
+        return false;
+    }
+    if sc == 224 {
+        g_ui_ext = true;
+        return true;
+    }
+    let ext: bool = g_ui_ext;
+    g_ui_ext = false;
+    if sc >= 128 {
+        return true;
+    }
+    if g_scene == SC_SURFACE { ui_surface_key(sc, ext); }
+    return true;
+}
+
+fn ui_fault(vec: u32) {
+    ui_to_front();
+    fill_rect(0, 708, 1024, 60, 0x7F1D0A);
+    ui_text("*** CPU EXCEPTION #", 16, 722, 0xFFFFFF);
+    num_to_str(vec, g_numbuf);
+    ui_text(g_numbuf, 16 + 19 * 8, 722, 0xFFFFFF);
+    ui_text(" -- HALTED ***", 16 + (19 + g_numlen) * 8, 722, 0xFFFFFF);
+}
+
+fn ui_capped() {
+    ui_to_front();
+    fill_rect(0, 0, 1024, 768, 0x0B0806);
+    ui_big_text("CAPPED", 368, 300, 6, BONE);
+    ui_text("It is now safe to turn off your computer.", 348, 420, DIM);
+}
