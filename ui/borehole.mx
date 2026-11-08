@@ -1820,6 +1820,9 @@ fn ui_overlay() {
     if g_scene == SC_LOCK { ui_lock_overlay(); return; }
     if g_scene == SC_SLEEP { ui_sleep_overlay(); return; }
     ui_draw_clock();
+    if !g_serial_ok {                    // the console row is hidden behind this screen
+        ui_text_shadow("serial: COM1 unavailable", 720, 12, BONE);
+    }
 }
 
 fn ui_show_surface() {

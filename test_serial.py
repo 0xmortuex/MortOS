@@ -11,10 +11,10 @@ paths (sudo password, a program's read-line syscall), PS/2 used alongside
 serial, and a machine with no UART. Prints the COM1 transcript of the first
 boot. Needs QEMU + the ISO toolchain. Exit code 0 = all passed.
 
-Host-side bytes are paced, one per kernel tick: the kernel drains the UART at
-100 Hz, and QEMU's Windows stdio backend drops a byte instead of waiting when
-the FIFO is at its trigger level. That backend also strips CR, so stdio lines
-end in LF and the CR handling is tested over a raw TCP serial port.
+Stdio bytes are paced, one per kernel tick: QEMU's Windows stdio backend drops
+a byte instead of waiting when the FIFO is at its trigger level, faster than a
+halted guest can be woken. It also strips CR, so stdio lines end in LF and CR
+is tested over TCP. A TCP serial port has backpressure and takes unpaced bursts.
 """
 import os
 import re
@@ -298,22 +298,30 @@ def session_escape():
 
 
 def session_burst():
-    """Unpaced and busy-time input: what a scripted boot test really sends."""
+    """One unpaced write of several lines: TCP backpressure makes this dependable."""
+    t = TcpSerial("-kernel", build.ELF)
+    try:
+        T.wait_for(t.h, "$ ", timeout_s=30)
+        t.start_reading()
+        lines = [f"echo burst-{n}-0123456789abcdef" for n in range(10)]
+        t.sock.sendall("".join(line + "\r" for line in lines).encode("ascii"))
+        for n in range(10):
+            check(f"burst: unpaced line {n} ran in full",
+                  t.until(f"\r\nburst-{n}-0123456789abcdef\r\n", timeout_s=20), t.seen()[-300:])
+    finally:
+        t.close()
+
+
+def session_exec_paced():
+    """Input paced over stdio while exec loads, then reaches the program."""
     h = boot_serial("-kernel", build.ELF, "-hda", IMG)
     try:
-        if not boot_to_prompt(h, "burst"):
+        if not boot_to_prompt(h, "exec-paced"):
             return
-        mark = h.out_len()
-        h.proc.stdin.write(b"echo burst-0123456789abcdef\n")     # one 28-byte write
-        h.proc.stdin.flush()
-        check("burst: one 28-byte write arrives whole",
-              wait_text(h, "\r\nburst-0123456789abcdef\r\n", mark, timeout_s=10), repr(text(h, mark)))
-        wait_until(h, at_prompt, mark, timeout_s=5)
-
         name = "x" * 37
         mark = h.out_len()
         send(h, "exec /bin/ask.bin\n" + name + "\n")     # no wait for its prompt
-        check("burst: paced input during exec all arrives",
+        check("exec-paced: 37 bytes during exec all arrive",
               wait_text(h, "hello, " + name, mark, timeout_s=15), repr(text(h, mark)))
     finally:
         stop(h)
@@ -598,7 +606,7 @@ def session_no_uart():
 
 
 SESSIONS = {f.__name__.replace("session_", ""): f for f in (
-    session_text, session_line_endings, session_escape, session_burst,
+    session_text, session_line_endings, session_escape, session_burst, session_exec_paced,
     session_polled_input, session_ps2_alongside, session_overflow, session_stall,
     session_no_uart, session_iso, session_iso_no_uart, session_iso_junk,
     session_iso_lock, session_iso_fault)}
