@@ -9,6 +9,7 @@
 let SC_NONE: u32 = 0;
 let SC_SURFACE: u32 = 1;
 let SC_SHELL: u32 = 2;
+let SC_OBJECTS: u32 = 3;
 
 let BONE: u32 = 0xE8DCC4;
 let BRIGHT: u32 = 0xF5EBD7;
@@ -17,6 +18,7 @@ let VERM: u32 = 0xFF4B1F;
 let SHAFT: u32 = 0x0C0908;
 let GALLERY: u32 = 0x14100C;
 let SHADE: u32 = 0x120C08;
+let WARN: u32 = 0xFF6B4A;
 
 let CON_X: u32 = 120;                // console origin and cell pitch
 let CON_Y: u32 = 136;
@@ -40,6 +42,20 @@ let g_bit_shown: bool = false;
 
 let g_cells: [u8; 4000] = [0; 4000]; // the shell console: (char, attr) x 80 x 25
 let g_clkbuf: [u8; 12] = [0; 12];
+let g_dir: u32 = 255;                // Objects: the directory open (255 = root)
+let g_items: [u32; 64] = [0; 64];    // Objects: entry indexes in display order
+let g_item_n: u32 = 0;
+let g_sel: u32 = 0;                  // Objects: selected item
+let g_first: u32 = 0;                // Objects: first visible item
+let g_bed_y: [u32; 64] = [0; 64];    // Objects: on-screen top of each visible bed
+let g_bed_h: [u32; 64] = [0; 64];
+let g_vis: u32 = 0;                  // Objects: how many beds fit
+let g_stack_sel: [u32; 16] = [0; 16];
+let g_stack_first: [u32; 16] = [0; 16];
+let g_depth: u32 = 0;                // how many directories we have descended
+let g_chain: [u32; 16] = [0; 16];    // the path, root first
+let g_chain_n: u32 = 0;
+let g_up: [u32; 16] = [0; 16];       // scratch while reversing the path
 let g_bold: bool = false;             // embolden the next enlarged glyphs
 
 // Two-octave sine in 0..16, and the 4x4 Bayer matrix used to dither the sky.
@@ -784,11 +800,310 @@ fn ui_shell_overlay() {
     ui_bit_show(g_bit_goal);
 }
 
+// ----- O: objects, the MortFS directory tree as depth -----
+
+fn ui_fs_used(i: u32) -> bool {
+    return *((fs_entry_addr(i) + 24) as *u32) == 1;
+}
+
+// Directories first, then files, each in table order.
+fn ui_scan_dir() {
+    g_item_n = 0;
+    let pass: u32 = 0;
+    while pass < 2 {
+        let i: u32 = 0;
+        while i < 64 {
+            if ui_fs_used(i) && (fs_parent(i) as u32) == g_dir {
+                let isdir: bool = fs_type(i) == 1;
+                if (pass == 0 && isdir) || (pass == 1 && !isdir) {
+                    g_items[g_item_n] = i;
+                    g_item_n = g_item_n + 1;
+                }
+            }
+            i = i + 1;
+        }
+        pass = pass + 1;
+    }
+}
+
+// g_chain = the path from the root down to g_dir.
+fn ui_build_path() {
+    let n: u32 = 0;
+    let d: u32 = g_dir;
+    while d != 255 && n < 15 {
+        g_up[n] = d;
+        n = n + 1;
+        d = fs_parent(d) as u32;
+    }
+    g_chain[0] = 255;
+    g_chain_n = 1;
+    while n > 0 {
+        n = n - 1;
+        g_chain[g_chain_n] = g_up[n];
+        g_chain_n = g_chain_n + 1;
+    }
+}
+
+// A bed's thickness grows with the log of the file's size.
+fn ui_bed_height(i: u32) -> u32 {
+    if fs_type(i) == 1 {
+        return 34;
+    }
+    let size: u32 = *((fs_entry_addr(i) + 28) as *u32);
+    let log: u32 = 0;
+    while size > 1 {
+        size = size / 2;
+        log = log + 1;
+    }
+    let h: u32 = 26 + log * 2;
+    if h > 46 { h = 46; }
+    return h;
+}
+
+fn ui_bed_colour(i: u32) -> u32 {
+    let h: u32 = ui_hash(i, 1234) & 7;
+    if h == 0 { return 0x3A2B20; }
+    if h == 1 { return 0x453424; }
+    if h == 2 { return 0x2E2219; }
+    if h == 3 { return 0x3F2E28; }
+    if h == 4 { return 0x332820; }
+    if h == 5 { return 0x41301F; }
+    if h == 6 { return 0x2F241C; }
+    return 0x38291F;
+}
+
+// The specimen in a bed: a hollow for a directory, a spiral for text, a
+// crystal for a program.
+fn ui_fossil(kind: u32, cx: u32, cy: u32) {
+    if kind == 0 {
+        fill_rect(cx - 11, cy - 8, 22, 16, 0x0B0806);
+        fill_rect(cx - 7, cy - 11, 14, 3, 0x0B0806);
+        return;
+    }
+    if kind == 1 {
+        ui_disc(cx, cy, 9, 0xC8B58F);
+        ui_disc(cx, cy, 6, 0x6E5F4C);
+        ui_disc(cx + 2, cy, 3, 0xC8B58F);
+        return;
+    }
+    let t: u32 = 0;
+    while t < 10 {
+        fill_rect(cx - t, cy - 10 + t, t * 2 + 1, 1, 0x8FB6A8);
+        fill_rect(cx - t, cy + 10 - t, t * 2 + 1, 1, 0x5F8578);
+        t = t + 1;
+    }
+}
+
+fn ui_is_prog(i: u32) -> bool {
+    return (fs_mode(i) & 73) != 0;       // any execute bit
+}
+
+fn ui_write_octal(v: u32, x: u32, y: u32, fg: u32) {
+    ui_glyph((48 + ((v >> 6) & 7)) as u8, x, y, fg);
+    ui_glyph((48 + ((v >> 3) & 7)) as u8, x + 8, y, fg);
+    ui_glyph((48 + (v & 7)) as u8, x + 16, y, fg);
+}
+
+fn ui_draw_bed(e: u32, y: u32, h: u32) {
+    let base: u32 = fs_entry_addr(e);
+    fill_rect(72, y, 948, h, ui_bed_colour(e));
+    fill_rect(72, y + h, 948, 1, 0x1B120E);
+    let mid: u32 = y + (h - 16) / 2;
+    let kind: u32 = 2;
+    if fs_type(e) == 1 { kind = 0; }
+    else if !ui_is_prog(e) { kind = 1; }
+    ui_fossil(kind, 100, y + h / 2);
+    ui_text(base as *u8, 150, mid, BONE);
+    if kind == 0 {
+        ui_text("cavity", 620, mid, DIM);
+    } else {
+        num_to_str(*((base + 28) as *u32), g_numbuf);
+        ui_text(g_numbuf, 620, mid, DIM);
+        ui_text("bytes", 620 + (g_numlen + 1) * 8, mid, DIM);
+    }
+    ui_write_octal(fs_mode(e), 790, mid, DIM);
+    ui_text("uid", 840, mid, DIM);
+    num_to_str(fs_uid(e) as u32, g_numbuf);
+    ui_text(g_numbuf, 872, mid, DIM);
+}
+
+// One stratum per path segment; the deepest is open and full of beds.
+fn ui_compose_objects() {
+    ui_to_back();
+    ui_build_path();
+    let n: u32 = g_chain_n;
+    if n > 7 { n = 7; }
+    let start: u32 = g_chain_n - n;      // very deep paths keep their last 7 segments
+    let k: u32 = 0;
+    while k < n {
+        g_edge[k] = 56 + k * 26;
+        g_kind[k] = (1 + k) % 4;
+        k = k + 1;
+    }
+    g_amp = 1;
+    ui_paint_sky(56);
+    ui_paint_strata(n);
+    ui_paint_ruler(56);
+    ui_paint_derrick(56, 40);
+    ui_paint_shaft(52);
+    ui_text_shadow("MORT OS", 80, 12, BONE);
+    ui_text_shadow("Up/Down: pick a bed   Enter: bore in   Esc: climb out", 200, 12, BONE);
+    ui_glyph(79, 72, g_edge[0] + 5, BONE);
+    k = 0;
+    while k < n {
+        let dir: u32 = g_chain[start + k];
+        let ly: u32 = g_edge[k] + 5;
+        if dir == 255 {
+            ui_text_shadow("/", 100, ly, BONE);
+        } else {
+            ui_text_shadow(fs_entry_addr(dir) as *u8, 100, ly, BONE);
+        }
+        k = k + 1;
+    }
+    let top: u32 = g_edge[n - 1] + 30;
+    g_vis = 0;
+    let i: u32 = g_first;
+    let y: u32 = top;
+    let fits: bool = true;
+    while i < g_item_n && fits {
+        let e: u32 = g_items[i];
+        let h: u32 = ui_bed_height(e);
+        if y + h > 756 {
+            fits = false;
+        } else {
+            ui_draw_bed(e, y, h);
+            g_bed_y[g_vis] = y;
+            g_bed_h[g_vis] = h;
+            g_vis = g_vis + 1;
+            y = y + h + 2;
+            i = i + 1;
+        }
+    }
+    if !g_fs_ok {
+        ui_text_shadow("no disk / no MortFS -- boot with a disk attached", 150, top + 10, WARN);
+    } else if g_item_n == 0 {
+        ui_text_shadow("(empty stratum -- Esc climbs out)", 150, top + 10, BONE);
+    }
+    ui_to_front();
+}
+
+fn ui_mark_bed(k: u32) {
+    let y: u32 = g_bed_y[k];
+    let h: u32 = g_bed_h[k];
+    fill_rect(72, y, 4, h, VERM);
+    fill_rect(1016, y, 4, h, VERM);
+    let e: u32 = g_items[g_first + k];
+    ui_text(fs_entry_addr(e) as *u8, 150, y + (h - 16) / 2, BRIGHT);
+}
+
+fn ui_objects_overlay() {
+    if g_item_n == 0 {
+        g_bit_goal = 130;
+        ui_bit_show(g_bit_goal);
+        return;
+    }
+    let k: u32 = g_sel - g_first;
+    ui_mark_bed(k);
+    g_bit_goal = g_bed_y[k] + g_bed_h[k] / 2;
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_objects_compose_now() {
+    ui_compose_objects();
+    ui_restore(0, 0, 1024, 768);
+    g_bit_shown = false;
+    ui_overlay();
+}
+
+fn ui_objects_select(next: u32) {
+    if g_item_n == 0 { return; }
+    if next < g_first {
+        g_sel = next;
+        g_first = next;
+        ui_objects_compose_now();
+        return;
+    }
+    if next >= g_first + g_vis {
+        g_sel = next;
+        g_first = next + 1 - g_vis;
+        ui_objects_compose_now();
+        return;
+    }
+    let k: u32 = g_sel - g_first;
+    ui_restore(72, g_bed_y[k], 948, g_bed_h[k]);
+    g_sel = next;
+    k = g_sel - g_first;
+    ui_mark_bed(k);
+    g_bit_goal = g_bed_y[k] + g_bed_h[k] / 2;
+}
+
+fn ui_open_objects() {
+    g_scene = SC_OBJECTS;
+    g_dir = 255;
+    g_depth = 0;
+    g_sel = 0;
+    g_first = 0;
+    g_item_n = 0;
+    if g_fs_ok {
+        ui_scan_dir();
+    }
+    ui_compose_objects();
+    ui_reveal(true);
+}
+
+fn ui_objects_descend() {
+    if g_item_n == 0 { return; }
+    let e: u32 = g_items[g_sel];
+    if fs_type(e) != 1 {
+        return;                          // files become core samples in the next commit
+    }
+    if g_depth < 16 {
+        g_stack_sel[g_depth] = g_sel;
+        g_stack_first[g_depth] = g_first;
+        g_depth = g_depth + 1;
+    }
+    g_dir = e;
+    g_sel = 0;
+    g_first = 0;
+    ui_scan_dir();
+    ui_compose_objects();
+    ui_reveal(true);
+}
+
+fn ui_objects_ascend() {
+    if g_dir == 255 {
+        ui_show_surface();
+        return;
+    }
+    g_dir = fs_parent(g_dir) as u32;
+    ui_scan_dir();
+    g_sel = 0;
+    g_first = 0;
+    if g_depth > 0 {
+        g_depth = g_depth - 1;
+        g_sel = g_stack_sel[g_depth];
+        g_first = g_stack_first[g_depth];
+    }
+    ui_compose_objects();
+    ui_reveal(false);
+}
+
+fn ui_objects_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 && g_sel > 0 { ui_objects_select(g_sel - 1); }
+        if sc == 80 && g_sel + 1 < g_item_n { ui_objects_select(g_sel + 1); }
+        return;
+    }
+    if sc == 28 { ui_objects_descend(); return; }
+    if sc == 1 || sc == 14 { ui_objects_ascend(); return; }
+}
+
 // ----- scene switching -----
 
 fn ui_overlay() {
     if g_scene == SC_SURFACE { ui_surface_overlay(); }
     if g_scene == SC_SHELL { ui_shell_overlay(); }
+    if g_scene == SC_OBJECTS { ui_objects_overlay(); }
     ui_draw_clock();
 }
 
@@ -805,6 +1120,7 @@ fn ui_open(i: u32) {
         ui_compose_shell();
         ui_reveal(true);
     }
+    if i == 1 { ui_open_objects(); }
 }
 
 fn ui_open_terminate() { }
@@ -874,6 +1190,7 @@ fn ui_on_key(sc: u8) -> bool {
         return true;
     }
     if g_scene == SC_SURFACE { ui_surface_key(sc, ext); }
+    else if g_scene == SC_OBJECTS { ui_objects_key(sc, ext); }
     return true;
 }
 
