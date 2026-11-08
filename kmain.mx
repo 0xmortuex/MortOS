@@ -46,6 +46,8 @@ let g_fb_w: u32 = 0;                                           // width in pixel
 let g_fb_h: u32 = 0;                                           // height in pixels
 let g_tgt: u32 = 0;                                            // where drawing lands: the framebuffer or the back buffer
 let g_tgt_pitch: u32 = 0;                                      // bytes per scanline of g_tgt
+let g_tgt_w: u32 = 0;                                          // g_tgt's size: drawing clips to this
+let g_tgt_h: u32 = 0;
 let g_cur_r: u32 = 0;                                          // last drawn cursor cell (graphics)
 let g_cur_c: u32 = 0;
 // ----- kernel heap (dynamic memory) -----
@@ -338,15 +340,25 @@ fn fb_init() {
     g_fb_h = *((g_mbinfo + 104) as *u32);
     g_tgt = g_fb;
     g_tgt_pitch = g_fb_pitch;
+    g_tgt_w = g_fb_w;
+    g_tgt_h = g_fb_h;
     g_gfx = true;
 }
 
 fn put_pixel(x: u32, y: u32, color: u32) {
+    if x >= g_tgt_w || y >= g_tgt_h {   // u32: a "negative" coordinate is huge
+        return;
+    }
     *((g_tgt + y * g_tgt_pitch + x * 4) as *u32) = color;
 }
 
-// Fill the rectangle [x, x+w) x [y, y+h) with a solid color.
+// Fill the rectangle [x, x+w) x [y, y+h) with a solid color, clipped to g_tgt.
 fn fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) {
+    if x >= g_tgt_w || y >= g_tgt_h {
+        return;
+    }
+    if w > g_tgt_w - x { w = g_tgt_w - x; }
+    if h > g_tgt_h - y { h = g_tgt_h - y; }
     let yy: u32 = 0;
     while yy < h {
         let row: u32 = g_tgt + (y + yy) * g_tgt_pitch + x * 4;
@@ -385,13 +397,20 @@ fn vga_rgb(idx: u8) -> u32 {
 
 // Draw one 8x16 glyph at absolute pixel (px, py): set bits get fg, clear get bg.
 fn draw_glyph(ch: u8, px: u32, py: u32, fg: u32, bg: u32) {
+    if px >= g_tgt_w || py >= g_tgt_h {
+        return;
+    }
+    let rows: u32 = 16;
+    if rows > g_tgt_h - py { rows = g_tgt_h - py; }
+    let cols: u32 = 8;
+    if cols > g_tgt_w - px { cols = g_tgt_w - px; }
     let base: u32 = (ch as u32) * 16;
     let row: u32 = 0;
-    while row < 16 {
+    while row < rows {
         let bits: u8 = g_font[base + row];
         let line: u32 = g_tgt + (py + row) * g_tgt_pitch + px * 4;
         let col: u32 = 0;
-        while col < 8 {
+        while col < cols {
             let color: u32 = bg;
             if ((bits >> (7 - col)) & 1) == 1 {
                 color = fg;

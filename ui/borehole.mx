@@ -87,11 +87,8 @@ let g_bayer: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
 // A failure the interface cannot run through. Reported on screen, then halted.
 fn ui_fatal(msg: *u8) {
-    g_tgt = g_fb;
-    g_tgt_pitch = g_fb_pitch;
-    let w: u32 = g_fb_w;
-    if w > 1024 { w = 1024; }
-    fill_rect(0, 0, w, 48, 0x7F1D0A);
+    ui_to_front();
+    fill_rect(0, 0, g_fb_w, 48, 0x7F1D0A);
     ui_text("BOREHOLE FAILED", 16, 6, 0xFFFFFF);
     ui_text(msg, 16, 26, 0xFFFFFF);
     asm("cli");
@@ -105,11 +102,15 @@ fn ui_fatal(msg: *u8) {
 fn ui_to_back() {
     g_tgt = g_back;
     g_tgt_pitch = 4096;
+    g_tgt_w = 1024;
+    g_tgt_h = 768;
 }
 
 fn ui_to_front() {
     g_tgt = g_fb;
     g_tgt_pitch = g_fb_pitch;
+    g_tgt_w = g_fb_w;
+    g_tgt_h = g_fb_h;
 }
 
 fn ui_hash(x: u32, y: u32) -> u32 {
@@ -120,13 +121,20 @@ fn ui_hash(x: u32, y: u32) -> u32 {
 
 // One glyph with a transparent background.
 fn ui_glyph(ch: u8, px: u32, py: u32, fg: u32) {
+    if px >= g_tgt_w || py >= g_tgt_h {
+        return;
+    }
+    let rows: u32 = 16;
+    if rows > g_tgt_h - py { rows = g_tgt_h - py; }
+    let cols: u32 = 8;
+    if cols > g_tgt_w - px { cols = g_tgt_w - px; }
     let base: u32 = (ch as u32) * 16;
     let row: u32 = 0;
-    while row < 16 {
+    while row < rows {
         let bits: u8 = g_font[base + row];
         let line: u32 = g_tgt + (py + row) * g_tgt_pitch + px * 4;
         let col: u32 = 0;
-        while col < 8 {
+        while col < cols {
             if ((bits >> (7 - col)) & 1) == 1 {
                 *((line + col * 4) as *u32) = fg;
             }
@@ -246,6 +254,11 @@ fn ui_line(x0: u32, y0: u32, x1: u32, y1: u32, color: u32) {
 
 // Copy a rectangle from the composed scene back onto the framebuffer.
 fn ui_restore(x: u32, y: u32, w: u32, h: u32) {
+    if x >= 1024 || y >= 768 {
+        return;
+    }
+    if w > 1024 - x { w = 1024 - x; }
+    if h > 768 - y { h = 768 - y; }
     let yy: u32 = 0;
     while yy < h {
         let src: u32 = g_back + (y + yy) * 4096 + x * 4;
@@ -307,7 +320,7 @@ fn ui_paint_strata(n: u32) {
                 bottom = g_edge[k + 1] + ui_wave(x, k) - g_amp;
             }
             while y < bottom {
-                *((g_back + y * 4096 + x * 4) as *u32) = ui_rock(g_kind[k], x, y);
+                put_pixel(x, y, ui_rock(g_kind[k], x, y));
                 y = y + 1;
             }
             k = k + 1;
@@ -364,7 +377,7 @@ fn ui_paint_sky(h: u32) {
             let step: u32 = idx;
             if frac > (g_bayer[(x & 3) + (y & 3) * 4] as u32) { step = idx + 1; }
             if step > 4 { step = 4; }
-            *((g_back + y * 4096 + x * 4) as *u32) = ui_sky_colour(hour, step);
+            put_pixel(x, y, ui_sky_colour(hour, step));
             x = x + 1;
         }
         y = y + 1;
@@ -373,7 +386,9 @@ fn ui_paint_sky(h: u32) {
     let cx: u32 = 96 + mins * 880 / 1440;
     let dist: u32 = 0;
     if cx > 536 { dist = cx - 536; } else { dist = 536 - cx; }
-    let cy: u32 = 26 + dist * dist * (h - 60) / 193600;
+    let arc: u32 = 0;                    // the short sky has no room for an arc
+    if h > 60 { arc = h - 60; }
+    let cy: u32 = 26 + dist * dist * arc / 193600;
     if hour >= 6 && hour < 20 {
         ui_disc(cx, cy, 18, 0xFFD27A);
     } else {
@@ -385,7 +400,7 @@ fn ui_paint_sky(h: u32) {
         let top: u32 = h - 8 - (g_sin[(x * 3 / 8) & 63] as u32) / 2 - (ui_hash(x / 3, 91) & 3);
         let yy: u32 = top;
         while yy < h {
-            *((g_back + yy * 4096 + x * 4) as *u32) = 0x1B120E;
+            put_pixel(x, yy, 0x1B120E);
             yy = yy + 1;
         }
         x = x + 1;
@@ -479,6 +494,9 @@ fn ui_bit_show(y: u32) {
 // ----- the reveal -----
 
 fn ui_copy_row(y: u32) {
+    if y >= 768 {
+        return;
+    }
     let src: u32 = g_back + y * 4096;
     let dst: u32 = g_fb + y * g_fb_pitch;
     let x: u32 = 0;
@@ -1733,9 +1751,9 @@ fn ui_drawprobe(run: bool) {
         ui_drawprobe_calls(false);
         ui_to_front();
         ui_drawprobe_calls(true);
+        ui_compose_shell();              // wipes what the probe left in the back buffer
         ui_restore(1000, 700, 100, 100);
         ui_copy_row(800);
-        ui_compose_shell();
     }
     feed();
     let col: u32 = ui_probe_num("back=", g_back, 0);
