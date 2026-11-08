@@ -114,9 +114,11 @@ or the drawn framebuffer console (`draw_glyph`), both funneled through
 8N1). Add `-serial stdio` or a `-serial tcp:` port to QEMU to get the same
 shell on a serial line; the `serial` command prints its loss counters.
 
-For scripted serial tests on Windows, use a TCP serial port or pace stdio input
-byte by byte: QEMU's Windows stdio backend drops bytes from a one-shot write.
-See [`ARCHITECTURE.md`](ARCHITECTURE.md).
+For scripted serial input on Windows, pace stdio byte by byte: QEMU's Windows
+stdio backend drops bytes from a one-shot write. Over TCP, a burst over about
+512 bytes (the receive ring) can lose bytes unless the sender paces itself or
+waits for the prompt after each command; `serial` counts the drops. See
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 `run` auto-creates `build/disk.img` (16 MiB, MortFS) and attaches it, so files
 you `write` in the OS survive reboots. `python mkfs.py build/disk.img` wipes it

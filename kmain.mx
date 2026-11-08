@@ -461,7 +461,9 @@ fn draw_text_abs(s: *u8, px: u32, py: u32, fg: u32, bg: u32) {
 //
 // Losses are counted, and the `serial` command prints the counters. Scripts
 // should still send a line and wait for the prompt: a program that spins
-// without making syscalls leaves nothing to drain the FIFO.
+// without making syscalls leaves nothing to drain the FIFO. The UART is drained
+// even when the ring is full, so a transport's backpressure never reaches the
+// sender: a burst over about 512 bytes can lose bytes unless the sender paces.
 
 // Program the UART and prove it exists with a loopback round trip. On failure
 // g_serial_ok stays false and every serial path below does nothing.

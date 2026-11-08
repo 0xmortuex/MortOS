@@ -14,7 +14,9 @@ boot. Needs QEMU + the ISO toolchain. Exit code 0 = all passed.
 Stdio bytes are paced, one per kernel tick: QEMU's Windows stdio backend drops
 a byte instead of waiting when the FIFO is at its trigger level, faster than a
 halted guest can be woken. It also strips CR, so stdio lines end in LF and CR
-is tested over TCP. A TCP serial port has backpressure and takes unpaced bursts.
+is tested over TCP. TCP takes short unpaced bursts, but the kernel drains the UART
+even with its 512-byte ring full, so a burst over about 512 bytes can lose bytes
+unless the sender paces or waits for prompts. `serial` counts the drops.
 """
 import os
 import re
@@ -305,7 +307,7 @@ def session_escape():
 
 
 def session_burst():
-    """One unpaced write of several lines: TCP backpressure makes this dependable."""
+    """One unpaced write of several lines, kept well under the 512-byte ring."""
     t = TcpSerial("-kernel", build.ELF)
     try:
         T.wait_for(t.h, "$ ", timeout_s=30)
