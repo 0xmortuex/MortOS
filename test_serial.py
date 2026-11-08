@@ -151,6 +151,8 @@ def session_text():
               "echo via-serial-$USER" in out, repr(out))
         out = run(h, "uptime")
         check("text: uptime answers", re.search(r"uptime: \d+ s", out) is not None, repr(out))
+        out = run(h, "help")
+        check("text: help lists the serial command", "serial" in out, repr(out))
         out = run(h, "no-such-command")
         check("text: errors reach serial", "unknown command" in out, repr(out))
         out = run(h, "echo Up_Case:?")
@@ -215,7 +217,7 @@ def free_port():
 class TcpSerial:
     """COM1 on a TCP socket, with the monitor on stdio for VGA and screendumps."""
 
-    def __init__(self, *args, rcvbuf=None):
+    def __init__(self, *args, rcvbuf=None, sndbuf=None):
         port = free_port()
         self.h = spawn(["-serial", f"tcp:127.0.0.1:{port},server=on,wait=off",
                         "-monitor", "stdio", *args])
@@ -223,10 +225,13 @@ class TcpSerial:
         self.sock = socket.socket()
         if rcvbuf is not None:       # a small window makes an idle reader stall QEMU
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+        if sndbuf is not None:       # keeps a flood's backlog small once it stops
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, sndbuf)
         self.sock.settimeout(10)
         self.sock.connect(("127.0.0.1", port))
         self.sock.settimeout(None)
         self.got = bytearray()
+        self.read_gap_s = 0          # > 0 throttles the reader, which backs up transmit
 
     def start_reading(self):
         threading.Thread(target=self._pump, daemon=True).start()
@@ -234,12 +239,14 @@ class TcpSerial:
     def _pump(self):
         while True:
             try:
-                chunk = self.sock.recv(65536)
+                chunk = self.sock.recv(256 if self.read_gap_s else 65536)
             except OSError:
                 return
             if not chunk:
                 return
             self.got.extend(chunk)
+            if self.read_gap_s:
+                time.sleep(self.read_gap_s)
 
     def seen(self, start=0):
         return bytes(self.got).decode("ascii", "replace")[start:]
@@ -308,6 +315,175 @@ def session_burst():
         for n in range(10):
             check(f"burst: unpaced line {n} ran in full",
                   t.until(f"\r\nburst-{n}-0123456789abcdef\r\n", timeout_s=20), t.seen()[-300:])
+    finally:
+        t.close()
+
+
+def session_cat_burst():
+    """56 stdio bytes while cat keeps the kernel busy with interrupts off.
+
+    Only the ring keeps these: cat is transmitting, and every transmit drains
+    the FIFO into it. Polling receive leaves them in the 16-byte FIFO, and
+    the stdio backend's drop at the trigger level truncates the line at 14.
+    """
+    h = boot_serial("-kernel", build.ELF, "-hda", BIGIMG)
+    try:
+        if not boot_to_prompt(h, "cat-burst"):
+            return
+        mark = h.out_len()
+        send(h, "cat /big.txt\n")
+        if not check("cat-burst: cat started", wait_text(h, "0123456789", mark), repr(text(h, mark))):
+            return
+        payload = "y" * 50
+        next_at = time.perf_counter()
+        for byte in ("echo " + payload + "\n").encode("ascii"):
+            while time.perf_counter() < next_at:     # time.sleep is too coarse for 4 ms
+                pass
+            h.proc.stdin.write(bytes((byte,)))
+            h.proc.stdin.flush()
+            next_at += 0.004
+        check("cat-burst: every byte was sent while cat ran",
+              "BIGEND" not in text(h, mark), text(h, mark)[-200:])
+        check("cat-burst: all 56 bytes arrive",
+              wait_text(h, "\r\n" + payload + "\r\n", mark, timeout_s=30), repr(text(h, mark)[-300:]))
+    finally:
+        stop(h)
+
+
+def wait_serial_prompt(t, timeout_s=60):
+    """COM1 may connect after the boot banner, so prod the shell for a prompt."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        start = len(t.seen())
+        t.typed("\r")
+        if t.until("$ ", start, timeout_s=1):
+            return True
+    return False
+
+
+def wait_quiet(t, idle_s=1.0, timeout_s=60):
+    """Wait for COM1 output to stop: a flood's backlog has been worked off."""
+    deadline = time.monotonic() + timeout_s
+    seen = len(t.got)
+    quiet_at = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        if len(t.got) != seen:
+            seen, quiet_at = len(t.got), time.monotonic()
+        elif time.monotonic() - quiet_at >= idle_s:
+            return True
+    return False
+
+
+def uptime_seconds(t):
+    start = len(t.seen())
+    t.typed("uptime\r")
+    t.until("$ ", start, timeout_s=15)
+    found = re.search(r"uptime: (\d+) s", t.seen(start))
+    return int(found.group(1)) if found else None
+
+
+class Flood:
+    """Send one chunk over and over until the block ends. A small send buffer
+    keeps the input ahead of the guest without a long backlog afterwards."""
+
+    def __init__(self, t, chunk):
+        self.t, self.chunk = t, chunk
+        self.stopping = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self.stopping.is_set():
+            self.t.sock.sendall(self.chunk)
+
+    def __enter__(self):
+        self.started = time.monotonic()
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stopping.set()
+        self.thread.join(timeout=30)
+
+
+def flood_checks(label, *boot):
+    """A sustained flood must leave the timer and the keyboard running."""
+    t = TcpSerial(*boot, sndbuf=4096)
+    try:
+        t.start_reading()
+        if not check(f"{label}: shell is up", wait_serial_prompt(t), t.seen()[-200:]):
+            return
+        before = uptime_seconds(t)
+        with Flood(t, b"\r" * 64) as flood:
+            time.sleep(1)
+            start = len(t.seen())
+            T._monitor(t.h, f"sendkey z {T.KEY_HOLD_MS}")
+            got_key = t.until("z", start, timeout_s=4)
+            check(f"{label}: PS/2 key handled during a CR flood",
+                  got_key and flood.thread.is_alive(), t.seen(start)[-200:])
+            time.sleep(max(0, 5 - (time.monotonic() - flood.started)))
+        wait_quiet(t)
+        after = uptime_seconds(t)
+        check(f"{label}: ticks advance during a CR flood",
+              before is not None and after is not None and after - before >= 3,
+              repr((before, after)))
+
+        start = len(t.seen())
+        with Flood(t, b"uptime\r" * 8):
+            time.sleep(4)
+        seconds = [int(n) for n in re.findall(r"uptime: (\d+) s", t.seen(start))]
+        check(f"{label}: ticks advance during a line flood",
+              len(seconds) > 1 and seconds[-1] - seconds[0] >= 2, repr(seconds[:3] + seconds[-3:]))
+        wait_quiet(t)
+        start = len(t.seen())
+        t.typed("\recho flood-alive\r")
+        check(f"{label}: shell answers after the flood",
+              t.until("\r\nflood-alive\r\n", start, timeout_s=30), t.seen(start)[-200:])
+    finally:
+        t.close()
+
+
+def session_flood():
+    flood_checks("flood", "-kernel", build.ELF)
+
+
+def session_iso_flood():
+    flood_checks("iso-flood", "-cdrom", build.ISO)
+
+
+def session_lsr_overrun():
+    """An overrun latched while serial_putc waits to transmit must be counted.
+
+    Reading the LSR clears its overrun bit, so a transmit wait that ignores it
+    loses the report. A throttled reader keeps the guest in that wait; each
+    round pauses the guest and overfills the receive FIFO through UART loopback,
+    which is the one route to a real overrun in QEMU.
+    """
+    rounds = 24
+    cats = 30                    # the ring holds them; the drop path runs them quickly
+    t = TcpSerial("-kernel", build.ELF, "-hda", BIGIMG, rcvbuf=2048, sndbuf=4096)
+    try:
+        t.start_reading()
+        if not check("lsr: shell is up", wait_serial_prompt(t), t.seen()[-200:]):
+            return
+        t.read_gap_s = 1.5           # all but stop reading, so transmit backs up
+        for _ in range(cats):
+            t.typed("cat /big.txt\r")
+        for _ in range(rounds):
+            T._monitor(t.h, "stop")
+            T._monitor(t.h, "o /b 0x3fc 0x1e")       # MCR: loopback
+            for _ in range(20):
+                T._monitor(t.h, "o /b 0x3f8 0x2e")   # more than the FIFO holds
+            T._monitor(t.h, "o /b 0x3fc 0x0b")       # MCR: normal operation
+            T._monitor(t.h, "cont")
+            time.sleep(0.12)
+        t.read_gap_s = 0
+        wait_quiet(t, idle_s=2)
+        t.typed("\r")
+        wait_quiet(t)
+        counters = serial_counters(t)
+        check(f"lsr: all {rounds} overruns counted",
+              counters is not None and counters[0] >= rounds, repr(counters))
     finally:
         t.close()
 
@@ -606,10 +782,11 @@ def session_no_uart():
 
 
 SESSIONS = {f.__name__.replace("session_", ""): f for f in (
-    session_text, session_line_endings, session_escape, session_burst, session_exec_paced,
-    session_polled_input, session_ps2_alongside, session_overflow, session_stall,
-    session_no_uart, session_iso, session_iso_no_uart, session_iso_junk,
-    session_iso_lock, session_iso_fault)}
+    session_text, session_line_endings, session_escape, session_burst, session_cat_burst,
+    session_exec_paced, session_polled_input, session_ps2_alongside, session_overflow,
+    session_stall, session_lsr_overrun, session_flood, session_no_uart, session_iso,
+    session_iso_no_uart, session_iso_junk, session_iso_lock, session_iso_fault,
+    session_iso_flood)}
 
 
 def prepare_images(compile_programs):
