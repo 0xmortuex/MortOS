@@ -10,6 +10,7 @@ let SC_NONE: u32 = 0;
 let SC_SURFACE: u32 = 1;
 let SC_SHELL: u32 = 2;
 let SC_OBJECTS: u32 = 3;
+let SC_CORE: u32 = 4;
 
 let BONE: u32 = 0xE8DCC4;
 let BRIGHT: u32 = 0xF5EBD7;
@@ -19,6 +20,10 @@ let SHAFT: u32 = 0x0C0908;
 let GALLERY: u32 = 0x14100C;
 let SHADE: u32 = 0x120C08;
 let WARN: u32 = 0xFF6B4A;
+let SLAB: u32 = 0xD8C8A8;
+let INK: u32 = 0x2B1D12;
+let CORE_COLS: u32 = 66;
+let CORE_ROWS: u32 = 30;
 
 let CON_X: u32 = 120;                // console origin and cell pitch
 let CON_Y: u32 = 136;
@@ -56,6 +61,12 @@ let g_depth: u32 = 0;                // how many directories we have descended
 let g_chain: [u32; 16] = [0; 16];    // the path, root first
 let g_chain_n: u32 = 0;
 let g_up: [u32; 16] = [0; 16];       // scratch while reversing the path
+let g_core_e: u32 = 0;               // Core: entry being read
+let g_core_size: u32 = 0;            // Core: bytes in FILEBUF
+let g_core_top: u32 = 0;             // Core: first visible visual line
+let g_core_lines: u32 = 0;           // Core: total visual lines
+let g_core_err: bool = false;        // Core: disk read failed
+let g_open_top: u32 = 0;             // top edge of the open path stratum
 let g_bold: bool = false;             // embolden the next enlarged glyphs
 
 // Two-octave sine in 0..16, and the 4x4 Bayer matrix used to dither the sky.
@@ -930,6 +941,13 @@ fn ui_draw_bed(e: u32, y: u32, h: u32) {
 // One stratum per path segment; the deepest is open and full of beds.
 fn ui_compose_objects() {
     ui_to_back();
+    ui_paint_chain("Up/Down: pick a bed   Enter: bore in   Esc: climb out");
+    ui_paint_beds();
+    ui_to_front();
+}
+
+// Sky, the path strata and the shaft for Objects and Core. Sets g_edge.
+fn ui_paint_chain(hint: *u8) {
     ui_build_path();
     let n: u32 = g_chain_n;
     if n > 7 { n = 7; }
@@ -947,7 +965,7 @@ fn ui_compose_objects() {
     ui_paint_derrick(56, 40);
     ui_paint_shaft(52);
     ui_text_shadow("MORT OS", 80, 12, BONE);
-    ui_text_shadow("Up/Down: pick a bed   Enter: bore in   Esc: climb out", 200, 12, BONE);
+    ui_text_shadow(hint, 200, 12, BONE);
     ui_glyph(79, 72, g_edge[0] + 5, BONE);
     k = 0;
     while k < n {
@@ -960,7 +978,11 @@ fn ui_compose_objects() {
         }
         k = k + 1;
     }
-    let top: u32 = g_edge[n - 1] + 30;
+    g_open_top = g_edge[n - 1];
+}
+
+fn ui_paint_beds() {
+    let top: u32 = g_open_top + 30;
     g_vis = 0;
     let i: u32 = g_first;
     let y: u32 = top;
@@ -984,7 +1006,16 @@ fn ui_compose_objects() {
     } else if g_item_n == 0 {
         ui_text_shadow("(empty stratum -- Esc climbs out)", 150, top + 10, BONE);
     }
-    ui_to_front();
+    let tail: u32 = 255;
+    if g_chain_n > 1 { tail = g_chain[g_chain_n - 1]; }
+    if tail == 255 {
+        ui_big_text("ROOT", 690, 666, 8, 0x8A7A62);
+    } else {
+        ui_big_text(fs_entry_addr(tail) as *u8, 690, 666, 4, 0x8A7A62);
+    }
+    num_to_str(g_item_n, g_numbuf);
+    ui_text_shadow(g_numbuf, 150, 730, DIM);
+    ui_text_shadow("objects in this stratum", 150 + (g_numlen + 1) * 8, 730, DIM);
 }
 
 fn ui_mark_bed(k: u32) {
@@ -1055,7 +1086,8 @@ fn ui_objects_descend() {
     if g_item_n == 0 { return; }
     let e: u32 = g_items[g_sel];
     if fs_type(e) != 1 {
-        return;                          // files become core samples in the next commit
+        ui_open_core(e);
+        return;
     }
     if g_depth < 16 {
         g_stack_sel[g_depth] = g_sel;
@@ -1098,12 +1130,164 @@ fn ui_objects_key(sc: u8, ext: bool) {
     if sc == 1 || sc == 14 { ui_objects_ascend(); return; }
 }
 
+// ----- the core sample: reading a file -----
+
+fn ui_core_next(p: u32) -> u32 {
+    let i: u32 = p;
+    let col: u32 = 0;
+    while i < g_core_size {
+        let ch: u8 = *((0x00810000 + i) as *u8);
+        i = i + 1;
+        if ch == 10 { return i; }
+        if ch != 13 {
+            col = col + 1;
+            if col >= CORE_COLS { return i; }
+        }
+    }
+    return g_core_size;
+}
+
+fn ui_core_count() -> u32 {
+    let n: u32 = 0;
+    let p: u32 = 0;
+    while p < g_core_size {
+        p = ui_core_next(p);
+        n = n + 1;
+    }
+    return n;
+}
+
+fn ui_compose_core() {
+    ui_to_back();
+    ui_paint_chain("Up/Down PgUp/PgDn: scroll   Esc: back to the bed");
+    let x: u32 = 160;
+    while x < 920 {
+        let up: u32 = 96 + (ui_hash(x / 3, 777) & 7);
+        let dn: u32 = 752 + (ui_hash(x / 3, 778) & 7);
+        let c: u32 = SLAB;
+        if x < 170 || x >= 910 { c = 0x9C8B6E; }
+        else if x < 182 || x >= 898 { c = 0xC0B193; }
+        fill_rect(x, up, 1, dn - up, c);
+        x = x + 1;
+    }
+    ui_text(fs_entry_addr(g_core_e) as *u8, 190, 106, INK);
+    num_to_str(g_core_size, g_numbuf);
+    ui_text(g_numbuf, 560, 106, INK);
+    ui_text("bytes", 560 + (g_numlen + 1) * 8, 106, INK);
+    ui_to_front();
+}
+
+fn ui_core_lastline(a: u32) -> u32 {
+    let b: u32 = g_core_lines;
+    if a + CORE_ROWS < b { b = a + CORE_ROWS; }
+    return b;
+}
+
+fn ui_core_text() {
+    ui_restore(186, 128, 724, 620);
+    if g_core_err {
+        ui_text("could not read this file from the disk", 190, 130, WARN);
+        return;
+    }
+    if g_core_size == 0 {
+        ui_text("(empty file)", 190, 130, 0x7A6A55);
+    }
+    let p: u32 = 0;
+    let i: u32 = 0;
+    while i < g_core_top {
+        p = ui_core_next(p);
+        i = i + 1;
+    }
+    let row: u32 = 0;
+    while row < CORE_ROWS && p < g_core_size {
+        let next: u32 = ui_core_next(p);
+        let col: u32 = 0;
+        let q: u32 = p;
+        while q < next {
+            let ch: u8 = *((0x00810000 + q) as *u8);
+            if ch != 10 && ch != 13 {
+                if ch < 32 || ch > 126 { ch = 46; }
+                ui_glyph(ch, 190 + col * 10, 130 + row * 20, INK);
+                col = col + 1;
+            }
+            q = q + 1;
+        }
+        p = next;
+        row = row + 1;
+    }
+    if g_core_lines > 0 {
+        ui_text("lines", 190, 736, 0x7A6A55);
+        num_to_str(g_core_top + 1, g_numbuf);
+        ui_text(g_numbuf, 238, 736, 0x7A6A55);
+        let x: u32 = 238 + g_numlen * 8;
+        ui_text("-", x, 736, 0x7A6A55);
+        num_to_str(ui_core_lastline(g_core_top), g_numbuf);
+        ui_text(g_numbuf, x + 8, 736, 0x7A6A55);
+        let x2: u32 = x + 8 + g_numlen * 8;
+        ui_text("of", x2 + 8, 736, 0x7A6A55);
+        num_to_str(g_core_lines, g_numbuf);
+        ui_text(g_numbuf, x2 + 32, 736, 0x7A6A55);
+    }
+}
+
+fn ui_core_overlay() {
+    ui_core_text();
+    let span: u32 = g_core_lines;
+    if span == 0 { span = 1; }
+    g_bit_goal = 150 + g_core_top * 560 / span;
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_open_core(e: u32) {
+    g_scene = SC_CORE;
+    g_core_e = e;
+    g_core_top = 0;
+    let want: u32 = *((fs_entry_addr(e) + 28) as *u32);
+    g_core_size = fs_read_file(e);
+    g_core_err = want != 0 && g_core_size == 0;
+    g_core_lines = ui_core_count();
+    ui_compose_core();
+    ui_reveal(true);
+}
+
+fn ui_core_scroll(dn: bool, by: u32) {
+    let max: u32 = 0;
+    if g_core_lines > CORE_ROWS { max = g_core_lines - CORE_ROWS; }
+    if dn {
+        g_core_top = g_core_top + by;
+        if g_core_top > max { g_core_top = max; }
+    } else {
+        if g_core_top < by { g_core_top = 0; } else { g_core_top = g_core_top - by; }
+    }
+    ui_core_text();
+    let span: u32 = g_core_lines;
+    if span == 0 { span = 1; }
+    g_bit_goal = 150 + g_core_top * 560 / span;
+}
+
+fn ui_core_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 { ui_core_scroll(false, 1); }
+        if sc == 80 { ui_core_scroll(true, 1); }
+        if sc == 73 { ui_core_scroll(false, CORE_ROWS); }
+        if sc == 81 { ui_core_scroll(true, CORE_ROWS); }
+        return;
+    }
+    if sc == 57 { ui_core_scroll(true, CORE_ROWS); return; }
+    if sc == 1 || sc == 14 {
+        g_scene = SC_OBJECTS;
+        ui_compose_objects();
+        ui_reveal(false);
+    }
+}
+
 // ----- scene switching -----
 
 fn ui_overlay() {
     if g_scene == SC_SURFACE { ui_surface_overlay(); }
     if g_scene == SC_SHELL { ui_shell_overlay(); }
     if g_scene == SC_OBJECTS { ui_objects_overlay(); }
+    if g_scene == SC_CORE { ui_core_overlay(); }
     ui_draw_clock();
 }
 
@@ -1191,6 +1375,7 @@ fn ui_on_key(sc: u8) -> bool {
     }
     if g_scene == SC_SURFACE { ui_surface_key(sc, ext); }
     else if g_scene == SC_OBJECTS { ui_objects_key(sc, ext); }
+    else if g_scene == SC_CORE { ui_core_key(sc, ext); }
     return true;
 }
 

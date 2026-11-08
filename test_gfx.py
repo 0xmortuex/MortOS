@@ -312,7 +312,7 @@ def phase_objects(vm):
     want = "this file lives on the MortFS disk"
     y = s.find_text(190, 100, 200, want, {INK}, step=10)
     check("core: Enter shows the exact file contents", y is not None)
-    check("core: slab is bone coloured", s.rgb(500, 700) != GALLERY)
+    check("core: slab is bone coloured", s.rgb(500, 700) == 0xD8C8A8)
     vm.key("esc")
     s = vm.shot()
     check("core: Esc returns to the objects list",
@@ -374,7 +374,9 @@ def phase_terminate(vm):
           s.find_text(300, 300, 500, "wrong password", {WARN}) is not None)
     vm.line("mort")
     s = vm.shot()
-    check("lock: correct password unlocks", s.find_text(300, 300, 500, "password", {BONE}) is None)
+    check("lock: correct password unlocks",
+          s.find_text(300, 300, 500, "password", {BONE}) is None
+          and s.find_text(150, 56, 760, "Lock", {BONE, BRIGHT}) is not None)
     vm.key("down")
     s = vm.shot(0.8)
     check("terminate: Down selects Sleep", s.find_text(150, 56, 760, "Sleep", {BRIGHT}) is not None)
