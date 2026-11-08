@@ -1009,6 +1009,17 @@ fn ui_paint_chain(hint: *u8) {
     g_open_top = g_edge[n - 1];
 }
 
+// The directory's name stencilled at the bottom right, shrunk if it would not
+// fit at full size. A name is at most 23 characters, so x2 always fits.
+fn ui_paint_name(name: *u8) {
+    let len: u32 = str_len(name);
+    if len <= 10 {
+        ui_big_text(name, 690, 666, 4, 0x8A7A62);
+        return;
+    }
+    ui_big_text(name, 1020 - len * 16, 690, 2, 0x8A7A62);
+}
+
 fn ui_paint_beds() {
     let top: u32 = g_open_top + 30;
     g_vis = 0;
@@ -1041,7 +1052,7 @@ fn ui_paint_beds() {
         ui_big_text("ROOT", 690, 666, 8, 0x8A7A62);
         g_bold = false;
     } else {
-        ui_big_text(fs_entry_addr(tail) as *u8, 690, 666, 4, 0x8A7A62);
+        ui_paint_name(fs_entry_addr(tail) as *u8);
     }
     num_to_str(g_item_n, g_numbuf);
     ui_text_shadow(g_numbuf, 150, 730, BONE);
