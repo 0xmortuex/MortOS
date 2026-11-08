@@ -275,14 +275,22 @@ def phase_shell(vm):
     check("shell: ls lists /bin programs from MortFS",
           any("hello.bin" in ln for ln in con))
     check("shell: text output survives in the console", any(ln == "borehole-ok" for ln in con))
+    for i in range(24):
+        vm.line(f"echo r{i}")
+    s = vm.shot()
+    con = s.console()
+    check("shell: console scrolls at the bottom row",
+          any(ln == "r23" for ln in con)
+          and "MORT OS" not in con[0]
+          and con[-1].endswith("$"))
+    before = con
     vm.key("esc")
     s = vm.shot()
     check("shell: Esc returns to the surface",
           s.rgb(930, 300) != GALLERY and s.rgb(300, EDGES[2] + 3) == VERM)
     vm.key("r")
     s = vm.shot()
-    con = s.console()
-    check("shell: R returns with scrollback intact", any(ln == "borehole-ok" for ln in con))
+    check("shell: R returns with the console exactly as it was", s.console() == before)
     vm.key("esc")
     vm.shot()
 
@@ -392,10 +400,20 @@ def phase_terminate(vm):
     check("terminate: Esc returns to the surface", s.rgb(300, EDGES[3] + 3) == VERM)
 
 
+def phase_fault(vm):
+    vm.key("r")
+    vm.shot()
+    vm.line("crash")
+    s = vm.shot()
+    check("fault: a CPU exception is reported on screen",
+          s.text(16, 722, 34, {0xFFFFFF}) == "*** CPU EXCEPTION #6 -- HALTED ***")
+
+
 def main():
     vm = Vm()
     try:
-        for phase in (phase_surface, phase_shell, phase_objects, phase_machine, phase_terminate):
+        for phase in (phase_surface, phase_shell, phase_objects, phase_machine,
+                      phase_terminate, phase_fault):
             try:
                 phase(vm)
             except Exception as e:  # report and continue: each phase is independent

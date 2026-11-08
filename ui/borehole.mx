@@ -11,6 +11,10 @@ let SC_SURFACE: u32 = 1;
 let SC_SHELL: u32 = 2;
 let SC_OBJECTS: u32 = 3;
 let SC_CORE: u32 = 4;
+let SC_MACHINE: u32 = 5;
+let SC_TERMINATE: u32 = 6;
+let SC_LOCK: u32 = 7;
+let SC_SLEEP: u32 = 8;
 
 let BONE: u32 = 0xE8DCC4;
 let BRIGHT: u32 = 0xF5EBD7;
@@ -67,6 +71,12 @@ let g_core_top: u32 = 0;             // Core: first visible visual line
 let g_core_lines: u32 = 0;           // Core: total visual lines
 let g_core_err: bool = false;        // Core: disk read failed
 let g_open_top: u32 = 0;             // top edge of the open path stratum
+let g_m_sel: u32 = 0;                // Machine: selected action
+let g_t_sel: u32 = 0;                // Terminate: selected action
+let g_return_scene: u32 = 1;         // where Lock and Sleep go back to
+let g_lock_len: u32 = 0;             // Lock: characters typed
+let g_lock_err: bool = false;        // Lock: last attempt was wrong
+let g_lockbuf: [u8; 24] = [0; 24];   // Lock: the password being typed
 let g_bold: bool = false;             // embolden the next enlarged glyphs
 
 // Two-octave sine in 0..16, and the 4x4 Bayer matrix used to dither the sky.
@@ -1009,13 +1019,15 @@ fn ui_paint_beds() {
     let tail: u32 = 255;
     if g_chain_n > 1 { tail = g_chain[g_chain_n - 1]; }
     if tail == 255 {
+        g_bold = true;
         ui_big_text("ROOT", 690, 666, 8, 0x8A7A62);
+        g_bold = false;
     } else {
         ui_big_text(fs_entry_addr(tail) as *u8, 690, 666, 4, 0x8A7A62);
     }
     num_to_str(g_item_n, g_numbuf);
-    ui_text_shadow(g_numbuf, 150, 730, DIM);
-    ui_text_shadow("objects in this stratum", 150 + (g_numlen + 1) * 8, 730, DIM);
+    ui_text_shadow(g_numbuf, 150, 730, BONE);
+    ui_text_shadow("objects in this stratum", 150 + (g_numlen + 1) * 8, 730, BONE);
 }
 
 fn ui_mark_bed(k: u32) {
@@ -1281,13 +1293,414 @@ fn ui_core_key(sc: u8, ext: bool) {
     }
 }
 
+// ----- list rows shared by Machine and Terminate -----
+
+fn ui_row_mark(y: u32, h: u32) {
+    fill_rect(72, y, 4, h, VERM);
+    fill_rect(1016, y, 4, h, VERM);
+}
+
+fn ui_row(label: *u8, y: u32, h: u32, value: *u8) {
+    fill_rect(72, y, 948, h, 0x38291F);
+    fill_rect(72, y + h, 948, 1, 0x1B120E);
+    ui_text(label, 150, y + (h - 16) / 2, BONE);
+    if *(value as *u8) != 0 {
+        ui_text(value, 640, y + (h - 16) / 2, DIM);
+    }
+}
+
+// ----- M: the machine -----
+
+fn ui_ram_mib() -> u32 {
+    let flags: u32 = *(g_mbinfo as *u32);
+    if (flags & 64) == 0 {               // no memory map from the bootloader
+        return 0;
+    }
+    let len: u32 = *((g_mbinfo + 44) as *u32);
+    let addr: u32 = *((g_mbinfo + 48) as *u32);
+    let total: u32 = 0;
+    let p: u32 = addr;
+    let stop: u32 = addr + len;
+    while p < stop {
+        let size: u32 = *(p as *u32);
+        if *((p + 20) as *u32) == 1 {
+            total = total + *((p + 12) as *u32);
+        }
+        p = p + size + 4;
+    }
+    return total / 1048576;
+}
+
+fn ui_kv(label: *u8, y: u32) {
+    ui_text_shadow(label, 150, y, BONE);
+}
+
+fn ui_kv_num(n: u32, unit: *u8, y: u32) {
+    num_to_str(n, g_numbuf);
+    ui_text_shadow(g_numbuf, 294, y, BONE);
+    ui_text_shadow(unit, 294 + (g_numlen + 1) * 8, y, BONE);
+}
+
+fn ui_kv_text(v: *u8, y: u32) {
+    ui_text_shadow(v, 294, y, BONE);
+}
+
+fn ui_yesno(b: bool) -> *u8 {
+    if b { return "ready"; }
+    return "not found";
+}
+
+fn ui_machine_label(i: u32) -> *u8 {
+    if i == 0 { return "Connect with DHCP"; }
+    if i == 1 { return "Disconnect adapter"; }
+    if i == 2 { return "Rescan PCI devices"; }
+    if i == 3 { return "PC speaker on or off"; }
+    if i == 4 { return "Test PC speaker"; }
+    if i == 5 { return "Initialize AC97"; }
+    if i == 6 { return "Raise audio volume"; }
+    return "Test AC97 tone";
+}
+
+fn ui_machine_value(i: u32) -> *u8 {
+    if i == 0 || i == 1 {
+        if g_net_up { return "lease held"; }
+        return "no lease";
+    }
+    if i == 3 {
+        if g_speaker_enabled { return "on"; }
+        return "off";
+    }
+    if i == 5 {
+        if g_ac97_ok { return "ready"; }
+        return "not initialized";
+    }
+    if i == 6 {
+        num_to_str(g_audio_volume, g_numbuf);
+        return g_numbuf;
+    }
+    return "";
+}
+
+fn ui_machine_row_y(i: u32) -> u32 {
+    return 340 + i * 38;
+}
+
+fn ui_compose_machine() {
+    ui_to_back();
+    ui_paint_column(0);
+    ui_text_shadow("Up/Down: pick   Enter: run   Esc: climb out", 200, 12, BONE);
+    if !g_hw_scanned { hw_scan_pci(); }
+    let y: u32 = 96;
+    ui_kv("RAM", y);
+    let ram: u32 = ui_ram_mib();
+    if ram == 0 { ui_kv_text("no memory map from the bootloader", y); }
+    else { ui_kv_num(ram, "MiB", y); }
+    y = y + 24;
+    ui_kv("Heap used", y);
+    ui_kv_num((g_heap_brk - g_heap_base) / 1024, "KiB", y);
+    y = y + 24;
+    ui_kv("Uptime", y);
+    y = y + 24;
+    ui_kv("Disk", y);
+    ui_kv_text(ui_yesno(g_disk_ok), y);
+    y = y + 24;
+    ui_kv("MortFS", y);
+    ui_kv_text(ui_yesno(g_fs_ok), y);
+    y = y + 24;
+    ui_kv("Display", y);
+    ui_kv_text("1024 x 768, 32-bit", y);
+    y = y + 24;
+    ui_kv("Network", y);
+    if g_net_up {
+        let px: u32 = 294;
+        let i: u32 = 0;
+        while i < 4 {
+            num_to_str(g_our_ip[i] as u32, g_numbuf);
+            ui_text_shadow(g_numbuf, px, y, BONE);
+            px = px + g_numlen * 8;
+            if i < 3 { ui_text_shadow(".", px, y, BONE); px = px + 8; }
+            i = i + 1;
+        }
+    } else if g_rtl_ok {
+        ui_kv_text("adapter ready, no lease", y);
+    } else {
+        ui_kv_text("no adapter", y);
+    }
+    y = y + 24;
+    ui_kv("USB", y);
+    if g_usb_ok { ui_kv_num(g_usb_devices, "devices", y); }
+    else { ui_kv_text("no controller", y); }
+    let i: u32 = 0;
+    while i < 8 {
+        ui_row(ui_machine_label(i), ui_machine_row_y(i), 32, ui_machine_value(i));
+        i = i + 1;
+    }
+    ui_to_front();
+}
+
+fn ui_machine_uptime() {
+    ui_restore(294, 144, 160, 20);
+    ui_kv_num(g_ticks / 100, "s", 144);
+}
+
+fn ui_machine_mark() {
+    ui_row_mark(ui_machine_row_y(g_m_sel), 32);
+    ui_text(ui_machine_label(g_m_sel), 150, ui_machine_row_y(g_m_sel) + 8, BRIGHT);
+    g_bit_goal = ui_machine_row_y(g_m_sel) + 16;
+}
+
+fn ui_machine_overlay() {
+    ui_machine_uptime();
+    ui_machine_mark();
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_machine_compose_now() {
+    ui_compose_machine();
+    ui_restore(0, 0, 1024, 768);
+    g_bit_shown = false;
+    ui_overlay();
+}
+
+fn ui_machine_run(i: u32) {
+    ui_to_front();
+    ui_text_shadow("working...", 150, 656, BRIGHT);
+    if i == 0 { g_net_quiet = true; net_dhcp(); g_net_quiet = false; }
+    if i == 1 { ethernet_disconnect(); }
+    if i == 2 { hw_scan_pci(); }
+    if i == 3 {
+        g_speaker_enabled = !g_speaker_enabled;
+        if !g_speaker_enabled { speaker_stop(); }
+    }
+    if i == 4 { speaker_test(); }
+    if i == 5 { ac97_init(); hw_scan_pci(); }
+    if i == 6 { ac97_set_volume((g_audio_volume + 25) % 125); }
+    if i == 7 { ac97_test_tone(); }
+    ui_machine_compose_now();
+}
+
+fn ui_machine_select(next: u32) {
+    ui_restore(72, ui_machine_row_y(g_m_sel), 948, 32);
+    g_m_sel = next;
+    ui_machine_mark();
+}
+
+fn ui_machine_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 && g_m_sel > 0 { ui_machine_select(g_m_sel - 1); }
+        if sc == 80 && g_m_sel < 7 { ui_machine_select(g_m_sel + 1); }
+        return;
+    }
+    if sc == 28 { ui_machine_run(g_m_sel); return; }
+    if sc == 1 || sc == 14 { ui_show_surface(); return; }
+}
+
+// ----- T: terminate -----
+
+fn ui_term_label(i: u32) -> *u8 {
+    if i == 0 { return "Lock"; }
+    if i == 1 { return "Sleep"; }
+    if i == 2 { return "Restart"; }
+    return "Shut down";
+}
+
+fn ui_term_note(i: u32) -> *u8 {
+    if i == 0 { return "seal the section until the password is given"; }
+    if i == 1 { return "bank the fire until a key is pressed"; }
+    if i == 2 { return "pull the drill and start over"; }
+    return "cap the hole and turn the machine off";
+}
+
+fn ui_term_y(i: u32) -> u32 {
+    return 250 + i * 76;
+}
+
+fn ui_compose_terminate() {
+    ui_to_back();
+    ui_paint_column(3);
+    ui_text_shadow("Up/Down: pick   Enter: do it   Esc: climb out", 200, 12, BONE);
+    let i: u32 = 0;
+    while i < 4 {
+        ui_row(ui_term_label(i), ui_term_y(i), 56, ui_term_note(i));
+        i = i + 1;
+    }
+    ui_big_text("TERMINATE", 150, 160, 4, 0x6E6464);
+    ui_to_front();
+}
+
+fn ui_term_mark() {
+    ui_row_mark(ui_term_y(g_t_sel), 56);
+    ui_text(ui_term_label(g_t_sel), 150, ui_term_y(g_t_sel) + 20, BRIGHT);
+    g_bit_goal = ui_term_y(g_t_sel) + 28;
+}
+
+fn ui_term_select(next: u32) {
+    ui_restore(72, ui_term_y(g_t_sel), 948, 56);
+    g_t_sel = next;
+    ui_term_mark();
+}
+
+fn ui_open_terminate() {
+    if !g_gfx {
+        feed();
+        print_string("power needs the graphical interface", g_row, 12);
+        return;
+    }
+    g_scene = SC_TERMINATE;
+    g_t_sel = 0;
+    ui_compose_terminate();
+    ui_reveal(true);
+}
+
+fn ui_terminate_overlay() {
+    ui_term_mark();
+    ui_bit_show(g_bit_goal);
+}
+
+fn ui_terminate_key(sc: u8, ext: bool) {
+    if ext {
+        if sc == 72 && g_t_sel > 0 { ui_term_select(g_t_sel - 1); }
+        if sc == 80 && g_t_sel < 3 { ui_term_select(g_t_sel + 1); }
+        return;
+    }
+    if sc == 1 || sc == 14 { ui_show_surface(); return; }
+    if sc == 28 {
+        if g_t_sel == 0 { ui_open_lock(); return; }
+        if g_t_sel == 1 { ui_open_sleep(); return; }
+        if g_t_sel == 2 { reboot(); return; }
+        poweroff();
+    }
+}
+
+// ----- lock and sleep -----
+
+// The section sealed in granite, with one slit for the password.
+fn ui_compose_lock() {
+    ui_to_back();
+    g_edge[0] = 0;
+    g_kind[0] = 3;
+    g_amp = 0;
+    ui_paint_strata(1);
+    ui_big_text("SEALED", 320, 200, 8, 0x4A4242);
+    fill_rect(290, 340, 444, 120, GALLERY);
+    fill_rect(290, 340, 444, 2, 0x3D3535);
+    fill_rect(290, 458, 444, 2, 0x3D3535);
+    ui_text("password", 300, 356, BONE);
+    ui_to_front();
+}
+
+fn ui_lock_field() {
+    ui_restore(300, 382, 424, 70);
+    let i: u32 = 0;
+    while i < g_lock_len {
+        ui_glyph(42, 300 + i * 12, 386, BRIGHT);
+        i = i + 1;
+    }
+    if g_lock_err {
+        ui_text("wrong password", 300, 420, WARN);
+    }
+}
+
+fn ui_lock_overlay() {
+    ui_lock_field();
+}
+
+fn ui_open_lock() {
+    if !g_gfx {
+        feed();
+        print_string("lock needs the graphical interface", g_row, 12);
+        return;
+    }
+    if g_scene != SC_LOCK && g_scene != SC_SLEEP { g_return_scene = g_scene; }
+    g_scene = SC_LOCK;
+    g_lock_len = 0;
+    g_lock_err = false;
+    ui_compose_lock();
+    ui_reveal(true);
+}
+
+fn ui_lock_ok() -> bool {
+    let ai: u32 = acct_find((&g_username as u64) as *u8);
+    if ai == 64 {
+        return false;
+    }
+    g_lockbuf[g_lock_len] = 0;
+    return g_acct_hash[ai] == hash_pw((&g_lockbuf as u64) as *u8);
+}
+
+fn ui_lock_key(sc: u8, ext: bool) {
+    if ext { return; }
+    if sc == 28 {
+        if ui_lock_ok() {
+            ui_show_scene(g_return_scene, false);
+        } else {
+            g_lock_err = true;
+            g_lock_len = 0;
+            ui_lock_field();
+        }
+        return;
+    }
+    if sc == 14 {
+        if g_lock_len > 0 {
+            g_lock_len = g_lock_len - 1;
+            ui_lock_field();
+        }
+        return;
+    }
+    let ch: u8 = scancode_to_ascii(sc, g_shift);
+    if ch != 0 && g_lock_len < 16 {
+        g_lockbuf[g_lock_len] = ch;
+        g_lock_len = g_lock_len + 1;
+        g_lock_err = false;
+        ui_lock_field();
+    }
+}
+
+fn ui_compose_sleep() {
+    ui_to_back();
+    fill_rect(0, 0, 1024, 768, 0x050302);
+    ui_to_front();
+}
+
+fn ui_open_sleep() {
+    if !g_gfx {
+        feed();
+        print_string("sleep needs the graphical interface", g_row, 12);
+        return;
+    }
+    if g_scene != SC_LOCK && g_scene != SC_SLEEP { g_return_scene = g_scene; }
+    g_scene = SC_SLEEP;
+    ui_compose_sleep();
+    ui_reveal(true);
+}
+
+fn ui_sleep_overlay() {
+    ui_disc(512, 384, 3, 0x7A2A10);      // a banked ember, nothing else
+}
+
 // ----- scene switching -----
+
+// Recompose any scene: used when Lock and Sleep hand the screen back.
+fn ui_show_scene(sc: u32, down: bool) {
+    g_scene = sc;
+    if sc == SC_SHELL { ui_compose_shell(); }
+    else if sc == SC_OBJECTS { ui_compose_objects(); }
+    else if sc == SC_CORE { ui_compose_core(); }
+    else if sc == SC_MACHINE { ui_compose_machine(); }
+    else if sc == SC_TERMINATE { ui_compose_terminate(); }
+    else { g_scene = SC_SURFACE; ui_compose_surface(); }
+    ui_reveal(down);
+}
 
 fn ui_overlay() {
     if g_scene == SC_SURFACE { ui_surface_overlay(); }
     if g_scene == SC_SHELL { ui_shell_overlay(); }
     if g_scene == SC_OBJECTS { ui_objects_overlay(); }
     if g_scene == SC_CORE { ui_core_overlay(); }
+    if g_scene == SC_MACHINE { ui_machine_overlay(); }
+    if g_scene == SC_TERMINATE { ui_terminate_overlay(); }
+    if g_scene == SC_LOCK { ui_lock_overlay(); return; }
+    if g_scene == SC_SLEEP { ui_sleep_overlay(); return; }
     ui_draw_clock();
 }
 
@@ -1305,11 +1718,15 @@ fn ui_open(i: u32) {
         ui_reveal(true);
     }
     if i == 1 { ui_open_objects(); }
+    if i == 0 {
+        g_scene = SC_MACHINE;
+        g_m_sel = 0;
+        ui_compose_machine();
+        ui_reveal(true);
+    }
+    if i == 3 { ui_open_terminate(); }
 }
 
-fn ui_open_terminate() { }
-fn ui_open_lock() { }
-fn ui_open_sleep() { }
 
 // ----- kernel hooks -----
 
@@ -1337,6 +1754,9 @@ fn ui_tick() {
         ui_reveal_step();
         return;
     }
+    if g_scene == SC_LOCK || g_scene == SC_SLEEP {
+        return;                          // sealed: no bit, no clock
+    }
     if g_bit_y != g_bit_goal {
         let next: u32 = g_bit_goal;
         if g_bit_y + 14 < g_bit_goal { next = g_bit_y + 14; }
@@ -1347,6 +1767,7 @@ fn ui_tick() {
     }
     if (g_ticks % 100) == 0 {
         ui_draw_clock();
+        if g_scene == SC_MACHINE { ui_machine_uptime(); }
     }
 }
 
@@ -1376,6 +1797,10 @@ fn ui_on_key(sc: u8) -> bool {
     if g_scene == SC_SURFACE { ui_surface_key(sc, ext); }
     else if g_scene == SC_OBJECTS { ui_objects_key(sc, ext); }
     else if g_scene == SC_CORE { ui_core_key(sc, ext); }
+    else if g_scene == SC_MACHINE { ui_machine_key(sc, ext); }
+    else if g_scene == SC_TERMINATE { ui_terminate_key(sc, ext); }
+    else if g_scene == SC_LOCK { ui_lock_key(sc, ext); }
+    else if g_scene == SC_SLEEP { ui_show_scene(g_return_scene, false); }
     return true;
 }
 

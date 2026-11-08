@@ -20,7 +20,7 @@ git clone https://github.com/0xmortuex/MortOS && cd MortOS
 uv run --no-project --with ziglang --with cryptography python build.py run-iso
 ```
 
-That builds a bootable ISO and boots it in QEMU. Press `Enter` on **Terminal**, then try `help`, `ls`, `write hello.txt hi` and `cat hello.txt`. `F1`-`F4` switch apps, `F5` is the home launcher, `F12` is the power menu. The ISO is a BIOS/UEFI hybrid built to be written to a USB stick, but I have only tested it in QEMU.
+That builds a bootable ISO and boots it in QEMU. It boots to the Borehole start screen (see `docs/borehole-concept.md`): press `Enter` for a shell, then try `help`, `ls`, `write hello.txt hi` and `cat hello.txt`. `Esc` climbs back out; `M`, `O`, `R` and `T` drill to the Machine, Objects, Run and Terminate strata. The ISO is a BIOS/UEFI hybrid built to be written to a USB stick, but I have only tested it in QEMU.
 
 ---
 
