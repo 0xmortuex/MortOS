@@ -108,11 +108,15 @@ MORT OS -- interrupt-driven. type 'help', Enter
 `draw_prompt`, `kmain.mx:709`-`727`.)
 
 That banner and prompt are what you're reading in the QEMU display window
-itself — there is no serial console to `tail` instead. Nothing in `boot.s`,
-`idt.s`, or `kmain.mx` touches a UART or `0x3F8` (COM1); all console output
-goes through either VGA text memory (`put_index`) or the drawn framebuffer
-console (`draw_glyph`), both funneled through `put_cell_at`
-(`kmain.mx:505`-`517`).
+itself. All console output goes through either VGA text memory (`put_index`)
+or the drawn framebuffer console (`draw_glyph`), both funneled through
+`put_cell_at`, which also mirrors it to COM1 (a 16550 UART at `0x3F8`, 115200
+8N1). Add `-serial stdio` or a `-serial tcp:` port to QEMU to get the same
+shell on a serial line; the `serial` command prints its loss counters.
+
+For scripted serial tests on Windows, use a TCP serial port or pace stdio input
+byte by byte: QEMU's Windows stdio backend drops bytes from a one-shot write.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 `run` auto-creates `build/disk.img` (16 MiB, MortFS) and attaches it, so files
 you `write` in the OS survive reboots. `python mkfs.py build/disk.img` wipes it

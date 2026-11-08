@@ -455,7 +455,9 @@ fn draw_text_abs(s: *u8, px: u32, py: u32, fg: u32, bg: u32) {
 // serial_pump on every transmit and read loop so the 16-byte FIFO keeps
 // draining while a command runs with interrupts off. IRQ4 goes to default_isr,
 // which only needs to wake the idle loop's hlt. The idle loop, or a command's
-// read loop, turns ring bytes into the keys that would type them.
+// read loop, turns ring bytes into the keys that would type them. The idle loop
+// handles a bounded batch per wake and opens the interrupt window between
+// batches, so a flood of input cannot starve the timer or the keyboard.
 //
 // Losses are counted, and the `serial` command prints the counters. Scripts
 // should still send a line and wait for the prompt: a program that spins
@@ -488,6 +490,16 @@ fn serial_init() {
     g_serial_ok = true;
 }
 
+// Read the line status. The read clears the overrun bit, so once the UART is
+// live every read goes through here and an overrun is never lost.
+fn serial_lsr() -> u8 {
+    let lsr: u8 = inb(0x3FD);
+    if (lsr & 2) != 0 {                     // LSR bit 1: the UART lost a byte
+        g_ser_overrun = g_ser_overrun + 1;
+    }
+    return lsr;
+}
+
 // Move everything the UART holds into the ring, noting any loss.
 fn serial_pump() {
     if !g_serial_ok {
@@ -495,11 +507,7 @@ fn serial_pump() {
     }
     let budget: u32 = 32;
     while budget > 0 {
-        let lsr: u8 = inb(0x3FD);
-        if (lsr & 2) != 0 {                 // LSR bit 1: the UART lost a byte
-            g_ser_overrun = g_ser_overrun + 1;
-        }
-        if (lsr & 1) == 0 {
+        if (serial_lsr() & 1) == 0 {
             return;
         }
         let b: u8 = inb(0x3F8);
@@ -561,7 +569,7 @@ fn serial_putc(ch: u8) {
     }
     serial_pump();
     let wait: u32 = 0;
-    while (inb(0x3FD) & 32) == 0 {      // LSR bit 5: transmitter ready
+    while (serial_lsr() & 32) == 0 {    // LSR bit 5: transmitter ready
         if g_ser_tx_stalled {           // already stuck: drop without spinning
             g_ser_txdrop = g_ser_txdrop + 1;
             return;
@@ -683,12 +691,20 @@ fn serial_refused() -> bool {
     return g_scene == SC_LOCK || g_scene == SC_SLEEP || g_scene == SC_TERMINATE;
 }
 
+// True when received bytes are waiting for serial_service.
+fn serial_pending() -> bool {
+    serial_pump();
+    return g_ser_tail != g_ser_head;
+}
+
 // Run waiting COM1 input through the shell, bringing the shell up from any
 // other screen first. Called from the idle loop with interrupts off, the same
-// context on_key runs commands in.
+// context on_key runs commands in. Handles at most one batch: the idle loop
+// lets the timer and keyboard in before the next one.
 fn serial_service() {
-    serial_pump();
-    while true {
+    let budget: u32 = 8;
+    while budget > 0 {
+        serial_pump();                  // the last command may have run for a while
         let b: u32 = serial_pop();
         if b == 256 {
             return;
@@ -711,7 +727,7 @@ fn serial_service() {
                 g_ext = saved_ext;
             }
         }
-        serial_pump();                  // the command may have run for a while
+        budget = budget - 1;
     }
 }
 
@@ -2310,7 +2326,7 @@ fn run_command_impl(cmd: *u8) -> bool {
     }
     if streq(cmd, "help") {
         feed();
-        print_string("help clear about echo uptime crash readme mem", g_row, 7);
+        print_string("help clear about echo uptime crash readme mem serial", g_row, 7);
         feed();
         print_string("files: pwd cd ls cat write rm mkdir rmdir run exec", g_row, 7);
         feed();
@@ -3171,8 +3187,12 @@ fn kmain(mbinfo: u32) {
         ui_start();                  // compose the start screen; the timer reveals it
     }
     while true {
-        asm("sti; hlt");             // one statement: no IRQ can slip between them
-        asm("cli");
+        if serial_pending() {
+            asm("sti; nop; cli");    // more input: take any pending IRQ, but do not sleep
+        } else {
+            asm("sti; hlt");         // one statement: no IRQ can slip between them
+            asm("cli");
+        }
         serial_service();            // the IRQ that woke us may be COM1
     }
 }
