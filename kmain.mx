@@ -2460,6 +2460,14 @@ fn run_command_impl(cmd: *u8) -> bool {
         ui_open_terminate();
         return false;
     }
+    if streq(cmd, "drawprobe") {     // test support: see ui_drawprobe and test_gfx.py
+        ui_drawprobe(true);
+        return false;
+    }
+    if streq(cmd, "drawprobe info") {
+        ui_drawprobe(false);
+        return false;
+    }
     if streq(cmd, "memtest") {
         memtest();
         return false;

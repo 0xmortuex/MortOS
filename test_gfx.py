@@ -51,6 +51,14 @@ LETTERS = "mort"
 CON_X, CON_Y, CON_CW, CON_CH = 120, 136, 10, 20   # shell console cell grid
 SETTLE = 1.6                                      # seconds for a reveal to finish
 
+BED_COLOURS = {0x3A2B20, 0x453424, 0x2E2219, 0x3F2E28, 0x332820, 0x41301F, 0x2F241C, 0x38291F}
+LABEL = 0x8A7A62                                  # the directory name stencilled in the rock
+FOOTER_Y = 652                                    # beds stay above this, the footer below it
+SLEEP = 0x050302
+EMBER = 0x7A2A10
+SNAP_BASE, SNAP_END = 0x00A10000, 0x0FF00000      # free guest RAM above the kernel's fixed buffers
+BACK_SIZE = 1024 * 768 * 4
+
 # Colours the shell may use for text (vga_rgb), to decode any cell.
 CONSOLE_FG = [0xD8CBB2, 0xF5EBD7, 0xE0A14A, 0xC99B6B, 0xFF6B4A, 0xA88F6C, 0xB7773A, 0x8F6F4F]
 
@@ -159,12 +167,26 @@ class Shot:
 class Vm:
     """The ISO booted in QEMU with a scratch copy of the MortFS disk."""
 
-    def __init__(self):
-        build.iso()
-        build.ensure_disk()
+    built = False
+
+    def __init__(self, seed_files=None):
+        if not Vm.built:
+            build.iso()
+            build.ensure_disk()
+            Vm.built = True
         self.tmp = tempfile.mkdtemp(prefix="mortgfx-")
         self.disk = os.path.join(self.tmp, "disk.img")
-        shutil.copy(build.DISK, self.disk)
+        if seed_files:
+            import mkfs
+            adds = []
+            for name, size in seed_files:
+                src = os.path.join(self.tmp, "seed_" + name)
+                with open(src, "wb") as fh:
+                    fh.write(b"x" * size)
+                adds.append((src, name))
+            mkfs.make(self.disk, adds=adds, bins=[])
+        else:
+            shutil.copy(build.DISK, self.disk)
         qemu = build._find_qemu()
         if not qemu:
             raise RuntimeError("qemu-system-i386 not found")
@@ -190,9 +212,12 @@ class Vm:
 
     def dump(self, path):
         T._monitor(self.h, f"screendump {path.replace(chr(92), '/')}", timeout_s=20)
-        for _ in range(100):
-            if os.path.exists(path) and os.path.getsize(path) > 1024 * 768 * 3:
+        last = -1                        # early boot screens are smaller: wait for the size to settle
+        for _ in range(200):
+            size = os.path.getsize(path) if os.path.exists(path) else -1
+            if size > 0 and size == last:
                 return
+            last = size
             time.sleep(0.05)
         raise RuntimeError(f"screendump never appeared: {path}")
 
@@ -203,8 +228,19 @@ class Vm:
         self.dump(ppm)
         return Shot(ppm)
 
+    def snapshot(self, addr, size, name):
+        """Dump guest physical memory to a file; returns its path."""
+        path = os.path.join(self.tmp, name)
+        T._monitor(self.h, f"pmemsave {addr} {size} {path.replace(chr(92), '/')}", timeout_s=120)
+        for _ in range(600):
+            if os.path.exists(path) and os.path.getsize(path) == size:
+                return path
+            time.sleep(0.05)
+        raise RuntimeError(f"pmemsave never completed: {path}")
+
     def close(self):
         T.shutdown(self.h)
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 passed = 0
@@ -226,12 +262,66 @@ def area_in(s, x0, y0, w, h, allowed):
     return all(s.rgb(x, y) in allowed for y in range(y0, y0 + h) for x in range(x0, x0 + w))
 
 
+def first_diff(a, b, base, skip_lo, skip_hi):
+    """First guest address differing between two dumps, outside [skip_lo, skip_hi)."""
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        off = 0
+        while True:
+            ca, cb = fa.read(1 << 20), fb.read(1 << 20)
+            if not ca:
+                return None
+            if ca != cb:
+                for i, (x, y) in enumerate(zip(ca, cb)):
+                    addr = base + off + i
+                    if x != y and not skip_lo <= addr < skip_hi:
+                        return addr
+            off += len(ca)
+
+
+def selection_marks(s):
+    """How many separate selection bars run down the bed list."""
+    runs, inside = 0, False
+    for y in range(56, 768):
+        on = s.rgb(73, y) == VERM
+        if on and not inside:
+            runs += 1
+        inside = on
+    return runs
+
+
+def is_gallery(s):
+    return all(s.rgb(x, y) == GALLERY for x, y in ((930, 300), (110, 300), (500, 680)))
+
+
+def is_sleep(s):
+    """Nothing but the banked ember on a near-black screen."""
+    embers = 0
+    for y in range(s.h):
+        for x in range(s.w):
+            c = s.rgb(x, y)
+            if c == EMBER:
+                embers += 1
+            elif c != SLEEP:
+                return False
+    return 0 < embers < 60
+
+
+def is_lock(s):
+    """Granite, the carved heading and the password slit, nothing else."""
+    return (area_in(s, 0, 0, 1024, 190, GRANITE)
+            and area_in(s, 0, 500, 1024, 268, GRANITE)
+            and area_in(s, 300, 440, 400, 14, {GALLERY})
+            and s.rgb(500, 340) == 0x3D3535
+            and 0x4A4242 in colours(s, 320, 200, 400, 128)
+            and s.text(300, 356, 8, {BONE}) == "password")
+
+
 def colours(s, x0, y0, w, h):
     return {s.rgb(x, y) for y in range(y0, y0 + h) for x in range(x0, x0 + w)}
 
 
 def phase_surface(vm):
-    s = vm.shot(6.0)
+    s = vm.shot()
     check("framebuffer is 1024x768", (s.w, s.h) == (1024, 768))
     for name, top, pal in (("sandstone M", EDGES[0], SAND), ("limestone O", EDGES[1], LIME),
                            ("shale R", EDGES[2], SHALE), ("granite T", EDGES[3], GRANITE)):
@@ -374,8 +464,7 @@ def phase_terminate(vm):
     check("terminate: Lock selected first", s.find_text(150, 56, 760, "Lock", {BRIGHT}) is not None)
     vm.key("ret")
     s = vm.shot()
-    check("lock: password prompt shown",
-          s.find_text(300, 300, 500, "password", {BONE, BRIGHT}) is not None)
+    check("lock: sealed screen and password slit", is_lock(s))
     vm.line("wrongpw")
     s = vm.shot()
     check("lock: wrong password refused",
@@ -390,14 +479,203 @@ def phase_terminate(vm):
     check("terminate: Down selects Sleep", s.find_text(150, 56, 760, "Sleep", {BRIGHT}) is not None)
     vm.key("ret")
     s = vm.shot()
-    sleeping = all(s.rgb(x, 700) not in SAND | LIME | SHALE | GRANITE for x in range(100, 900, 37))
-    check("sleep: screen goes dark", sleeping)
+    check("sleep: only the ember on a dark screen", is_sleep(s))
     vm.key("spc")
     s = vm.shot()
     check("sleep: any key wakes", s.find_text(150, 56, 760, "Sleep", {BONE, BRIGHT}) is not None)
     vm.key("esc")
     s = vm.shot()
     check("terminate: Esc returns to the surface", s.rgb(300, EDGES[3] + 3) == VERM)
+
+
+def phase_shell_commands(vm):
+    vm.key("r")
+    vm.shot()
+    vm.line("power")
+    s = vm.shot()
+    check("command: power opens Terminate",
+          s.find_text(150, 56, 760, "Lock", {BRIGHT}) is not None)
+    vm.key("esc")
+    vm.shot()
+    vm.key("r")
+    vm.shot()
+    vm.line("lock")
+    s = vm.shot()
+    check("command: lock seals the screen", is_lock(s))
+    vm.line("nope")
+    s = vm.shot()
+    check("command: lock refuses a wrong password",
+          s.text(300, 420, 14, {WARN}) == "wrong password")
+    vm.line("mort")
+    s = vm.shot()
+    check("command: unlocking returns to the shell",
+          is_gallery(s) and any(ln.endswith("$") for ln in s.console()))
+    vm.line("sleep")
+    s = vm.shot()
+    check("command: sleep shows only the ember", is_sleep(s))
+    vm.key("spc")
+    s = vm.shot()
+    check("command: waking returns to the shell",
+          is_gallery(s) and any(ln.endswith("$") for ln in s.console()))
+    vm.key("esc")
+    vm.shot()
+
+
+def to_mortuex(vm):
+    """From the surface, bore to /home/mortuex (home is the third root bed)."""
+    vm.key("o")
+    vm.shot()
+    vm.key("down")
+    vm.key("down")
+    vm.key("ret")
+    vm.shot()
+    vm.key("ret")
+    vm.shot()
+
+
+def label_checks(vm, name):
+    s = vm.shot()
+    check(f"long name: {len(name)} chars do not wrap onto the ruler",
+          LABEL not in colours(s, 0, 660, 46, 108))
+    check(f"long name: {len(name)} chars stop before the screen edge",
+          LABEL not in colours(s, 1021, 660, 3, 108))
+    check(f"long name: {len(name)} chars are stencilled",
+          LABEL in colours(s, 600, 660, 421, 108))
+    check(f"long name: {len(name)} chars head the stratum",
+          s.find_text(100, 56, 240, name, {BONE, BRIGHT}) is not None)
+
+
+def phase_long_names(vm):
+    vm.key("r")
+    vm.shot()
+    short, longest = "abcdefghijkl", "abcdefghijklmnopqrstuvw"
+    vm.line(f"mkdir {short}")
+    vm.line(f"mkdir {longest}")
+    vm.key("esc")
+    vm.shot()
+    to_mortuex(vm)
+    vm.key("ret")
+    label_checks(vm, short)
+    vm.key("esc")
+    vm.shot()
+    vm.key("down")
+    vm.key("ret")
+    label_checks(vm, longest)
+    for _ in range(4):
+        vm.key("esc")
+        vm.shot()
+
+
+def phase_deep(vm):
+    vm.key("r")
+    vm.shot()
+    deep = 18
+    for i in range(1, deep + 1):
+        vm.line(f"mkdir d{i}")
+        vm.line(f"cd d{i}")
+    vm.key("esc")
+    vm.shot()
+    to_mortuex(vm)
+    # earlier phases left entries here too; d1 is the newest directory
+    s = vm.shot()
+    for _ in range(8):
+        if s.find_text(150, 90, 650, "d1", {BRIGHT}) is not None:
+            break
+        vm.key("down")
+        s = vm.shot(0.8)
+    for i in range(1, deep + 1):
+        vm.key("ret")
+        vm.shot(1.0)
+    ok, marks = True, True
+    for i in range(deep, 0, -1):
+        vm.key("esc")
+        s = vm.shot(1.2)
+        ok = ok and s.find_text(150, 86, 650, f"d{i}", {BRIGHT}) is not None
+        marks = marks and selection_marks(s) == 1
+    check(f"deep: Esc reselects the directory just left, {deep} levels up", ok)
+    check("deep: exactly one bed is marked at every level", marks)
+    vm.key("ret")
+    s = vm.shot()
+    check("deep: Enter acts on the reselected directory",
+          s.find_text(100, 56, 240, "d1", {BONE, BRIGHT}) is not None)
+    for _ in range(4):
+        vm.key("esc")
+        vm.shot()
+
+
+def phase_memory(vm):
+    size = SNAP_END - SNAP_BASE
+    a = vm.snapshot(SNAP_BASE, size, "m_a.bin")
+    for key in ("o", "esc", "m", "esc", "t", "esc"):
+        vm.key(key)
+        vm.shot(1.2)
+    b = vm.snapshot(SNAP_BASE, size, "m_b.bin")
+    vm.key("r")
+    vm.shot()
+    vm.line("drawprobe info")
+    s = vm.shot()
+    info = [ln for ln in s.console() if ln.startswith("back=")]
+    m = re.search(r"back=(\d+) fb=(\d+) pitch=(\d+)", info[-1] if info else "")
+    check("memory: probe reports the surfaces", m is not None)
+    if m is None:
+        return
+    back, fb, pitch = (int(g) for g in m.groups())
+    wild = first_diff(a, b, SNAP_BASE, back, back + BACK_SIZE)
+    check(f"memory: short-sky screens stay in the back buffer (first stray {wild})", wild is None)
+    os.remove(a)
+    os.remove(b)
+    # The probe draws off-screen; RAM and spare VRAM must not change.
+    a = vm.snapshot(SNAP_BASE, size, "m_c.bin")
+    va = vm.snapshot(fb + 768 * pitch, 1 << 20, "v_a.bin")
+    before = vm.shot(0.5)
+    vm.line("drawprobe")
+    after = vm.shot()
+    b = vm.snapshot(SNAP_BASE, size, "m_d.bin")
+    vb = vm.snapshot(fb + 768 * pitch, 1 << 20, "v_b.bin")
+    wild = first_diff(a, b, SNAP_BASE, back, back + BACK_SIZE)
+    check(f"memory: off-screen drawing stays in the back buffer (first stray {wild})", wild is None)
+    wild = first_diff(va, vb, fb + 768 * pitch, 0, 0)
+    check(f"memory: off-screen drawing stays out of spare VRAM (first stray {wild})", wild is None)
+    strips = [(0, 60, 40, 700), (1000, 30, 24, 738)]
+    same = all(colours(before, *r) == colours(after, *r)
+               and all(before.rgb(x, y) == after.rgb(x, y)
+                       for y in range(r[1], r[1] + r[3]) for x in range(r[0], r[0] + r[2]))
+               for r in strips)
+    check("memory: off-screen drawing never wraps onto the visible screen", same)
+    for p in (a, b, va, vb):
+        os.remove(p)
+    vm.key("esc")
+    vm.shot()
+
+
+def phase_full_dir(vm):
+    vm.key("o")
+    s = vm.shot()
+    name = "44 objects in this stratum"
+    check("full dir: footer counts every object", s.find_text(150, 720, 745, name, {BONE}) is not None)
+    check("full dir: beds stop above the footer",
+          not any(s.rgb(x, y) in BED_COLOURS for y in range(FOOTER_Y, 768) for x in range(76, 1016, 5)))
+    check("full dir: the stencilled name stays clear of the beds",
+          LABEL not in colours(s, 600, 86, 420, FOOTER_Y - 86))
+    vm.key("down", 0.02)
+    for _ in range(42):
+        vm.key("down", 0.08)
+    vm.key("down", 0.08)
+    s = vm.shot()
+    check("full dir: scrolling reaches the last bed",
+          s.find_text(150, 86, 650, "f39.txt", {BRIGHT}) is not None)
+    check("full dir: exactly one bed marked after scrolling", selection_marks(s) == 1)
+    check("full dir: scrolled view keeps the footer clear",
+          not any(s.rgb(x, y) in BED_COLOURS for y in range(FOOTER_Y, 768) for x in range(76, 1016, 5)))
+    check("full dir: the top beds have scrolled away",
+          s.find_text(150, 86, 650, "bin", {BONE, BRIGHT}) is None)
+    for _ in range(44):
+        vm.key("up", 0.08)
+    s = vm.shot()
+    check("full dir: scrolling back reaches the first bed",
+          s.find_text(150, 86, 650, "bin", {BRIGHT}) is not None)
+    vm.key("esc")
+    vm.shot()
 
 
 def phase_fault(vm):
@@ -409,17 +687,45 @@ def phase_fault(vm):
           s.text(16, 722, 34, {0xFFFFFF}) == "*** CPU EXCEPTION #6 -- HALTED ***")
 
 
-def main():
-    vm = Vm()
+PHASES = [phase_surface, phase_shell, phase_objects, phase_machine, phase_terminate,
+          phase_shell_commands, phase_long_names, phase_deep, phase_fault]
+FULL_FILES = [(f"f{i:02d}.txt", 40 + i * 400) for i in range(40)]
+
+
+def wait_for_surface(vm, timeout=120):
+    """Poll until the start screen has been revealed: boot time varies with host load."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        s = vm.shot(0.5)
+        if (s.w, s.h) == (1024, 768) and s.rgb(54, 740) == SHAFT and s.rgb(300, EDGES[2] + 3) == VERM:
+            return
+    raise RuntimeError("the start screen never appeared")
+
+
+def run_phases(phases, seed_files=None):
+    vm = Vm(seed_files)
     try:
-        for phase in (phase_surface, phase_shell, phase_objects, phase_machine,
-                      phase_terminate, phase_fault):
+        wait_for_surface(vm)
+        for phase in phases:
             try:
                 phase(vm)
             except Exception as e:  # report and continue: each phase is independent
                 check(f"{phase.__name__} crashed: {e!r}", False)
     finally:
         vm.close()
+
+
+def main():
+    wanted = sys.argv[1:]                # e.g. phase_deep phase_full_dir
+    phases = [p for p in PHASES if not wanted or p.__name__ in wanted]
+    if phases:
+        run_phases(phases)
+    if not wanted or "phase_memory" in wanted:
+        # Its own boot: the "before" dump must precede every short-sky screen,
+        # or a repeat of an earlier stray write would show no difference.
+        run_phases([phase_memory])
+    if not wanted or "phase_full_dir" in wanted:
+        run_phases([phase_full_dir], FULL_FILES)
     print(f"\n{passed} passed, {failed} failed")
     return 1 if failed else 0
 

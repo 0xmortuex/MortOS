@@ -1678,6 +1678,71 @@ fn ui_sleep_overlay() {
     ui_disc(512, 384, 3, 0x7A2A10);      // a banked ember, nothing else
 }
 
+// ----- drawprobe: every primitive, on purpose, outside the screen -----
+//
+// test_gfx.py runs this and diffs guest memory: nothing may land outside the
+// surface being drawn on. `front` limits it to calls entirely off the visible
+// screen, because the framebuffer is not recomposed afterwards.
+fn ui_drawprobe_calls(front: bool) {
+    let c: u32 = 0xFF00FF;
+    put_pixel(1030, 100, c);
+    put_pixel(5, 800, c);
+    put_pixel(0xFFFFFFF0, 10, c);
+    put_pixel(5, 0xFFFFFFFF, c);
+    fill_rect(1030, 200, 40, 40, c);
+    fill_rect(10, 800, 20, 40, c);
+    fill_rect(0xFFFFFFF0, 300, 32, 16, c);
+    draw_glyph(65, 1030, 100, c, c);
+    draw_glyph(65, 100, 800, c, c);
+    ui_glyph(65, 1030, 100, c);
+    ui_glyph(65, 100, 800, c);
+    ui_text("probe", 1030, 120, c);
+    ui_big_glyph(77, 1040, 100, 8, c);
+    ui_big_glyph(77, 100, 800, 8, c);
+    ui_big_text("PROBE", 1030, 140, 4, c);
+    ui_disc(1100, 100, 30, c);
+    ui_disc(100, 900, 30, c);
+    ui_line(1030, 10, 1100, 200, c);
+    ui_line(10, 800, 200, 900, c);
+    if !front {
+        fill_rect(1000, 400, 200, 20, c);
+        fill_rect(400, 750, 20, 200, c);
+        ui_big_text("PROBE PROBE PROBE", 800, 500, 8, c);
+        ui_disc(1000, 740, 60, c);
+        ui_disc(8, 8, 30, c);
+    }
+}
+
+fn ui_probe_num(label: *u8, n: u32, col: u32) -> u32 {
+    print_at(label, g_row, col, 7);
+    let c: u32 = col + str_len(label);
+    num_to_str(n, g_numbuf);
+    print_at(g_numbuf, g_row, c, 7);
+    return c + g_numlen + 1;
+}
+
+// `drawprobe info` only reports where the surfaces live.
+fn ui_drawprobe(run: bool) {
+    if !g_gfx || g_scene != SC_SHELL {
+        feed();
+        print_string("drawprobe needs the shell gallery", g_row, 12);
+        return;
+    }
+    if run {
+        ui_to_back();
+        ui_drawprobe_calls(false);
+        ui_to_front();
+        ui_drawprobe_calls(true);
+        ui_restore(1000, 700, 100, 100);
+        ui_copy_row(800);
+        ui_compose_shell();
+    }
+    feed();
+    let col: u32 = ui_probe_num("back=", g_back, 0);
+    col = ui_probe_num("fb=", g_fb, col);
+    ui_probe_num("pitch=", g_fb_pitch, col);
+}
+
 // ----- scene switching -----
 
 // Recompose any scene: used when Lock and Sleep hand the screen back.
