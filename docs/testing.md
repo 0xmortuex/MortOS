@@ -63,8 +63,9 @@ is on that screen, so looking for the text of a command passes even when its
 output is wrong. Only checks for text that was never typed, such as an error
 message or a file size, can fail on wrong output.
 
-An independent review ran 5 kernel mutants. `test_boot.py` caught all 5, and these
-scripts stayed green on all 5, including with `echo` broken. They are kept for the
+An independent review ran 5 kernel mutants. `test_boot.py` caught all 5. These
+scripts stayed green on 4 of them, including with `echo` broken. On the fifth, the
+exec mutant, `test_exec.py` failed (10 passed, 1 failed). They are kept for the
 keyboard path, which `test_boot.py` does not use. Put a check for what a command
 does in `test_boot.py`, where the assertions are exact.
 
