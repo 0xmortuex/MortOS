@@ -24,7 +24,11 @@ boot and vary by machine/bootloader.
 | `0x009F000C` | 4 B | syscall return value (kernel → program) | fixed | `kmain.mx:1783`, written at `kmain.mx:1877`, `1882` |
 | `0x009F0010` | 4 B | loaded program's entry address (kernel-internal) | fixed | `kmain.mx:1783`, written at `kmain.mx:1920`, called through at `kmain.mx:1891` (`exec_enter`) |
 | `0x009F0100` | 120 usable bytes + NUL | syscall #4 input line buffer, filled by `read_line` (echoes with no 80-column wrap check — see [`docs/programs.md`](programs.md#typing-a-long-answer-to-syscall-4-corrupts-the-row-below-it)) | fixed | `kmain.mx:1805-1809`, returned at `kmain.mx:1882` |
+| `0x009F0008`, `0x009F0014`, `0x009F0018` | 4 B each | syscall arg1, arg2, arg3 | fixed | `docs/programs.md` |
+| `0x009F001C`, `0x009F0020`, `0x009F0024` | 4 B each | saved kernel stack, returned status, status for the exit path (kernel-internal) | fixed | `exec_enter`, `proc_leave` |
+| `0x009F0200` | 0x600 B | argc, 16 argv pointers, and the argument strings (from `0x009F0400`) | fixed | `args_setup` |
 | `0x00A00000` (10 MiB) | 64 KiB (zeroed then filled) | program load base — where `exec <name>` copies a flat binary and calls into it | fixed | `kmain.mx:1779`, `1890-1919`; also `programs/prog.ld:4` (`. = 0x00A00000;`) on the program-build side |
+| `0x00A10000` | 64 KiB, grows down from `0x00A20000` | program stack | fixed | `exec_enter` |
 | `0x01000000` (16 MiB) | up to `top - base` | kernel heap base (`g_heap_base`), first byte handed out by `kmalloc` | fixed | `kmain.mx:1043`, in `heap_init` (`kmain.mx:1041-1059`) |
 | `0x04000000` (64 MiB) | — | heap top **fallback**, used only if the multiboot mem-lower/upper flag (bit 0) is absent | fixed | `kmain.mx:1044` |
 | *(computed)* | — | heap top in the common case: `0x00100000 + mem_upper_kib * 1024`, clamped to `0x20000000` (512 MiB) if `mem_upper` looks absurd | dynamic | `kmain.mx:1046-1051` |

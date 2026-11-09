@@ -1,0 +1,38 @@
+// cat: print files in order. Exit status 1 if any could not be read.
+
+fn cat_one(path: *u8) -> bool {
+    let buf: [u8; 512] = [0; 512];
+    let off: u32 = 0;
+    while true {
+        let got: u32 = fs_read(path, off, &buf as *u8, 512);
+        if is_err(got) {
+            put_err("cat", err_of(got), path);
+            return false;
+        }
+        if got == 0 {
+            return true;
+        }
+        put_bytes(&buf as *u8, got);
+        off = off + got;
+    }
+    return true;
+}
+
+fn main() -> int {
+    if argc() < 2 {
+        putln("usage: cat <file>...");
+        return 2;
+    }
+    let ok: bool = true;
+    let i: u32 = 1;
+    while i < argc() {
+        if !cat_one(argv(i)) {
+            ok = false;
+        }
+        i = i + 1;
+    }
+    if ok {
+        return 0;
+    }
+    return 1;
+}
