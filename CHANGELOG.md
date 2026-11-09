@@ -24,8 +24,15 @@ had no releases, so it is listed by date.
 - `export` with no `=`, and `chmod` or `chown` with no path, now report their usage errors. They
   used to act on bytes left by the previous command, so `chmod 777` could change the last file
   named.
-- A disk that is slow to finish a write no longer loses the file. The kernel waited a fixed number
-  of status reads, which a busy host could outlast, and `write` then failed without saying so.
+- `chmod` and `chown` with only a trailing space now report their usage errors. They used to change
+  the current directory.
+- Disk errors are reported. When a write or cache flush fails or times out, `write`, `rm`, `mkdir`,
+  `rmdir`, `chmod` and `chown` print `i/o error: disk write failed` and undo their in-memory change,
+  and the file syscalls return `EIO`. A failed read says so instead of showing an empty file or
+  `bad filesystem`. The data of a failed write is not saved, and a failure partway through a program's
+  file rewrite can leave that file shorter or empty.
+- Reads and writes wait longer for the disk, so one that takes a few seconds now succeeds. One that
+  takes longer than the limit, about 10 s under QEMU TCG, is reported as an error.
 
 ### Changed
 

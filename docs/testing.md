@@ -31,7 +31,16 @@ lock-step: wait for the prompt, send one command, read its output. Every
 assertion is on serial output, and values are random per run. It covers the boot
 banner, `help`, `ls`, `cat`, `echo`, creating files, persistence across a warm
 `reboot` and a real power cycle, `exec` of compiled programs, error paths, a
-missing or unformatted disk, a CPU exception, and `shutdown`.
+missing or unformatted disk, a CPU exception, `shutdown`, and a disk that is slow
+or fails.
+
+Three sessions change how the disk behaves. `slowdisk` makes QEMU hold each
+sector write for 500 ms and checks the write still lands and survives a power
+cycle. `slowio` does the same for slow reads, and throttles a write until the
+kernel gives up, which must print an error and promise no file. `ioerror` uses
+QEMU's blkdebug driver to fail writes, flushes or reads with `EIO`: `write`,
+`rm`, `mkdir`, `rmdir`, `chmod`, `chown`, `ed`, `cat`, `run` and `exec` must each
+report the failure, change nothing, and leave the disk intact after a power cycle.
 
 ```bash
 python test_boot.py                 # build, then every session
@@ -43,6 +52,21 @@ Each session writes its transcript to `build/test-logs/boot/<session>.log`: ever
 command sent, the raw COM1 text, each check, and QEMU's stderr. A session that
 hangs or faults also records the VGA screen and `info registers`. A failing
 session prints its transcript as well.
+
+## What the keyboard-driven scripts really prove
+
+`test.py smoke`, `test_fs.py` and the keyboard half of `test_exec.py` show that
+the kernel boots, that the PS/2-to-shell path works, and that the commands they
+run do not crash the machine. They prove little about what those commands print.
+Their checks search the whole VGA screen, and the command the script just typed
+is on that screen, so looking for the text of a command passes even when its
+output is wrong. Only checks for text that was never typed, such as an error
+message or a file size, can fail on wrong output.
+
+An independent review ran 5 kernel mutants. `test_boot.py` caught all 5, and these
+scripts stayed green on all 5, including with `echo` broken. They are kept for the
+keyboard path, which `test_boot.py` does not use. Put a check for what a command
+does in `test_boot.py`, where the assertions are exact.
 
 ## What each script checks
 
