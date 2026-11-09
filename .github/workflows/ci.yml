@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  boot-tests:
+    name: Build and boot (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash          # -eo pipefail, so a failing test survives `| tee`
+    env:
+      PY: uv run --no-project --with ziglang --with cryptography python
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install QEMU and xorriso (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 xorriso
+
+      - name: Install QEMU (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 20
+        run: choco install qemu -y --no-progress
+
+      # The README quickstart, from this clean checkout with no MORT_HOME.
+      - name: Build and boot to the shell
+        timeout-minutes: 10
+        run: uv run --no-project --with ziglang --with cryptography python build.py boot-check
+
+      - name: Check the multiboot image
+        timeout-minutes: 5
+        run: $PY build.py check
+
+      # Every test step runs even after an earlier failure, and any failure
+      # fails the job. Each harness caps QEMU at -m 256 -accel tcg,tb-size=32.
+      - name: Boot tests (serial)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          mkdir -p build/test-logs
+          $PY test_boot.py 2>&1 | tee build/test-logs/test_boot.log
+
+      - name: Smoke test (test.py)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          mkdir -p build/test-logs
+          $PY test.py smoke 2>&1 | tee build/test-logs/test_smoke.log
+
+      - name: Filesystem test (test_fs.py)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          mkdir -p build/test-logs
+          $PY test_fs.py 2>&1 | tee build/test-logs/test_fs.log
+
+      - name: Program test (test_exec.py)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          mkdir -p build/test-logs
+          $PY test_exec.py 2>&1 | tee build/test-logs/test_exec.log
+
+      - name: Serial console test (test_serial.py)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: |
+          mkdir -p build/test-logs
+          $PY test_serial.py 2>&1 | tee build/test-logs/test_serial.log
+
+      - name: Graphics test (test_gfx.py)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: |
+          mkdir -p build/test-logs
+          $PY test_gfx.py 2>&1 | tee build/test-logs/test_gfx.log
+
+      - name: Upload transcripts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcripts-${{ matrix.os }}
+          path: build/test-logs/
+          if-no-files-found: warn

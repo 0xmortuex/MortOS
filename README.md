@@ -11,16 +11,24 @@
   <br/><sub>A real boot in QEMU: the start screen. Four strata spell M-O-R-T.</sub>
 </p>
 
-### Try it
+### 60-second quickstart
 
-You need [uv](https://docs.astral.sh/uv/), git and [QEMU](https://www.qemu.org/). No other setup: the build fetches the Mort compiler, the Limine bootloader and xorriso itself (a clean build takes about 10 seconds once uv's cache is warm).
+You need [uv](https://docs.astral.sh/uv/), git and [QEMU](https://www.qemu.org/) (`qemu-system-i386`), on Linux or Windows. One command builds the kernel with the pinned Mort compiler and boots it to a shell on your terminal:
 
 ```bash
 git clone https://github.com/0xmortuex/MortOS && cd MortOS
+uv run --no-project --with ziglang --with cryptography python build.py boot
+```
+
+The build fetches the Mort compiler at the commit pinned in `build.py` (`MORT_COMMIT`), so a clean checkout always builds with the same compiler. At the `~ $` prompt try `help`, `ls /`, `write hello.txt hi`, `cat hello.txt` and `exec /bin/hello.bin`; `Ctrl+A` then `X` quits QEMU. Replace `boot` with `boot-check` to build, boot, and exit 0 as soon as the shell prompt is up.
+
+To see the graphical Borehole interface instead, build a bootable ISO and boot it in a QEMU window (`build.py iso` fetches the Limine bootloader and, on Windows, xorriso; on Linux, install `xorriso` first):
+
+```bash
 uv run --no-project --with ziglang --with cryptography python build.py run-iso
 ```
 
-That builds a bootable ISO and boots it in QEMU. It boots to the Borehole start screen (see `docs/borehole-concept.md`): press `Enter` for a shell, then try `help`, `ls`, `write hello.txt hi` and `cat hello.txt`. `Esc` climbs back out; `M`, `O`, `R` and `T` drill to the Machine, Objects, Run and Terminate strata. The ISO is a BIOS/UEFI hybrid built to be written to a USB stick, but I have only tested it in QEMU.
+It boots to the Borehole start screen (see `docs/borehole-concept.md`): press `Enter` for a shell, then try `help`, `ls`, `write hello.txt hi` and `cat hello.txt`. `Esc` climbs back out; `M`, `O`, `R` and `T` drill to the Machine, Objects, Run and Terminate strata. The ISO is a BIOS/UEFI hybrid built to be written to a USB stick, but I have only tested it in QEMU.
 
 ---
 
@@ -86,7 +94,7 @@ Why does a hobby language compile to C instead of running on an interpreter? **B
 
 ## Build & run
 
-Requirements: Python 3, `pip install ziglang cryptography` (`ziglang` is the C cross-compiler; the Mort compiler imports `cryptography`), and [QEMU](https://www.qemu.org/) for booting. The [Mort compiler](https://github.com/0xmortuex/Mort) is fetched automatically into `.mort/` on first build (or set `MORT_HOME`, or keep a `../Mort` checkout).
+Requirements: Python 3, `pip install ziglang cryptography` (`ziglang` is the C cross-compiler; the Mort compiler imports `cryptography`), and [QEMU](https://www.qemu.org/) for booting. The [Mort compiler](https://github.com/0xmortuex/Mort) is fetched automatically into `.mort/` at the commit pinned by `MORT_COMMIT` in `build.py` (or set `MORT_HOME`, or keep a `../Mort` checkout, to build with your own compiler instead; the build prints a note when that differs from the pin).
 
 ```bash
 python build.py check     # build + verify it's a valid 32-bit multiboot ELF
@@ -203,16 +211,14 @@ python build.py iso       # -> build/mort.iso (BIOS + UEFI hybrid, Limine + xorr
 python build.py run-iso   # build the ISO, then boot it in QEMU
 ```
 
-**These two commands (and `test_gfx.py`, which calls `build.iso()` directly)
-only work on Windows.** `iso()` (`build.py:219`-`271`) fetches `limine.exe`
-and `xorriso.exe` — Windows PE binaries, from `LIMINE_ZIP`/`XORRISO_ZIP`
-(`build.py:65`-`66`) — and runs them directly via `subprocess.run`
-(`build.py:261`-`269`), with `_cygpath()` (`build.py:212`-`216`) converting
-paths to the Cygwin form `xorriso.exe` expects. There's no Wine invocation
-or OS branch anywhere in `build.py`, so on Linux/macOS this fails outright
-trying to execute a `.exe`. `build`/`check`/`run`/`window`/`disk`/`prog`
-(and `test.py`/`test_fs.py`/`test_exec.py`) have no such restriction — they
-only need Zig (via `ziglang`) and QEMU, both cross-platform.
+These two commands, and the ISO paths of `test_gfx.py` and `test_serial.py`,
+work on Windows and Linux; CI builds the ISO and boots it on `windows-latest`
+and `ubuntu-latest`. `iso()` in `build.py` fetches Limine at a pinned commit.
+On Windows it also fetches a pinned `xorriso.exe` and runs both `.exe` tools
+directly. On Linux, install `xorriso` first (`apt install xorriso`); Limine's
+host tool is built with Zig from the `limine.c` in the same download. macOS
+is untested. `build`/`check`/`run`/`window`/`disk`/`prog` only need Zig (via
+`ziglang`) and QEMU.
 
 This path boots to the **Borehole start screen** (`ui_start`, `ui/borehole.mx`)
 instead of a bare prompt — press `Enter` to bore into the shell, where the
