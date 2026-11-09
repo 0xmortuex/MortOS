@@ -40,6 +40,7 @@ let g_cmdexp: [u8; 256] = [0; 256];                           // a command line 
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
 let g_last_status: u32 = 0;                                     // $?: exit status of the last command
 let g_line_fresh: bool = false;                                 // a program left the cursor on an empty line
+let g_fs_read_failed: bool = false;                            // the disk could not be read at boot
 let g_fs_quiet: bool = false;                                   // fs_create_full reports through g_fs_errno only
 let g_fs_errno: u32 = 0;                                        // why fs_create_full last failed
 let g_proc: [u8; 320] = [0; 320];                               // process table: 8 records of 40 bytes
@@ -1137,6 +1138,10 @@ fn run_file(name: *u8) {
         return;
     }
     let size: u32 = fs_read_file(i);
+    if fs_read_failed(i, size) {
+        report_read_error();
+        return;
+    }
     g_run_depth = g_run_depth + 1;
     run_range_lines(0x00810000, 0x00810000 + size);    // FILEBUF
     g_run_depth = g_run_depth - 1;
@@ -1401,10 +1406,11 @@ fn ata_wait_write_done() -> bool {
     return ata_wait_bsy_for(30000000);
 }
 
-// Poll until DRQ (0x08) sets; fail fast on ERR (0x01) or DF (0x20).
+// Poll until DRQ (0x08) sets; fail fast on ERR (0x01) or DF (0x20). A read waits
+// here for the media, so it gets the same long wait as a write.
 fn ata_wait_drq() -> bool {
     let i: u32 = 0;
-    while i < 1000000 {
+    while i < 30000000 {
         let st: u8 = inb(0x1F7);
         if (st & 0x80) == 0 {                       // BSY clear -> bits valid
             if (st & 0x21) != 0 { return false; }   // ERR or DF
@@ -1436,6 +1442,13 @@ fn ata_init() -> bool {
     outb(0x3F6, 2);                     // nIEN: no ATA interrupts
     g_disk_ok = true;
     return true;
+}
+
+// Wait for a write or flush to end. True only if it ended without ERR or DF:
+// a timeout or a reported error both mean the data may not be on the disk.
+fn ata_write_finished() -> bool {
+    if !ata_wait_write_done() { return false; }
+    return (inb(0x1F7) & 0x21) == 0;
 }
 
 // Read one 512-byte sector at `lba` into buf. Data port is 16-bit, LE.
@@ -1479,10 +1492,9 @@ fn ata_write(lba: u32, buf: *u8) -> bool {
         outw(0x1F0, (lo | (hi << 8)) as u16);
         i = i + 1;
     }
-    if !ata_wait_write_done() { return false; }
+    if !ata_write_finished() { return false; }
     outb(0x1F7, 0xE7);                  // CACHE FLUSH
-    if !ata_wait_write_done() { return false; }
-    return true;
+    return ata_write_finished();
 }
 
 // ----- MortFS v1 -----
@@ -1544,6 +1556,7 @@ fn fs_init() -> bool {
     let s: u32 = 0;
     while s < 9 {
         if !ata_read(s, (0x00801000 + s * 512) as *u8) {    // TABCACHE
+            g_fs_read_failed = true;
             return false;
         }
         s = s + 1;
@@ -1565,7 +1578,7 @@ fn fs_init() -> bool {
         }
         *((0x00801000 + 4) as *u32) = 2;
         g_fs_ok = true;
-        fs_sync();
+        if !fs_sync() { report_write_error(); }
         return true;
     }
     if ver != 2 {
@@ -1769,6 +1782,21 @@ fn fs_free_slot() -> u32 {
     return 64;
 }
 
+fn report_write_error() {
+    feed();
+    print_string("i/o error: disk write failed", g_row, 12);
+}
+
+fn report_read_error() {
+    feed();
+    print_string("i/o error: disk read failed", g_row, 12);
+}
+
+// fs_read_file returned `got` for entry i: 0 from a file that has bytes is a failure.
+fn fs_read_failed(i: u32, got: u32) -> bool {
+    return got == 0 && *((fs_entry_addr(i) + 28) as *u32) != 0;
+}
+
 // Record why a create failed; print it too unless a syscall is asking (it
 // reports the errno to the program instead). Returns the failure value, 64.
 fn fs_fail(e: u32, msg: *u8) -> u32 {
@@ -1797,6 +1825,7 @@ fn fs_create_full(name: *u8, parent: u32, typ: u8) -> u32 {
     if slot == 64 {
         return fs_fail(28, "file table full (max 64 entries)");
     }
+    let old_next: u32 = *((0x00801000 + 12) as *u32);  // next_free_sector, for an undo
     let base: u32 = fs_entry_addr(slot);
     let k: u32 = 0;
     while k < 24 {                                     // NUL-pad the name field
@@ -1824,9 +1853,11 @@ fn fs_create_full(name: *u8, parent: u32, typ: u8) -> u32 {
     }
     fs_set_meta(base, typ, parent as u8, g_uid, mode);
     *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) + 1;   // count++
-    if !fs_sync() {
-        g_fs_errno = 5;
-        return 64;
+    if !fs_sync() {                                    // undo: the entry must not exist
+        *((base + 24) as *u32) = 0;
+        *((0x00801000 + 12) as *u32) = old_next;
+        *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) - 1;
+        return fs_fail(5, "i/o error: disk write failed");
     }
     return slot;
 }
@@ -1841,7 +1872,8 @@ fn fs_create(name: *u8) -> u32 {
 }
 
 // mkdir: create the directory named by `path`. Returns the new index, or a
-// sentinel: 64 = a parent directory is missing, 65 = it already exists.
+// sentinel: 64 = a parent directory is missing, 65 = it already exists,
+// 66 = the create failed and has printed why.
 fn fs_mkdir(path: u64) -> u32 {
     let leaf: [u8; 24] = [0; 24];
     let parent: u32 = fs_parent_of(path, &leaf as u64);
@@ -1851,7 +1883,11 @@ fn fs_mkdir(path: u64) -> u32 {
     if fs_find_in((&leaf as u64) as *u8, parent) != 64 {
         return 65;
     }
-    return fs_create_full((&leaf as u64) as *u8, parent, 1);
+    let made: u32 = fs_create_full((&leaf as u64) as *u8, parent, 1);
+    if made == 64 {
+        return 66;
+    }
+    return made;
 }
 
 // Ensure a top-level directory exists (used to seed the standard layout).
@@ -1905,7 +1941,7 @@ fn fs_populate_bin() {
         i = i + 1;
     }
     if changed {
-        fs_sync();
+        if !fs_sync() { report_write_error(); }
     }
 }
 
@@ -1937,8 +1973,10 @@ fn fs_append_line(i: u32, text: *u8) -> bool {
     let cap: u32 = *((base + 36) as *u32) * 512;
     let n: u32 = str_len(text);
     if size + n + 1 > cap {
+        g_fs_errno = 27;
         return false;
     }
+    g_fs_errno = 5;                         // any failure from here on is the disk
     let start: u32 = *((base + 32) as *u32);
     let sec: u32 = start + size / 512;      // sector being filled
     let off: u32 = size % 512;              // write position within it
@@ -1977,7 +2015,11 @@ fn fs_append_line(i: u32, text: *u8) -> bool {
         }
     }
     *((base + 28) as *u32) = size + n + 1;
-    return fs_sync();
+    if !fs_sync() {
+        *((base + 28) as *u32) = size;      // undo: the line was not committed
+        return false;
+    }
+    return true;
 }
 
 // Copy up to n bytes of entry i from offset off into dst, sector by sector
@@ -2047,7 +2089,11 @@ fn fs_append_bytes(i: u32, src: u32, n: u32) -> bool {
         done = done + chunk;
     }
     *((base + 28) as *u32) = size + n;
-    return fs_sync();
+    if !fs_sync() {
+        *((base + 28) as *u32) = size;      // undo: the bytes were not committed
+        return false;
+    }
+    return true;
 }
 
 // Mark `name` unused. The extent is NOT reclaimed -- unchanged from v1 to v2.
@@ -2058,7 +2104,12 @@ fn fs_remove(name: *u8) -> bool {
     }
     *((fs_entry_addr(i) + 24) as *u32) = 0;            // used = 0
     *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) - 1;   // file_count--
-    return fs_sync();
+    if !fs_sync() {
+        *((fs_entry_addr(i) + 24) as *u32) = 1;        // undo: it is still on the disk
+        *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) + 1;
+        return false;
+    }
+    return true;
 }
 
 // Shared preamble for every FS command: explain what's missing, in order.
@@ -2066,6 +2117,10 @@ fn fs_guard() -> bool {
     if !g_disk_ok {
         feed();
         print_string("no disk (boot with -hda disk.img)", g_row, 12);
+        return false;
+    }
+    if g_fs_read_failed {
+        report_read_error();
         return false;
     }
     if !g_fs_ok {
@@ -2475,8 +2530,13 @@ fn sys_fwrite(path: u32, buf: u32, len: u32, flags: u32) {
     }
     if keep + len > *((base + 36) as *u32) * 512 { sys_fail(27); return; }
     if (flags & 1) != 0 {
+        let had: u32 = *((base + 28) as *u32);
         *((base + 28) as *u32) = 0;
-        if !fs_sync() { sys_fail(5); return; }
+        if !fs_sync() {
+            *((base + 28) as *u32) = had;          // undo: the old contents are still there
+            sys_fail(5);
+            return;
+        }
     }
     if !fs_append_bytes(idx, buf, len) { sys_fail(5); return; }
     sys_ret(len);
@@ -2998,7 +3058,11 @@ fn run_command_impl(cmd: *u8) -> bool {
         }
         *((fs_entry_addr(r) + 24) as *u32) = 0;         // free the slot
         *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) - 1;
-        fs_sync();
+        if !fs_sync() {
+            *((fs_entry_addr(r) + 24) as *u32) = 1;     // undo: it is still on the disk
+            *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) + 1;
+            report_write_error();
+        }
         return false;
     }
     if starts_with(cmd, "cat ") {
@@ -3017,6 +3081,10 @@ fn run_command_impl(cmd: *u8) -> bool {
             return false;
         }
         let size: u32 = fs_read_file(i);
+        if fs_read_failed(i, size) {
+            report_read_error();
+            return false;
+        }
         feed();
         print_range(0x00810000, 0x00810000 + size, 7);   // FILEBUF
         return false;
@@ -3057,8 +3125,12 @@ fn run_command_impl(cmd: *u8) -> bool {
             if i == 64 { return false; }
         }
         if !fs_append_line(i, text) {
-            feed();
-            print_string("file full (max 64 KB)", g_row, 12);
+            if g_fs_errno == 27 {
+                feed();
+                print_string("file full (max 64 KB)", g_row, 12);
+            } else {
+                report_write_error();
+            }
         }
         return false;                                    // success is Unix-quiet
     }
@@ -3082,7 +3154,7 @@ fn run_command_impl(cmd: *u8) -> bool {
             print_string("permission denied", g_row, 12);
             return false;
         }
-        fs_remove(name);
+        if !fs_remove(name) { report_write_error(); }
         return false;
     }
     if starts_with(cmd, "run ") {
@@ -3249,8 +3321,12 @@ fn run_command_impl(cmd: *u8) -> bool {
             print_string("chmod: not permitted", g_row, 12);
             return false;
         }
+        let old_mode: u32 = *((fs_entry_addr(idx) + 44) as *u32);
         *((fs_entry_addr(idx) + 44) as *u32) = mode;
-        fs_sync();
+        if !fs_sync() {
+            *((fs_entry_addr(idx) + 44) as *u32) = old_mode;   // undo
+            report_write_error();
+        }
         return false;
     }
     if starts_with(cmd, "chown ") {
@@ -3282,8 +3358,12 @@ fn run_command_impl(cmd: *u8) -> bool {
             print_string("chown: not found", g_row, 12);
             return false;
         }
+        let old_uid: u8 = *((fs_entry_addr(idx) + 42) as *u8);
         *((fs_entry_addr(idx) + 42) as *u8) = uid as u8;
-        fs_sync();
+        if !fs_sync() {
+            *((fs_entry_addr(idx) + 42) as *u8) = old_uid;     // undo
+            report_write_error();
+        }
         return false;
     }
     if streq(cmd, "reboot") {
@@ -3557,7 +3637,7 @@ fn ensure_home() {
     let idx: u32 = fs_create_full("mortuex", home, 1);
     if idx != 64 {
         *((fs_entry_addr(idx) + 42) as *u8) = 1;    // chown to uid 1
-        fs_sync();
+        if !fs_sync() { report_write_error(); }
     }
 }
 
