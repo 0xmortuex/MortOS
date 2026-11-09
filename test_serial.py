@@ -44,6 +44,8 @@ BANNER = "MORT OS -- interrupt-driven"
 SESSION_LIMIT_S = 180            # watchdog: no QEMU outlives this
 BYTE_GAP_S = 0.02                # longer than one 10 ms kernel tick
 LINE_FLOOD_EXTRA_S = 30          # how long a slow host may take for 2 guest seconds
+FLOOD_BACKLOG_S = 60             # a flood's queued input is worked off before the next command
+RESEND_GAP_S = 5                 # after a flood, how long to wait before repeating a command
 STALL_MIN_CATS = 4
 STALL_MAX_CATS = 80              # 4.8 MB: more than a Linux loopback send buffer holds
 # 256 MB guest and a capped translation cache: uncapped QEMU reached 1.4 GB.
@@ -380,12 +382,29 @@ def wait_quiet(t, idle_s=1.0, timeout_s=60):
     return False
 
 
-def uptime_seconds(t):
+def uptime_seconds(t, timeout_s=15, resend=False):
+    """Run `uptime` and return its seconds, or None if it never answers.
+
+    With resend, send it again until answered: input that arrives while the
+    512-byte ring still holds a flood's backlog is dropped, and `serial` counts it.
+
+    Waits for the answer itself: the ISO path's startup script prints prompts of
+    its own, so an earlier "$ " can arrive before the answer does.
+    """
     start = len(t.seen())
     t.typed("uptime\r")
-    t.until("$ ", start, timeout_s=15)
-    found = re.search(r"uptime: (\d+) s", t.seen(start))
-    return int(found.group(1)) if found else None
+    deadline = time.monotonic() + timeout_s
+    next_send = time.monotonic() + RESEND_GAP_S
+    while time.monotonic() < deadline:
+        found = re.search(r"uptime: (\d+) s", t.seen(start))
+        if found:
+            t.until("$ ", start + found.end(), timeout_s=15)
+            return int(found.group(1))
+        if resend and time.monotonic() >= next_send:
+            t.typed("\ruptime\r")
+            next_send = time.monotonic() + RESEND_GAP_S
+        time.sleep(0.05)
+    return None
 
 
 def uptimes_since(t, start):
@@ -436,7 +455,7 @@ def flood_checks(label, *boot):
                   got_key and flood.thread.is_alive(), t.seen(start)[-200:])
             time.sleep(max(0, 5 - (time.monotonic() - flood.started)))
         wait_quiet(t)
-        after = uptime_seconds(t)
+        after = uptime_seconds(t, timeout_s=FLOOD_BACKLOG_S, resend=True)
         check(f"{label}: ticks advance during a CR flood",
               before is not None and after is not None and after - before >= 3,
               repr((before, after)))
@@ -455,9 +474,12 @@ def flood_checks(label, *boot):
               advanced_two(seconds), repr(seconds[:3] + seconds[-3:]))
         wait_quiet(t)
         start = len(t.seen())
+        deadline = time.monotonic() + FLOOD_BACKLOG_S
         t.typed("\recho flood-alive\r")
+        while not t.until("\r\nflood-alive\r\n", start, timeout_s=RESEND_GAP_S) and time.monotonic() < deadline:
+            t.typed("\recho flood-alive\r")     # the backlog may have dropped the last try
         check(f"{label}: shell answers after the flood",
-              t.until("\r\nflood-alive\r\n", start, timeout_s=30), t.seen(start)[-200:])
+              "\r\nflood-alive\r\n" in t.seen(start), t.seen(start)[-200:])
     finally:
         t.close()
 
