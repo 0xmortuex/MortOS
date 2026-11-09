@@ -1083,6 +1083,7 @@ fn show_module() {
 fn run_range_lines(start: u32, end: u32) {
     let p: u32 = start;
     let len: u32 = 0;
+    let fresh: bool = false;             // the last command left us on an empty line
     while p <= end {
         let ch: u8 = 10;                 // treat one-past-end as a final newline
         if p < end {
@@ -1091,10 +1092,12 @@ fn run_range_lines(start: u32, end: u32) {
         if ch == 10 {                    // end of line -> run it
             if len > 0 {
                 *((g_buf as u32 + len) as *u8) = 0;
-                feed();
+                if !fresh {
+                    feed();
+                }
                 draw_prompt(g_row);
                 print_at(g_buf, g_row, g_prompt_len, 15);   // echo the command
-                run_command(g_buf);
+                fresh = run_command(g_buf);
             }
             len = 0;
         } else {

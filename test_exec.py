@@ -234,6 +234,8 @@ def userland():
         out = run("run job.txt")
         ul_check("run: script survives programs (regression: FILEBUF clobber)",
                  "job-line-one" in out and "ps.bin" in out and "job-line-three" in out, out)
+        ul_check("run: no blank line after a program in a script",
+                 "job-line-one\r\n~ $ ls /bin" in out, out)
 
         # --- the kernel's path limits reach the program as an error ---
         out = run("cat /" + "a" * 30)
