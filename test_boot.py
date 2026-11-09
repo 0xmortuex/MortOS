@@ -403,7 +403,7 @@ def session_files(run, log):
                     [f"~ $ echo {two}", two, "~ $ pwd", f"/home/{USER}"])
 
         g.cmd("rm a.txt")
-        check_lines(log, "rm removes the file", g.cmd("cat a.txt"), ["not found: a.txt"])
+        check_lines(log, "rm removes the file", g.cmd("cat a.txt"), ["cat: not found: a.txt"])
         log.check("rm drops it from ls", not any(" a.txt" in ln for ln in g.cmd("ls")))
         g.cmd("rm sub/inner.txt")
         g.cmd("rmdir sub")
@@ -433,7 +433,7 @@ def session_persistence(run, log):
         check_lines(log, "reboot: the file survives", g.cmd("cat keep.txt"), [keep, more])
         check_lines(log, "reboot: a nested file survives", g.cmd("cat kept/deep.txt"), [more])
         check_lines(log, "reboot: the removed file stays gone", g.cmd("cat /doomed.txt"),
-                    ["not found: /doomed.txt"])
+                    ["cat: not found: /doomed.txt"])
         third = TOKEN()
         g.cmd(f"write keep.txt {third}")
     with Guest(log, run.kernel, disk=disk, tag="second boot") as g:
@@ -442,7 +442,7 @@ def session_persistence(run, log):
                     g.cmd("cat keep.txt"), [keep, more, third])
         check_lines(log, "power cycle: a nested file survives", g.cmd("cat kept/deep.txt"), [more])
         check_lines(log, "power cycle: the removed file stays gone", g.cmd("cat /doomed.txt"),
-                    ["not found: /doomed.txt"])
+                    ["cat: not found: /doomed.txt"])
         lost_nothing(log, g)
 
 
@@ -481,10 +481,10 @@ def session_errors(run, log):
         g.cmd("write d/f.txt x")
         for line, want in (
             ("no-such-command", "unknown command"),
-            ("cat nope.txt", "not found: nope.txt"),
-            ("cat d", "cat: is a directory"),
-            ("ls nowhere", "not found: nowhere"),
-            ("ls d/f.txt", "not a directory"),
+            ("cat nope.txt", "cat: not found: nope.txt"),
+            ("cat d", "cat: is a directory: d"),
+            ("ls nowhere", "ls: not found: nowhere"),
+            ("ls d/f.txt", "ls: not a directory: d/f.txt"),
             ("cd nowhere", "cd: no such directory"),
             ("cd d/f.txt", "cd: not a directory"),
             ("rm nope.txt", "not found: nope.txt"),
