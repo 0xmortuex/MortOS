@@ -1368,15 +1368,27 @@ fn ata_delay() {
     inb(0x3F6);
 }
 
-// Poll until BSY (0x80) clears; false on timeout (~1s on real hardware).
-fn ata_wait_bsy() -> bool {
+// Poll until BSY (0x80) clears, up to `polls` status reads; false on timeout.
+fn ata_wait_bsy_for(polls: u32) -> bool {
     let i: u32 = 0;
-    while i < 1000000 {
+    while i < polls {
         let st: u8 = inb(0x1F7);
         if (st & 0x80) == 0 { return true; }
         i = i + 1;
     }
     return false;
+}
+
+// For a command that needs no media access (~1s on real hardware).
+fn ata_wait_bsy() -> bool {
+    return ata_wait_bsy_for(1000000);
+}
+
+// For a sector write or cache flush, which a busy disk can take seconds over.
+// A status read is far quicker in an emulator than on real hardware, so the
+// short wait can expire there while the disk is still working.
+fn ata_wait_write_done() -> bool {
+    return ata_wait_bsy_for(30000000);
 }
 
 // Poll until DRQ (0x08) sets; fail fast on ERR (0x01) or DF (0x20).
@@ -1457,9 +1469,9 @@ fn ata_write(lba: u32, buf: *u8) -> bool {
         outw(0x1F0, (lo | (hi << 8)) as u16);
         i = i + 1;
     }
-    if !ata_wait_bsy() { return false; }
+    if !ata_wait_write_done() { return false; }
     outb(0x1F7, 0xE7);                  // CACHE FLUSH
-    if !ata_wait_bsy() { return false; }
+    if !ata_wait_write_done() { return false; }
     return true;
 }
 

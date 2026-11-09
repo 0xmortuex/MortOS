@@ -24,6 +24,8 @@ had no releases, so it is listed by date.
 - `export` with no `=`, and `chmod` or `chown` with no path, now report their usage errors. They
   used to act on bytes left by the previous command, so `chmod 777` could change the last file
   named.
+- A disk that is slow to finish a write no longer loses the file. The kernel waited a fixed number
+  of status reads, which a busy host could outlast, and `write` then failed without saying so.
 
 ### Changed
 
