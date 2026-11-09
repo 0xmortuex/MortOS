@@ -17,10 +17,10 @@ python test_gfx.py        # boot the ISO, drive the Borehole interface, assert o
 
 All four need `qemu-system-i386` on `PATH` (found via `build._find_qemu()`,
 `build.py`); `test_exec.py` also needs `pip install ziglang` since it
-compiles the sample programs first. `test_gfx.py` additionally only runs on
-Windows: it boots via `build.iso()`, which fetches and directly executes
-Windows `.exe` binaries for Limine/xorriso with no Wine fallback — see the
-ISO note in [`README.md`](../README.md#a-real-bootable-iso). None of the four
+compiles the sample programs first. `test_gfx.py` boots via `build.iso()`,
+which runs on Windows and Linux. Linux needs `xorriso` installed; see the ISO
+note in [`README.md`](../README.md#a-real-bootable-iso). CI runs every script
+on `windows-latest` and `ubuntu-latest` from a clean checkout. None of the four
 scripts touch files in the repo — scratch disk images and screendumps go to
 the system temp dir (`tempfile.mkdtemp`).
 

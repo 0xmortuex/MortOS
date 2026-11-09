@@ -141,8 +141,9 @@ syscall (a program returns), no argv, no file I/O, no exit status.
    `mortc.compile_to_c(..., freestanding=True)`, giving `build/kmain.c` (`build.py:109-122`).
 3. `zig cc` compiles C with `-mno-sse -mno-sse2 -mno-mmx -O2` and assembles `boot.s` and `idt.s`.
 4. Link with `linker.ld` into `build/kernel.elf`.
-5. The ISO path downloads Limine (`v8.x-binary` branch) and xorriso (`master` branch) as Windows
-   `.exe` files into `tools/`, so `iso` and `run-iso` work only on Windows (`build.py:219-271`).
+5. The ISO path (`iso` in `build.py`) downloads Limine at a pinned commit into `tools/`. On Windows
+   it also downloads a pinned `xorriso.exe`. On Linux it uses the system `xorriso` and builds
+   Limine's host tool with Zig. CI builds and boots the ISO on both.
 6. `programs/*.mx` are built the same way, linked at `0x00A00000` and `objcopy`'d to `.bin`
    (`build_program`, `build.py:274`), then seeded once into `build/disk.img` by `ensure_disk`.
 
@@ -159,7 +160,7 @@ uv run --no-project --with ziglang --with cryptography python build.py run-iso
 |---|---|
 | `python build.py check` | Build and validate the multiboot ELF |
 | `python build.py run` / `window` | Build, boot `-kernel` with a disk (GUI window) |
-| `python build.py iso` / `run-iso` | Build, and boot, the Windows-built ISO |
+| `python build.py iso` / `run-iso` | Build, and boot, the ISO |
 | `python test_boot.py` | The boot-test suite: shell, files, persistence, programs and error paths, all over COM1 |
 | `python test.py smoke` | Boot and shell basics |
 | `python test_fs.py` | Disk stack and persistence |

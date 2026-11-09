@@ -211,16 +211,14 @@ python build.py iso       # -> build/mort.iso (BIOS + UEFI hybrid, Limine + xorr
 python build.py run-iso   # build the ISO, then boot it in QEMU
 ```
 
-**These two commands (and `test_gfx.py`, which calls `build.iso()` directly)
-only work on Windows.** `iso()` (`build.py:219`-`271`) fetches `limine.exe`
-and `xorriso.exe` — Windows PE binaries, from `LIMINE_ZIP`/`XORRISO_ZIP`
-(`build.py:65`-`66`) — and runs them directly via `subprocess.run`
-(`build.py:261`-`269`), with `_cygpath()` (`build.py:212`-`216`) converting
-paths to the Cygwin form `xorriso.exe` expects. There's no Wine invocation
-or OS branch anywhere in `build.py`, so on Linux/macOS this fails outright
-trying to execute a `.exe`. `build`/`check`/`run`/`window`/`disk`/`prog`
-(and `test.py`/`test_fs.py`/`test_exec.py`) have no such restriction — they
-only need Zig (via `ziglang`) and QEMU, both cross-platform.
+These two commands, and the ISO paths of `test_gfx.py` and `test_serial.py`,
+work on Windows and Linux; CI builds the ISO and boots it on `windows-latest`
+and `ubuntu-latest`. `iso()` in `build.py` fetches Limine at a pinned commit.
+On Windows it also fetches a pinned `xorriso.exe` and runs both `.exe` tools
+directly. On Linux, install `xorriso` first (`apt install xorriso`); Limine's
+host tool is built with Zig from the `limine.c` in the same download. macOS
+is untested. `build`/`check`/`run`/`window`/`disk`/`prog` only need Zig (via
+`ziglang`) and QEMU.
 
 This path boots to the **Borehole start screen** (`ui_start`, `ui/borehole.mx`)
 instead of a bare prompt — press `Enter` to bore into the shell, where the
