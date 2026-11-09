@@ -61,7 +61,7 @@ The bottom stratum, **T**, holds **Lock**, **Sleep**, **Restart** and **Shut dow
 
 ![A core sample: a file's real contents on a pale slab of rock](docs/borehole-core.png)
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.
-- **Runs real, interactive compiled programs** — `exec <file>` loads a Mort program (compiled to a flat binary) off the disk to `0x00A00000` and runs it. Programs share no symbols with the kernel; they call it through **`int 0x80` syscalls** (args passed via a fixed mailbox, since Mort's `asm()` takes no operands). A read-line syscall polls the keyboard directly, so programs can take input too — `exec ask.bin` asks your name and greets you. Sample programs are in [`programs/`](programs/). See [`docs/memory-map.md`](docs/memory-map.md) for every fixed physical address the kernel uses.
+- **Runs real, interactive compiled programs** — `exec <file>` loads a Mort program (compiled to a flat binary) off the disk to `0x00A00000` and runs it. Programs share no symbols with the kernel; they call it through **`int 0x80` syscalls** (args passed via a fixed mailbox, since Mort's `asm()` takes no operands). A read-line syscall polls the keyboard directly, so programs can take input too — `exec /bin/ask.bin` asks your name and greets you. Sample programs are in [`programs/`](programs/). See [`docs/memory-map.md`](docs/memory-map.md) for every fixed physical address the kernel uses.
 - **Users, login, and file permissions** — two built-in accounts, `root` and `mortuex`, with djb2-hashed passwords (`acct_init`, `kmain.mx:2904`); the shell auto-logs-in as the normal user and starts in `/home/mortuex` (`login_default`/`cwd_init`, `kmain.mx:2910`/`2916`), with `whoami`, `su`, `sudo`, and `passwd` on top. Every MortFS entry carries an owner uid and Unix-style mode bits, enforced on entry creation, `write`, and `rm` by `can_write` (`kmain.mx:2978`). See [`docs/accounts.md`](docs/accounts.md) for the model, and for which bits are enforced versus only displayed.
 - **A real bootable ISO** — a BIOS+UEFI hybrid ISO (Limine bootloader) built to be written to a USB stick, not just QEMU's `-kernel` shortcut (tested in QEMU only; not yet verified on physical hardware)
 - **Interrupt-driven keyboard** — a flat GDT, an IDT, remapped PICs; IRQ1 fires into a Mort handler (no polling)
@@ -150,9 +150,9 @@ compiles every `programs/*.mx` and seeds the resulting binaries onto
 already see them:
 
 ```
-> exec hello.bin          # a real Mort program prints via syscall, then returns
-> exec count.bin          # a second program, proving more than one builds and runs
-> exec ask.bin            # an interactive program: it asks your name and greets you
+> exec /bin/hello.bin     # a real Mort program prints via syscall, then returns
+> exec /bin/count.bin     # a second program, proving more than one builds and runs
+> exec /bin/ask.bin       # an interactive program: it asks your name and greets you
 ```
 
 `python build.py prog` compiles `programs/*.mx` into loose `build/*.bin`
