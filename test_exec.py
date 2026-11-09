@@ -9,6 +9,7 @@ proving a Mort program compiled to a flat binary loads off disk, runs at
 Needs QEMU + `pip install ziglang`. Scratch image goes to the temp dir.
 """
 import os
+import re
 import sys
 import tempfile
 
@@ -86,8 +87,159 @@ def main():
     finally:
         T.shutdown(h)
 
-    print(f"\n{passed} passed, {failed} failed")
-    return 1 if failed else 0
+    userland()
+    print(f"\nexec: {passed} passed, {failed} failed; userland: {ulpassed} passed, {ulfailed} failed")
+    return 1 if failed or ulfailed else 0
+
+
+# ----- userland programs, driven over COM1 (each output is the program's own) -----
+
+BIG_END = "big-file-last-line"
+ulpassed = 0
+ulfailed = 0
+
+
+def ul_check(label, ok, detail=None):
+    global ulpassed, ulfailed
+    if ok:
+        ulpassed += 1
+        print(f"PASS: {label}")
+    else:
+        ulfailed += 1
+        print(f"FAIL: {label}\n--- detail ---\n{detail!r}\n--------------")
+    return ok
+
+
+def exit_status(S, h):
+    """The shell's $? as an int (a line holding nothing but digits)."""
+    out = S.run(h, "echo $?")
+    found = re.search(r"\r\n(\d+)\r\n", out)
+    return int(found.group(1)) if found else None
+
+
+def userland():
+    import test_serial as S  # the COM1 lock-step helpers
+
+    big = os.path.join(TMP, "big.txt")
+    with open(big, "w", newline="\n") as fh:     # spans several 512-byte sectors
+        for n in range(120):
+            fh.write(f"line {n:03d} of the big file\n")
+        fh.write(BIG_END + "\n")
+    bins = [(os.path.join(build.BUILD, os.path.splitext(os.path.basename(mx))[0] + ".bin"),
+             os.path.splitext(os.path.basename(mx))[0] + ".bin")
+            for mx in build._program_sources()]
+    ul_img = os.path.join(TMP, "userland.img")
+    mkfs.make(ul_img, adds=[(big, "big.txt")], bins=bins)
+
+    h = S.boot_serial("-kernel", build.ELF, "-hda", ul_img)
+    try:
+        if not ul_check("userland: boots to a shell on COM1",
+                        S.boot_to_prompt(h, "userland")):
+            return
+
+        def run(line, t=30):
+            return S.run(h, line, timeout_s=t)
+
+        # --- echo: an executable that only sees argv ---
+        out = run('echo one   two "three  four"')
+        ul_check("echo: separate words joined by one space, quotes grouped",
+                 "\r\none two three  four\r\n" in out, out)
+        ul_check("echo: exits 0", exit_status(S, h) == 0, out)
+        out = run("ps -a")
+        ul_check("echo: really ran as a program (exited record in ps -a)",
+                 re.search(r"exited\s+0\s+\d+\s+echo\b", out) is not None, out)
+
+        # --- cat: several files, multi-sector read, error paths, exit status ---
+        run("write /a.txt alpha-text")
+        run("write /b.txt bravo-text")
+        out = run("cat /a.txt /b.txt")
+        ul_check("cat: concatenates two files in order",
+                 "alpha-text" in out and "bravo-text" in out
+                 and out.index("alpha-text") < out.index("bravo-text", out.index("alpha-text")),
+                 out)
+        ul_check("cat: exits 0 when every file is read", exit_status(S, h) == 0, out)
+        out = run("cat /big.txt")
+        ul_check("cat: reads a file across sector boundaries",
+                 "line 000 of the big file" in out and BIG_END in out, out[-300:])
+        out = run("cat /nope.txt")
+        ul_check("cat: missing file message", "cat: not found: /nope.txt" in out, out)
+        ul_check("cat: missing file exits 1", exit_status(S, h) == 1, out)
+        out = run("cat /bin")
+        ul_check("cat: directory message", "cat: is a directory: /bin" in out, out)
+        out = run("cat")
+        ul_check("cat: usage message", "usage: cat <file>..." in out, out)
+        ul_check("cat: usage exits 2", exit_status(S, h) == 2, out)
+
+        # --- ls: own listing, errors, exit status ---
+        out = run("ls /bin")
+        for prog in ("cat.bin", "echo.bin", "hello.bin", "kill.bin", "ls.bin", "ps.bin"):
+            ul_check(f"ls: lists {prog}", prog in out, out)
+        ul_check("ls: type, mode and size columns",
+                 re.search(r"- 755\s+ls\.bin\s+\d+ bytes\s+uid 0", out) is not None, out)
+        ul_check("ls: exits 0", exit_status(S, h) == 0, out)
+        out = run("ls /big.txt")
+        ul_check("ls: non-directory message", "ls: not a directory: /big.txt" in out, out)
+        out = run("ls /nope")
+        ul_check("ls: missing directory message", "ls: not found: /nope" in out, out)
+        ul_check("ls: missing directory exits 1", exit_status(S, h) == 1, out)
+        out = run("ls /bin /nope")
+        ul_check("ls: reports the failing argument of several",
+                 "ls: not found: /nope" in out and "ps.bin" in out, out)
+
+        # --- ps: the genuine process table ---
+        out = run("ps")
+        ul_check("ps: kernel is pid 1",
+                 re.search(r"\b1\s+running\s+-\s+0\s+kernel\b", out) is not None, out)
+        me = re.search(r"\b(\d+)\s+running\s+-\s+\d+\s+ps\b", out)
+        ul_check("ps: lists itself as running", me is not None, out)
+        ul_check("ps: without -a shows only live processes", "exited" not in out, out)
+        out2 = run("ps")
+        me2 = re.search(r"\b(\d+)\s+running\s+-\s+\d+\s+ps\b", out2)
+        ul_check("ps: a new run is a new pid",
+                 me is not None and me2 is not None and int(me2.group(1)) > int(me.group(1)),
+                 out2)
+
+        # --- kill: the honest outcomes ---
+        out = run("kill 1")
+        ul_check("kill: refuses the kernel", "kill: 1: operation not permitted" in out, out)
+        ul_check("kill: refused exits 1", exit_status(S, h) == 1, out)
+        out = run("kill 99999")
+        ul_check("kill: unknown pid", "kill: 99999: no such process" in out, out)
+        ul_check("kill: unknown pid exits 1", exit_status(S, h) == 1, out)
+        out = run("kill nope")
+        ul_check("kill: bad pid is a usage error", "usage: kill <pid>" in out, out)
+        ul_check("kill: usage exits 2", exit_status(S, h) == 2, out)
+        if me2 is not None:                      # the last ps above has exited
+            old = me2.group(1)
+            out = run(f"kill {old}")
+            ul_check("kill: an exited pid is gone",
+                     f"kill: {old}: no such process" in out, out)
+        # kill aimed at itself: the next pid handed out is the kill program's own.
+        out = run("ps")
+        pid = re.search(r"\b(\d+)\s+running\s+-\s+\d+\s+ps\b", out)
+        if ul_check("kill: can find the next pid", pid is not None, out):
+            self_pid = int(pid.group(1)) + 1
+            out = run(f"kill {self_pid}")
+            ul_check("kill: terminating itself prints no error",
+                     "no such process" not in out and "not permitted" not in out, out)
+            ul_check("kill: a killed process exits 143", exit_status(S, h) == 143, out)
+            out = run("ps -a")
+            ul_check("kill: the killed process is recorded with status 143",
+                     re.search(r"exited\s+143\s+\d+\s+kill\b", out) is not None, out)
+
+        # --- the shell still works around all of that ---
+        out = run("no-such-program-here")
+        ul_check("status: unknown command exits 127", exit_status(S, h) == 127, out)
+        out = run("exec /bin/hello.bin")
+        ul_check("exec: arguments stay optional", "goodbye." in out, out)
+        out = run("echo still-alive")
+        ul_check("shell: alive after the whole session", "still-alive" in out, out)
+
+        print("--- COM1 transcript (userland) ---")
+        print(S.text(h))
+        print("----------------------------------")
+    finally:
+        S.stop(h)
 
 
 if __name__ == "__main__":
