@@ -308,7 +308,9 @@ class Run:
         path = os.path.join(self.tmp, name + ".blkdebug")
         with open(path, "w", newline="\n") as fh:
             for event, sector in rules:
-                fh.write(f'[inject-error]\nevent = "{event}"\nerrno = "5"\n')
+                # An active rule hits every kind of I/O unless told which one.
+                iotype = {"write_aio": "write", "flush_to_disk": "flush", "read_aio": "read"}[event]
+                fh.write(f'[inject-error]\nevent = "{event}"\niotype = "{iotype}"\nerrno = "5"\n')
                 if sector is not None:
                     fh.write(f'sector = "{sector}"\n')
         return path
@@ -666,11 +668,15 @@ def data_sector(disk, name):
     raise AssertionError(f"{name} is not on {disk}")
 
 
-def ed_send(guest, line):
-    """Send one line to ed and return its output up to the next ": " prompt."""
+def ed_send(guest, line, prompt=True):
+    """Send one line to ed; return its output up to the next ": " prompt.
+
+    In text entry ed prints no prompt, so with prompt=False wait for the echo.
+    """
     mark = guest.mark()
     guest.send(line)
-    out = guest._wait(lambda s: s.endswith(": "), mark, CMD_TIMEOUT_S, f"ed's prompt after {line!r}")
+    done = (lambda s: s.endswith(": ")) if prompt else (lambda s: s.endswith(line + "\r\n"))
+    out = guest._wait(done, mark, CMD_TIMEOUT_S, f"ed's response to {line!r}")
     guest.log.add(f"<<< {out!r}")
     return out
 
@@ -702,10 +708,11 @@ def failed_writes(log, g, label, old, tok):
               repr(g.cmd("ls")))
 
     # A program's file syscalls: ed reports the kernel's EIO and never says "wrote".
-    for path, keys in (("edited.txt", ("a", "text", ".")), ("old.txt", ("c 1 changed",))):
+    for path, entry, final in (("edited.txt", ("a", "text"), "."), ("old.txt", (), "c 1 changed")):
         ed_send(g, f"ed {path}")
-        for key in keys:
-            ed_send(g, key)
+        for key in entry:
+            ed_send(g, key, prompt=False)
+        ed_send(g, final)
         out = ed_send(g, "w")
         log.check(f"{label}: ed reports the failed save of {path}",
                   f"ed: i/o error: {path}" in out, repr(out))
