@@ -38,6 +38,13 @@ let g_env_val: [u8; 512] = [0; 512];                          // 8 slots x 64 by
 let g_envscratch: [u8; 80] = [0; 80];                         // scratch for computed built-ins
 let g_cmdexp: [u8; 256] = [0; 256];                           // a command line after $VAR expansion
 let g_run_depth: u32 = 0;                                      // forbids nested `run` (FILEBUF reuse)
+let g_last_status: u32 = 0;                                     // $?: exit status of the last command
+let g_line_fresh: bool = false;                                 // a program left the cursor on an empty line
+let g_fs_quiet: bool = false;                                   // fs_create_full reports through g_fs_errno only
+let g_fs_errno: u32 = 0;                                        // why fs_create_full last failed
+let g_proc: [u8; 320] = [0; 320];                               // process table: 8 records of 40 bytes
+let g_proc_cur: u32 = 0;                                        // slot of the running program (0: none)
+let g_next_pid: u32 = 2;                                        // pid 1 is the kernel; never reused
 let g_pcol: u32 = 0;                                           // program-output cursor column (syscalls)
 let g_serial_ok: bool = false;                                 // COM1 passed its loopback check
 let g_ser_row: u32 = 0;                                        // console cell the COM1 stream has reached
@@ -1747,6 +1754,17 @@ fn fs_free_slot() -> u32 {
     return 64;
 }
 
+// Record why a create failed; print it too unless a syscall is asking (it
+// reports the errno to the program instead). Returns the failure value, 64.
+fn fs_fail(e: u32, msg: *u8) -> u32 {
+    g_fs_errno = e;
+    if !g_fs_quiet {
+        feed();
+        print_string(msg, g_row, 12);
+    }
+    return 64;
+}
+
 // Claim a slot and a fresh 128-sector extent for `name`. Prints its own
 // error (color 12) and returns 64 on failure.
 // Create an entry `name` inside directory `parent` (255 = root). typ 0 = file
@@ -1755,20 +1773,14 @@ fn fs_free_slot() -> u32 {
 fn fs_create_full(name: *u8, parent: u32, typ: u8) -> u32 {
     let n: u32 = str_len(name);
     if n == 0 || n > 23 {
-        feed();
-        print_string("name too long (max 23 chars)", g_row, 12);
-        return 64;
+        return fs_fail(36, "name too long (max 23 chars)");
     }
     if !can_write(dir_owner(parent), dir_mode(parent)) {
-        feed();
-        print_string("permission denied", g_row, 12);
-        return 64;
+        return fs_fail(13, "permission denied");
     }
     let slot: u32 = fs_free_slot();
     if slot == 64 {
-        feed();
-        print_string("file table full (max 64 entries)", g_row, 12);
-        return 64;
+        return fs_fail(28, "file table full (max 64 entries)");
     }
     let base: u32 = fs_entry_addr(slot);
     let k: u32 = 0;
@@ -1789,9 +1801,7 @@ fn fs_create_full(name: *u8, parent: u32, typ: u8) -> u32 {
         let total: u32 = *((0x00801000 + 16) as *u32); // total_sectors
         if next + 128 > total {
             *((base + 24) as *u32) = 0;                // release the slot we took
-            feed();
-            print_string("disk full (rm does not reclaim; re-run mkfs)", g_row, 12);
-            return 64;
+            return fs_fail(28, "disk full (rm does not reclaim; re-run mkfs)");
         }
         *((base + 32) as *u32) = next;                 // start_sector
         *((base + 36) as *u32) = 128;                  // capacity_sectors
@@ -1800,6 +1810,7 @@ fn fs_create_full(name: *u8, parent: u32, typ: u8) -> u32 {
     fs_set_meta(base, typ, parent as u8, g_uid, mode);
     *((0x00801000 + 8) as *u32) = *((0x00801000 + 8) as *u32) + 1;   // count++
     if !fs_sync() {
+        g_fs_errno = 5;
         return 64;
     }
     return slot;
@@ -1954,6 +1965,76 @@ fn fs_append_line(i: u32, text: *u8) -> bool {
     return fs_sync();
 }
 
+// Copy up to n bytes of entry i from offset off into dst, sector by sector
+// through SECBUF. Returns the bytes copied, or 0xFFFFFFFF on a disk error.
+fn fs_read_at(i: u32, off: u32, dst: u32, n: u32) -> u32 {
+    let base: u32 = fs_entry_addr(i);
+    let size: u32 = *((base + 28) as *u32);
+    if off >= size {
+        return 0;
+    }
+    if n > size - off {
+        n = size - off;
+    }
+    let start: u32 = *((base + 32) as *u32);
+    let done: u32 = 0;
+    while done < n {
+        let pos: u32 = off + done;
+        let so: u32 = pos % 512;
+        if !ata_read(start + pos / 512, 0x00800000 as *u8) {   // SECBUF
+            return 0xFFFFFFFF;
+        }
+        let chunk: u32 = 512 - so;
+        if chunk > n - done {
+            chunk = n - done;
+        }
+        let k: u32 = 0;
+        while k < chunk {
+            *((dst + done + k) as *u8) = *((0x00800000 + so + k) as *u8);
+            k = k + 1;
+        }
+        done = done + chunk;
+    }
+    return n;
+}
+
+// Append n raw bytes to entry i, through SECBUF. The caller checks capacity.
+fn fs_append_bytes(i: u32, src: u32, n: u32) -> bool {
+    let base: u32 = fs_entry_addr(i);
+    let size: u32 = *((base + 28) as *u32);
+    let start: u32 = *((base + 32) as *u32);
+    let done: u32 = 0;
+    while done < n {
+        let pos: u32 = size + done;
+        let off: u32 = pos % 512;
+        let sec: u32 = start + pos / 512;
+        if off != 0 {                           // partial sector: fetch it first
+            if !ata_read(sec, 0x00800000 as *u8) {
+                return false;
+            }
+        } else {
+            for k: u32 in 0..512 {
+                *((0x00800000 + k) as *u8) = 0;
+            }
+        }
+        let chunk: u32 = 512 - off;
+        if chunk > n - done {
+            chunk = n - done;
+        }
+        let j: u32 = 0;
+        while j < chunk {
+            *((0x00800000 + off + j) as *u8) = *((src + done + j) as *u8);
+            j = j + 1;
+        }
+        if !ata_write(sec, 0x00800000 as *u8) {
+            return false;
+        }
+        done = done + chunk;
+    }
+    *((base + 28) as *u32) = size + n;
+    return fs_sync();
+}
+
 // Mark `name` unused. The extent is NOT reclaimed -- unchanged from v1 to v2.
 fn fs_remove(name: *u8) -> bool {
     let i: u32 = fs_find(name);
@@ -2007,6 +2088,23 @@ fn find_char(s: *u8, ch: u8) -> u32 {
 // Print a string inline at (g_row, g_pcol), advancing the program cursor and
 // wrapping to a fresh line at the screen edge. Program output uses this cursor
 // so prompts and typed input can share a line.
+fn print_prog_byte(ch: u8) {
+    if ch == 10 {
+        feed();
+        g_pcol = 0;
+        return;
+    }
+    if ch == 13 {
+        return;
+    }
+    if g_pcol >= 80 {
+        feed();
+        g_pcol = 0;
+    }
+    put_cell_at(g_row, g_pcol, ch, 7);
+    g_pcol = g_pcol + 1;
+}
+
 fn print_inline(s: *u8) {
     let i: u32 = 0;
     while true {
@@ -2014,12 +2112,7 @@ fn print_inline(s: *u8) {
         if ch == 0 {
             return;
         }
-        if g_pcol >= 80 {
-            feed();
-            g_pcol = 0;
-        }
-        put_cell_at(g_row, g_pcol, ch, 7);
-        g_pcol = g_pcol + 1;
+        print_prog_byte(ch);
         i = i + 1;
     }
 }
@@ -2078,54 +2171,423 @@ fn read_line() {
     }
 }
 
-// The int 0x80 handler (called from syscall_isr in idt.s). Runs synchronously
-// while the program is on the stack, so it can use the shell's VGA state.
-//   1 = print string + newline   2 = print string inline (no newline)
-//   3 = uptime seconds -> return  4 = read a line -> return pointer (0x009F0100)
-fn on_syscall() {
-    let num: u32 = *(0x009F0000 as *u32);
-    if num == 1 {                                  // print a string, then newline
-        print_inline((*(0x009F0004 as *u32)) as *u8);
-        feed();
-        g_pcol = 0;
+// ----- processes -----
+//
+// There is no scheduler. A program runs to completion inside the command that
+// launched it, so the only things that are ever alive are the kernel (pid 1)
+// and at most one program. g_proc holds those, plus records of programs that
+// have exited (oldest overwritten first). See docs/programs.md and BLOCKERS.md.
+// A record is 40 bytes: name[24], pid +24, state +28, status +32, uid +36.
+
+fn proc_addr(slot: u32) -> u32 {
+    return (&g_proc as u32) + slot * 40;
+}
+
+fn proc_init() {
+    let r: u32 = proc_addr(0);
+    str_copy(r as *u8, "kernel");
+    *((r + 24) as *u32) = 1;
+    *((r + 28) as *u32) = 1;                       // running
+}
+
+// Claim a record for a program about to run, named after its file.
+fn proc_start(path: *u8) {
+    let slot: u32 = 0;
+    let oldest: u32 = 0xFFFFFFFF;
+    let i: u32 = 1;
+    while i < 8 {
+        let st: u32 = *((proc_addr(i) + 28) as *u32);
+        if st == 0 {
+            slot = i;
+            oldest = 0;
+        } else if *((proc_addr(i) + 24) as *u32) < oldest {
+            slot = i;
+            oldest = *((proc_addr(i) + 24) as *u32);
+        }
+        i = i + 1;
+    }
+    let r: u32 = proc_addr(slot);
+    let leaf: u32 = path as u32 + find_last_slash(path);
+    let k: u32 = 0;
+    while k < 23 && *((leaf + k) as *u8) != 0 {
+        if streq((leaf + k) as *u8, ".bin") {
+            break;
+        }
+        *((r + k) as *u8) = *((leaf + k) as *u8);
+        k = k + 1;
+    }
+    *((r + k) as *u8) = 0;
+    *((r + 24) as *u32) = g_next_pid;
+    g_next_pid = g_next_pid + 1;
+    *((r + 28) as *u32) = 1;                       // running
+    *((r + 32) as *u32) = 0;
+    *((r + 36) as *u32) = g_uid as u32;
+    g_proc_cur = slot;
+}
+
+// Offset of the character after the last '/' in s (0 if there is none).
+fn find_last_slash(s: *u8) -> u32 {
+    let off: u32 = 0;
+    let i: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        if *((s as u32 + i) as *u8) == 47 {
+            off = i + 1;
+        }
+        i = i + 1;
+    }
+    return off;
+}
+
+fn proc_finish(status: u32) {
+    let r: u32 = proc_addr(g_proc_cur);
+    *((r + 28) as *u32) = 2;                       // exited
+    *((r + 32) as *u32) = status;
+    g_proc_cur = 0;
+}
+
+// Leave the running program for good: back to the instruction after the call
+// in exec_enter, as if main had returned `status`. The call's return address is
+// the top word of the program stack; the int 0x80 frame is simply abandoned.
+fn proc_leave(status: u32) {
+    volatile_write<u32>(0x009F0024 as *u32, status);
+    asm("movl 0x009F0024, %eax; movl $0x00A1FFFC, %esp; ret");
+}
+
+// Split a command line into argv at 0x009F0200 (argc), 0x009F0204 (16 pointers)
+// and 0x009F0400 (the strings). Spaces separate words; double quotes group
+// them. False if there are more than 16.
+fn args_setup(cmd: *u8) -> bool {
+    let argc: u32 = 0;
+    let out: u32 = 0x009F0400;
+    let p: u32 = cmd as u32;
+    while true {
+        while *(p as *u8) == 32 {
+            p = p + 1;
+        }
+        if *(p as *u8) == 0 {
+            break;
+        }
+        if argc >= 16 {
+            return false;
+        }
+        *((0x009F0204 + argc * 4) as *u32) = out;
+        argc = argc + 1;
+        let quoted: bool = false;
+        while true {
+            let c: u8 = *(p as *u8);
+            if c == 0 {
+                break;
+            }
+            if c == 34 {
+                quoted = !quoted;
+                p = p + 1;
+                continue;
+            }
+            if c == 32 && !quoted {
+                break;
+            }
+            *(out as *u8) = c;
+            out = out + 1;
+            p = p + 1;
+        }
+        *(out as *u8) = 0;
+        out = out + 1;
+    }
+    *(0x009F0200 as *u32) = argc;
+    return true;
+}
+
+// ----- syscalls -----
+
+// Is [p, p+n) inside the program's own memory (image, bss, stack)?
+fn user_ok(p: u32, n: u32) -> bool {
+    if p < 0x00A00000 || n > 0x00020000 {
+        return false;
+    }
+    return p + n <= 0x00A20000;
+}
+
+// As user_ok, but also allowing the line and argv buffers, for data the kernel
+// only reads.
+fn user_ro_ok(p: u32, n: u32) -> bool {
+    if user_ok(p, n) {
+        return true;
+    }
+    if p < 0x009F0100 || n > 0x700 {
+        return false;
+    }
+    return p + n <= 0x009F0800;
+}
+
+// Is there a NUL-terminated string at p within readable memory?
+fn user_str_ok(p: u32) -> bool {
+    let end: u32 = 0;
+    if p >= 0x00A00000 && p < 0x00A20000 {
+        end = 0x00A20000;
+    } else if p >= 0x009F0100 && p < 0x009F0800 {
+        end = 0x009F0800;
+    } else {
+        return false;
+    }
+    while p < end {
+        if *(p as *u8) == 0 {
+            return true;
+        }
+        p = p + 1;
+    }
+    return false;
+}
+
+// 0 if p is a valid path for the file syscalls, else the errno. Bounds match
+// the kernel's fixed path buffers (fs_parent_of: 64 and 24 bytes).
+fn path_check(p: u32) -> u32 {
+    if !user_str_ok(p) {
+        return 14;
+    }
+    let total: u32 = 0;
+    let comp: u32 = 0;
+    while *((p + total) as *u8) != 0 {
+        if *((p + total) as *u8) == 47 {
+            comp = 0;
+        } else {
+            comp = comp + 1;
+            if comp > 23 {
+                return 36;
+            }
+        }
+        total = total + 1;
+        if total > 63 {
+            return 36;
+        }
+    }
+    return 0;
+}
+
+fn sys_ret(v: u32) {
+    *(0x009F000C as *u32) = v;
+}
+
+fn sys_fail(e: u32) {
+    sys_ret(0xFFFFFFFF - e + 1);
+}
+
+// Fill a 40-byte stat/dirent record from entry i (255 = the root directory).
+fn ent_fill(dst: u32, i: u32) {
+    let k: u32 = 0;
+    while k < 24 {
+        *((dst + k) as *u8) = 0;
+        k = k + 1;
+    }
+    if i == 255 {
+        *(dst as *u8) = 47;
+        *((dst + 24) as *u32) = 1;
+        *((dst + 28) as *u32) = 0;
+        *((dst + 32) as *u32) = 0x1ED;
+        *((dst + 36) as *u32) = 0;
         return;
     }
-    if num == 2 {                                  // print a string inline
-        print_inline((*(0x009F0004 as *u32)) as *u8);
+    str_copy(dst as *u8, fs_entry_addr(i) as *u8);
+    *((dst + 24) as *u32) = fs_type(i) as u32;
+    *((dst + 28) as *u32) = *((fs_entry_addr(i) + 28) as *u32);
+    *((dst + 32) as *u32) = fs_mode(i);
+    *((dst + 36) as *u32) = fs_uid(i) as u32;
+}
+
+fn sys_stat(path: u32, ent: u32) {
+    let e: u32 = path_check(path);
+    if e != 0 { sys_fail(e); return; }
+    if !user_ok(ent, 40) { sys_fail(14); return; }
+    let idx: u32 = fs_resolve(path as u64);
+    if idx == 64 { sys_fail(2); return; }
+    ent_fill(ent, idx);
+    sys_ret(0);
+}
+
+fn sys_readdir(path: u32, cursor: u32, ent: u32) {
+    let e: u32 = path_check(path);
+    if e != 0 { sys_fail(e); return; }
+    if !user_ok(ent, 40) { sys_fail(14); return; }
+    let dir: u32 = fs_resolve(path as u64);
+    if dir == 64 { sys_fail(2); return; }
+    if dir != 255 && fs_type(dir) != 1 { sys_fail(20); return; }
+    let i: u32 = cursor;
+    while i < 64 {
+        if *((fs_entry_addr(i) + 24) as *u32) == 1 && (fs_parent(i) as u32) == dir {
+            ent_fill(ent, i);
+            sys_ret(i + 1);
+            return;
+        }
+        i = i + 1;
+    }
+    sys_ret(0);
+}
+
+fn sys_fread(path: u32, off: u32, buf: u32, len: u32) {
+    let e: u32 = path_check(path);
+    if e != 0 { sys_fail(e); return; }
+    if !user_ok(buf, len) { sys_fail(14); return; }
+    let idx: u32 = fs_resolve(path as u64);
+    if idx == 64 { sys_fail(2); return; }
+    if idx == 255 || fs_type(idx) == 1 { sys_fail(21); return; }
+    let got: u32 = fs_read_at(idx, off, buf, len);
+    if got == 0xFFFFFFFF { sys_fail(5); return; }
+    sys_ret(got);
+}
+
+fn sys_fwrite(path: u32, buf: u32, len: u32, flags: u32) {
+    let e: u32 = path_check(path);
+    if e != 0 { sys_fail(e); return; }
+    if !user_ro_ok(buf, len) { sys_fail(14); return; }
+    let idx: u32 = fs_resolve(path as u64);
+    if idx == 255 { sys_fail(21); return; }
+    if idx == 64 {
+        let leaf: [u8; 24] = [0; 24];
+        let parent: u32 = fs_parent_of(path as u64, &leaf as u64);
+        if parent == 64 { sys_fail(2); return; }
+        g_fs_quiet = true;
+        idx = fs_create_full((&leaf as u64) as *u8, parent, 0);
+        g_fs_quiet = false;
+        if idx == 64 { sys_fail(g_fs_errno); return; }
+    } else {
+        if fs_type(idx) == 1 { sys_fail(21); return; }
+        if !can_write(fs_uid(idx), fs_mode(idx)) { sys_fail(13); return; }
+    }
+    let base: u32 = fs_entry_addr(idx);
+    let keep: u32 = *((base + 28) as *u32);
+    if (flags & 1) != 0 {
+        keep = 0;
+    }
+    if keep + len > *((base + 36) as *u32) * 512 { sys_fail(27); return; }
+    if (flags & 1) != 0 {
+        *((base + 28) as *u32) = 0;
+        if !fs_sync() { sys_fail(5); return; }
+    }
+    if !fs_append_bytes(idx, buf, len) { sys_fail(5); return; }
+    sys_ret(len);
+}
+
+fn sys_procnext(cursor: u32, rec: u32) {
+    if !user_ok(rec, 40) { sys_fail(14); return; }
+    let i: u32 = cursor;
+    while i < 8 {
+        if *((proc_addr(i) + 28) as *u32) != 0 {
+            let k: u32 = 0;
+            while k < 40 {
+                *((rec + k) as *u8) = *((proc_addr(i) + k) as *u8);
+                k = k + 1;
+            }
+            sys_ret(i + 1);
+            return;
+        }
+        i = i + 1;
+    }
+    sys_ret(0);
+}
+
+fn sys_kill(pid: u32) {
+    if pid == 1 { sys_fail(1); return; }                     // the kernel
+    if pid == *((proc_addr(g_proc_cur) + 24) as *u32) {
+        proc_leave(143);                                     // 128 + SIGTERM's 15
+    }
+    sys_fail(3);                                             // nothing else is alive
+}
+
+// The int 0x80 handler (called from syscall_isr in idt.s). Runs synchronously
+// while the program is on the stack, so it can use the shell's VGA state. The
+// calls are listed in docs/programs.md.
+fn on_syscall() {
+    let num: u32 = *(0x009F0000 as *u32);
+    let a0: u32 = *(0x009F0004 as *u32);
+    let a1: u32 = *(0x009F0008 as *u32);
+    let a2: u32 = *(0x009F0014 as *u32);
+    let a3: u32 = *(0x009F0018 as *u32);
+    if num == 1 || num == 2 {                      // print a string, 1 adds a newline
+        if !user_str_ok(a0) { sys_fail(14); return; }
+        print_inline(a0 as *u8);
+        if num == 1 {
+            feed();
+            g_pcol = 0;
+        }
         return;
     }
     if num == 3 {                                  // uptime seconds -> return slot
-        *(0x009F000C as *u32) = g_ticks / 100;
+        sys_ret(g_ticks / 100);
         return;
     }
     if num == 4 {                                  // read a line -> return its address
         read_line();
-        *(0x009F000C as *u32) = 0x009F0100;
+        sys_ret(0x009F0100);
         return;
     }
+    if num == 5 {                                  // write bytes
+        if !user_ro_ok(a0, a1) { sys_fail(14); return; }
+        let i: u32 = 0;
+        while i < a1 {
+            print_prog_byte(*((a0 + i) as *u8));
+            i = i + 1;
+        }
+        sys_ret(a1);
+        return;
+    }
+    if num == 6 {                                  // exit: does not return
+        proc_leave(a0);
+    }
+    if num == 7 {
+        sys_ret(*(0x009F0200 as *u32));
+        return;
+    }
+    if num == 8 {
+        if a0 < *(0x009F0200 as *u32) {
+            sys_ret(*((0x009F0204 + a0 * 4) as *u32));
+        } else {
+            sys_ret(0);
+        }
+        return;
+    }
+    if num == 9 { sys_stat(a0, a1); return; }
+    if num == 10 { sys_readdir(a0, a1, a2); return; }
+    if num == 11 { sys_fread(a0, a1, a2, a3); return; }
+    if num == 12 { sys_fwrite(a0, a1, a2, a3); return; }
+    if num == 13 {
+        sys_ret(*((proc_addr(g_proc_cur) + 24) as *u32));
+        return;
+    }
+    if num == 14 { sys_procnext(a0, a1); return; }
+    if num == 15 { sys_kill(a0); return; }
+    sys_fail(38);                                  // ENOSYS
 }
 
-// Enter the loaded program via an indirect call through the entry slot.
-// Isolated in its own function so the call's register clobber can't reach
-// live kernel state.
+// Enter the loaded program on its own stack. One statement, saving every
+// register, so nothing in the compiler's view of this function can be disturbed.
+// The program's return value lands in 0x009F0020. proc_leave comes back to the
+// instruction after the call.
 fn exec_enter() {
-    asm("call *0x009F0010");
+    asm("pushal; movl %esp, 0x009F001C; movl $0x00A20000, %esp; call *0x009F0010; movl %eax, 0x009F0020; movl 0x009F001C, %esp; popal");
 }
 
-// `exec <name>`: load a flat program image off the disk to 0x00A00000 and run
-// it. It talks back only through on_syscall above.
-fn exec_file(name: *u8) {
-    let i: u32 = fs_find(name);
+// Load a flat program image straight to 0x00A00000 and run it with argv from
+// cmdline. It talks back only through on_syscall above. The image does not go
+// through FILEBUF, which may hold the script that launched this program.
+fn exec_file(path: *u8, cmdline: *u8) {
+    let i: u32 = fs_find(path);
     if i == 64 {
         feed();
         print_at("not found: ", g_row, 0, 12);
-        print_at(name, g_row, 11, 12);
+        print_at(path, g_row, 11, 12);
+        g_last_status = 127;
         return;
     }
-    let size: u32 = fs_read_file(i);               // file bytes -> FILEBUF
+    let size: u32 = *((fs_entry_addr(i) + 28) as *u32);
     if size == 0 {
         feed();
         print_string("empty program", g_row, 12);
+        g_last_status = 126;
+        return;
+    }
+    if !args_setup(cmdline) {
+        feed();
+        print_string("too many arguments (max 16)", g_row, 12);
+        g_last_status = 2;
         return;
     }
     let k: u32 = 0;                                // zero the 64 KiB program region
@@ -2133,15 +2595,21 @@ fn exec_file(name: *u8) {
         *((0x00A00000 + k) as *u8) = 0;
         k = k + 1;
     }
-    let j: u32 = 0;                                // copy the image into place
-    while j < size {
-        *((0x00A00000 + j) as *u8) = *((0x00810000 + j) as *u8);   // FILEBUF -> base
-        j = j + 1;
+    if fs_read_at(i, 0, 0x00A00000, size) != size {
+        feed();
+        print_string("exec: disk read error", g_row, 12);
+        g_last_status = 126;
+        return;
     }
     *(0x009F0010 as *u32) = 0x00A00000;            // entry for the trampoline
     feed();                                        // program output starts on a fresh line
     g_pcol = 0;
+    proc_start(path);
     exec_enter();
+    let status: u32 = volatile_read<u32>(0x009F0020 as *u32) & 255;
+    proc_finish(status);
+    g_last_status = status;
+    g_line_fresh = g_pcol == 0;
 }
 
 // Run a command, printing any output on new (scrolling) lines. Returns true if
@@ -2217,7 +2685,16 @@ fn expand_vars(src: u64, dst: u64) {
             done = true;
         } else if c == 36 {                                    // '$'
             let nc: u8 = *((src + ((si + 1) as u64)) as *u8);
-            if is_name_char(nc) {
+            if nc == 63 {                                      // "$?": the last exit status
+                si = si + 2;
+                num_to_str(g_last_status, g_numbuf);
+                let qi: u32 = 0;
+                while qi < g_numlen && di < 250 {
+                    *((dst + (di as u64)) as *u8) = *((g_numbuf as u32 + qi) as *u8);
+                    di = di + 1;
+                    qi = qi + 1;
+                }
+            } else if is_name_char(nc) {
                 si = si + 1;
                 let vn: [u8; 32] = [0; 32];
                 let nl: u32 = 0;
@@ -2256,8 +2733,8 @@ fn env_print(name: *u8) {
 
 // Run `path` if it resolves to an executable file (any exec bit). A ".bin" is
 // loaded as a flat binary (exec_file); anything else runs as a script
-// (run_file). Returns true if it launched something.
-fn exec_if_program(path: *u8) -> bool {
+// (run_file), which takes no arguments. Returns true if it launched something.
+fn exec_if_program(path: *u8, cmdline: *u8) -> bool {
     let idx: u32 = fs_resolve(path as u64);
     if idx == 64 || idx == 255 {
         return false;
@@ -2269,7 +2746,7 @@ fn exec_if_program(path: *u8) -> bool {
         return false;                                   // no execute bit
     }
     if ends_with_bin(path) {
-        exec_file(path);
+        exec_file(path, cmdline);
     } else {
         run_file(path);
     }
@@ -2296,34 +2773,60 @@ fn try_exec_path(cmd: *u8) -> bool {
         return false;
     }
 
-    if exec_if_program((&name as u64) as *u8) { return true; }        // as typed
+    if exec_if_program((&name as u64) as *u8, cmd) { return true; }   // as typed
 
     let p: [u8; 96] = [0; 96];
     str_copy((&p as u64) as *u8, "/bin/");
     str_copy(((&p as u64) + 5) as *u8, (&name as u64) as *u8);
-    if exec_if_program((&p as u64) as *u8) { return true; }           // /bin/<name>
+    if exec_if_program((&p as u64) as *u8, cmd) { return true; }      // /bin/<name>
 
     let nb: [u8; 72] = [0; 72];
     str_copy((&nb as u64) as *u8, (&name as u64) as *u8);
     str_copy(((&nb as u64) + (len as u64)) as *u8, ".bin");
-    if exec_if_program((&nb as u64) as *u8) { return true; }          // <name>.bin
+    if exec_if_program((&nb as u64) as *u8, cmd) { return true; }     // <name>.bin
 
     str_copy((&p as u64) as *u8, "/bin/");
     str_copy(((&p as u64) + 5) as *u8, (&nb as u64) as *u8);
-    if exec_if_program((&p as u64) as *u8) { return true; }           // /bin/<name>.bin
+    if exec_if_program((&p as u64) as *u8, cmd) { return true; }      // /bin/<name>.bin
 
     return false;
 }
 
+// ls, cat and echo are programs; these builtins are the fallback for a machine
+// with no disk, or a disk image older than the programs. True if the program ran.
+fn try_migrated_program(cmd: *u8) -> bool {
+    if !g_fs_ok {
+        return false;
+    }
+    if streq(cmd, "ls") || starts_with(cmd, "ls ") {
+        return exec_if_program("/bin/ls.bin", cmd);
+    }
+    if streq(cmd, "cat") || starts_with(cmd, "cat ") {
+        return exec_if_program("/bin/cat.bin", cmd);
+    }
+    if streq(cmd, "echo") || starts_with(cmd, "echo ") {
+        return exec_if_program("/bin/echo.bin", cmd);
+    }
+    return false;
+}
+
 // Expand $VARs in the command line, then dispatch. Every caller (the shell,
-// scripts, sudo) goes through here, so expansion happens everywhere.
+// scripts, sudo) goes through here, so expansion happens everywhere. A builtin
+// reports status 0; programs and "not found" set their own. True means the
+// caller must not advance to a new line.
 fn run_command(cmd: *u8) -> bool {
     expand_vars(cmd as u64, &g_cmdexp as u64);
-    return run_command_impl((&g_cmdexp as u64) as *u8);
+    g_line_fresh = false;
+    g_last_status = 0;
+    let cleared: bool = run_command_impl((&g_cmdexp as u64) as *u8);
+    return cleared || g_line_fresh;
 }
 
 fn run_command_impl(cmd: *u8) -> bool {
     if streq(cmd, "") {
+        return false;
+    }
+    if try_migrated_program(cmd) {
         return false;
     }
     if streq(cmd, "help") {
@@ -2331,6 +2834,8 @@ fn run_command_impl(cmd: *u8) -> bool {
         print_string("help clear about echo uptime crash readme mem serial", g_row, 7);
         feed();
         print_string("files: pwd cd ls cat write rm mkdir rmdir run exec", g_row, 7);
+        feed();
+        print_string("programs in /bin: ps kill ed hello count ask (and ls cat echo)", g_row, 7);
         feed();
         print_string("net: net (DHCP)  httpd (serve a page on :80)", g_row, 7);
         feed();
@@ -2571,7 +3076,13 @@ fn run_command_impl(cmd: *u8) -> bool {
     }
     if starts_with(cmd, "exec ") {
         if !fs_guard() { return false; }
-        exec_file((cmd as u32 + 5) as *u8);
+        let prog: [u8; 64] = [0; 64];                   // the path is argv[0]
+        let plen: u32 = 0;
+        while *((cmd as u32 + 5 + plen) as *u8) != 0 && *((cmd as u32 + 5 + plen) as *u8) != 32 && plen < 63 {
+            prog[plen] = *((cmd as u32 + 5 + plen) as *u8);
+            plen = plen + 1;
+        }
+        exec_file(&prog as *u8, (cmd as u32 + 5) as *u8);
         return false;
     }
     if streq(cmd, "whoami") {
@@ -2835,6 +3346,7 @@ fn run_command_impl(cmd: *u8) -> bool {
     }
     feed();
     print_string("unknown command", g_row, 12);
+    g_last_status = 127;
     return false;
 }
 
@@ -3175,6 +3687,7 @@ fn kmain(mbinfo: u32) {
     login_default();                 // auto-login as the normal user (uid 1)
     cwd_init();                      // start in the user's home directory
 
+    proc_init();                     // the process table's permanent record for the kernel
     run_script(1);                   // run the startup script loaded from disk
 
     feed();
