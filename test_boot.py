@@ -23,6 +23,7 @@ import re
 import secrets
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -46,7 +47,11 @@ LOG_DIR = os.path.join(build.BUILD, "test-logs", "boot")
 CMD_TIMEOUT_S = 20               # one command, prompt to prompt
 BOOT_TIMEOUT_S = 60              # power-on or reset to the first prompt
 QUIT_TIMEOUT_S = 15              # monitor `quit` to process exit
+SLOW_READ_TIMEOUT_S = 60         # one program start on a disk reading 1 sector a second
+STUCK_WRITE_TIMEOUT_S = 150      # how long the kernel may wait before giving up on a write
 SLOW_WRITE_TIMEOUT_S = 60        # one `write` on the throttled disk: 10 sector writes
+WRITE_ERROR = "i/o error: disk write failed"
+READ_ERROR = "i/o error: disk read failed"
 GUEST_LIMIT_S = 180              # watchdog: no QEMU outlives this
 
 passed = 0
@@ -95,7 +100,7 @@ class Transcript:
 class Guest:
     """One QEMU process with COM1 on a socket and the monitor on stdio."""
 
-    def __init__(self, log, kernel, disk=None, tag="boot", drive_opts=""):
+    def __init__(self, log, kernel, disk=None, tag="boot", drive_opts="", faults=None):
         self.log = log
         self.tag = tag
         self.rx = bytearray()
@@ -112,7 +117,11 @@ class Guest:
         cmd = [build._find_qemu(), *build.QEMU_HEADLESS, "-monitor", "stdio",
                "-serial", f"tcp:127.0.0.1:{port}", "-kernel", kernel]
         if disk:
-            cmd += ["-drive", f"file={disk},format=raw,if=ide,index=0,media=disk{drive_opts}"]
+            source = f"file={disk}"
+            if faults:               # blkdebug makes QEMU fail the I/O the config names
+                source = (f"file.driver=blkdebug,file.config={faults},"
+                          f"file.image.driver=file,file.image.filename={disk}")
+            cmd += ["-drive", f"{source},format=raw,if=ide,index=0,media=disk{drive_opts}"]
         log.add(f"=== {tag}: {' '.join(cmd)}")
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, bufsize=0)
@@ -292,6 +301,16 @@ class Run:
                 fh.write(content)
             specs.append((host, fname))
         mkfs.make(path, adds=specs, bins=self.bins)
+        return path
+
+    def faults(self, name, *rules):
+        """A blkdebug config: each rule is (event, sector or None), failing with EIO."""
+        path = os.path.join(self.tmp, name + ".blkdebug")
+        with open(path, "w", newline="\n") as fh:
+            for event, sector in rules:
+                fh.write(f'[inject-error]\nevent = "{event}"\nerrno = "5"\n')
+                if sector is not None:
+                    fh.write(f'sector = "{sector}"\n')
         return path
 
 
@@ -635,9 +654,134 @@ def session_slowdisk(run, log):
         check_lines(log, "the slow write survives a power cycle", g.cmd("cat slow.txt"), [tok])
 
 
+def data_sector(disk, name):
+    """The first data sector of the MortFS file called name, read from the image."""
+    with open(disk, "rb") as fh:
+        table = fh.read(9 * 512)
+    for i in range(64):
+        entry = table[512 + i * 64:512 + (i + 1) * 64]
+        used, _size, start = struct.unpack("<III", entry[24:36])
+        if used == 1 and entry[:24].rstrip(b"\x00") == name.encode("ascii"):
+            return start
+    raise AssertionError(f"{name} is not on {disk}")
+
+
+def ed_send(guest, line):
+    """Send one line to ed and return its output up to the next ": " prompt."""
+    mark = guest.mark()
+    guest.send(line)
+    out = guest._wait(lambda s: s.endswith(": "), mark, CMD_TIMEOUT_S, f"ed's prompt after {line!r}")
+    guest.log.add(f"<<< {out!r}")
+    return out
+
+
+def failed_writes(log, g, label, old, tok):
+    """Every way of changing the disk must say it failed and change nothing."""
+    check_lines(log, f"{label}: write to a new file reports the error",
+                g.cmd(f"write fresh.txt {tok}"), [WRITE_ERROR])
+    check_lines(log, f"{label}: the failed new file does not exist", g.cmd("cat fresh.txt"),
+                ["cat: not found: fresh.txt"])
+    check_lines(log, f"{label}: an append reports the error", g.cmd(f"write old.txt {tok}"), [WRITE_ERROR])
+    check_lines(log, f"{label}: the failed append is not visible", g.cmd("cat old.txt"), [old])
+    check_lines(log, f"{label}: rm reports the error", g.cmd("rm old.txt"), [WRITE_ERROR])
+    check_lines(log, f"{label}: the failed rm kept the file", g.cmd("cat old.txt"), [old])
+    check_lines(log, f"{label}: mkdir reports only the error", g.cmd("mkdir newdir"), [WRITE_ERROR])
+    check_lines(log, f"{label}: the failed mkdir made nothing", g.cmd("ls newdir"),
+                ["ls: not found: newdir"])
+    check_lines(log, f"{label}: rmdir reports the error", g.cmd("rmdir empty"), [WRITE_ERROR])
+    log.check(f"{label}: the failed rmdir kept the directory", ls_field(g, "empty", "mode") == "755",
+              repr(g.cmd("ls")))
+    mode, owner = ls_field(g, "old.txt", "mode"), ls_field(g, "old.txt", "uid")
+    check_lines(log, f"{label}: chmod reports the error", g.cmd("chmod 600 old.txt"), [WRITE_ERROR])
+    log.check(f"{label}: the failed chmod kept the mode", ls_field(g, "old.txt", "mode") == mode,
+              repr(g.cmd("ls")))
+    g.send_until("sudo chown 5 old.txt", "password for")
+    reply = g.answer(PASSWORD)
+    log.check(f"{label}: chown reports the error", WRITE_ERROR in reply, repr(reply))
+    log.check(f"{label}: the failed chown kept the owner", ls_field(g, "old.txt", "uid") == owner,
+              repr(g.cmd("ls")))
+
+    # A program's file syscalls: ed reports the kernel's EIO and never says "wrote".
+    for path, keys in (("edited.txt", ("a", "text", ".")), ("old.txt", ("c 1 changed",))):
+        ed_send(g, f"ed {path}")
+        for key in keys:
+            ed_send(g, key)
+        out = ed_send(g, "w")
+        log.check(f"{label}: ed reports the failed save of {path}",
+                  f"ed: i/o error: {path}" in out, repr(out))
+        log.check(f"{label}: ed does not claim it wrote {path}", "wrote" not in out, repr(out))
+        g.answer("q!")
+    check_lines(log, f"{label}: the failed new program file does not exist", g.cmd("cat edited.txt"),
+                ["cat: not found: edited.txt"])
+    check_lines(log, f"{label}: the failed rewrite left the file whole", g.cmd("cat old.txt"), [old])
+
+
+def session_ioerror(run, log):
+    """An error the disk reports reaches the user, and nothing pretends it worked."""
+    disk = run.image("ioerror")
+    old, tok, script = TOKEN(), TOKEN(), TOKEN()
+    with Guest(log, run.kernel, disk=disk, tag="prepare") as g:
+        boot_ok(log, g, "prepare")
+        g.cmd(f"write old.txt {old}")
+        g.cmd(f"write job.txt echo {script}")
+        g.cmd("mkdir empty")
+        check_lines(log, "prepare: the disk is healthy before any fault", g.cmd("cat old.txt"), [old])
+
+    for label, event in (("write error", "write_aio"), ("flush error", "flush_to_disk")):
+        with Guest(log, run.kernel, disk=disk, tag=label, faults=run.faults(label[:5], (event, None))) as g:
+            boot_ok(log, g, label)
+            failed_writes(log, g, label, old, tok)
+        with Guest(log, run.kernel, disk=disk, tag=f"after {label}") as g:
+            boot_ok(log, g, f"after {label}")
+            check_lines(log, f"after {label}: the old file is intact", g.cmd("cat old.txt"), [old])
+            check_lines(log, f"after {label}: the failed file never appeared", g.cmd("cat fresh.txt"),
+                        ["cat: not found: fresh.txt"])
+
+    bad = run.faults("reads", *[("read_aio", data_sector(disk, n)) for n in ("old.txt", "job.txt", "hello.bin")])
+    with Guest(log, run.kernel, disk=disk, tag="read error", faults=bad) as g:
+        boot_ok(log, g, "read error")
+        check_lines(log, "read error: the cat program reports it", g.cmd("cat old.txt"),
+                    ["cat: i/o error: old.txt"])
+        check_lines(log, "read error: run reports it", g.cmd("run job.txt"), [READ_ERROR])
+        check_lines(log, "read error: exec reports it", g.cmd("exec /bin/hello.bin"),
+                    ["exec: disk read error"])
+        g.send_until("sudo rm /bin/cat.bin", "password for")
+        g.answer(PASSWORD)           # with no program, the shell's own cat answers
+        check_lines(log, "read error: the built-in cat reports it", g.cmd("cat old.txt"), [READ_ERROR])
+
+    table = run.faults("table", ("read_aio", 0))
+    with Guest(log, run.kernel, disk=disk, tag="table read error", faults=table) as g:
+        boot_ok(log, g, "table read error", prompt="/ $ ")
+        check_lines(log, "table read error: ls says the disk failed, not that it is bad",
+                    g.cmd("ls"), [READ_ERROR])
+
+
+def session_slowio(run, log):
+    """Slow reads still work; a write that never finishes is an error, not a success."""
+    disk = run.image("slowio")
+    old = TOKEN()
+    with Guest(log, run.kernel, disk=disk, tag="prepare") as g:
+        boot_ok(log, g, "prepare")
+        g.cmd(f"write old.txt {old}")
+    with Guest(log, run.kernel, disk=disk, tag="slow reads", drive_opts=",throttling.iops-read=1") as g:
+        boot_ok(log, g, "slow reads")
+        check_lines(log, "slow reads: the file reads back", g.cmd("cat old.txt", timeout_s=SLOW_READ_TIMEOUT_S), [old])
+    # 2 bytes a second: the second sector written would take over four minutes.
+    with Guest(log, run.kernel, disk=disk, tag="stuck write", drive_opts=",throttling.bps-write=2") as g:
+        boot_ok(log, g, "stuck write")
+        check_lines(log, "stuck write: the kernel gives up and says so",
+                    g.cmd("write stuck.txt never", timeout_s=STUCK_WRITE_TIMEOUT_S), [WRITE_ERROR])
+    with Guest(log, run.kernel, disk=disk, tag="after stuck write") as g:
+        boot_ok(log, g, "after stuck write")
+        check_lines(log, "after stuck write: no file was promised", g.cmd("cat stuck.txt"),
+                    ["cat: not found: stuck.txt"])
+        check_lines(log, "after stuck write: the old file is intact", g.cmd("cat old.txt"), [old])
+
+
 SESSIONS = {f.__name__.replace("session_", ""): f for f in (
     session_boot, session_shell, session_files, session_persistence, session_exec,
-    session_errors, session_nodisk, session_fault, session_power, session_slowdisk)}
+    session_errors, session_nodisk, session_fault, session_power, session_slowdisk,
+    session_ioerror, session_slowio)}
 
 
 def run_sessions(run, names):
