@@ -231,12 +231,14 @@ class Vm:
     def snapshot(self, addr, size, name):
         """Dump guest physical memory to a file; returns its path."""
         path = os.path.join(self.tmp, name)
-        T._monitor(self.h, f"pmemsave {addr} {size} {path.replace(chr(92), '/')}", timeout_s=120)
+        reply = T._monitor(self.h, f"pmemsave {addr} {size} {path.replace(chr(92), '/')}", timeout_s=120)
         for _ in range(600):
             if os.path.exists(path) and os.path.getsize(path) == size:
                 return path
             time.sleep(0.05)
-        raise RuntimeError(f"pmemsave never completed: {path}")
+        have = os.path.getsize(path) if os.path.exists(path) else None
+        raise RuntimeError(f"pmemsave never completed: {path} has {have} of {size} bytes; "
+                           f"monitor replied {reply!r}")
 
     def close(self):
         T.shutdown(self.h)
