@@ -1,0 +1,76 @@
+// Test program: every syscall that takes a user pointer, given pointers that
+// wrap past 2^32, straddle the end of a permitted region, or are exactly valid.
+// test_exec.py builds it, boots a kernel and asserts each "B:<name>:" line.
+// It lives outside programs/*.mx so it is not installed on ordinary images.
+
+const END: u32 = 0x00A20000;
+const WRAP: u32 = 0xFFFFFFF0;
+const HELLO: *u8 = "/bin/hello.bin";
+const PROBE: *u8 = "sb-probe.txt";
+const ROUND: *u8 = "sb-round.txt";
+
+fn report(name: *u8, r: u32) {
+    puts("\nB:");
+    puts(name);
+    if is_err(r) {
+        puts(":e");
+        put_u32(err_of(r));
+    } else {
+        puts(":v");
+        put_u32(r);
+    }
+    putln(":");
+}
+
+// A cursor's exact value does not matter: map success to 1, keep errors.
+fn nonzero(r: u32) -> u32 {
+    if is_err(r) || r == 0 { return r; }
+    return 1;
+}
+
+fn main() -> int {
+    let storage: [u8; 64] = [0; 64];
+    let buf: u32 = &storage as *u8 as u32;
+    let root: u32 = "/" as u32;
+    let hello: u32 = HELLO as u32;
+    let probe: u32 = PROBE as u32;
+    let round: u32 = ROUND as u32;
+
+    // Wraparound: p + n passes 2^32 and lands below the end of the region.
+    report("write-wrap", sys2(SYS_WRITE, WRAP, 32));
+    report("write-wrap-last-byte", sys2(SYS_WRITE, 0xFFFFFFFF, 1));
+    report("stat-wrap", sys2(SYS_STAT, root, WRAP));
+    report("readdir-wrap", sys4(SYS_READDIR, root, 0, WRAP, 0));
+    report("fread-wrap", sys4(SYS_FREAD, hello, 0, WRAP, 32));
+    report("fread-wrap-largest-len", sys4(SYS_FREAD, hello, 0, 0xFFFE0000, 0x00020000));
+    report("fwrite-wrap", sys4(SYS_FWRITE, probe, WRAP, 32, 1));
+    report("fwrite-wrap-readonly-len", sys4(SYS_FWRITE, probe, 0xFFFFF900, 0x700, 1));
+    report("fwrite-wrap-left-no-file", sys2(SYS_STAT, probe, buf));
+    report("procnext-wrap", sys2(SYS_PROCNEXT, 0, WRAP));
+
+    // String pointers are range-checked, and must stay so.
+    report("puts-wild", sys1(SYS_PUTS, WRAP));
+    report("stat-path-wild", sys2(SYS_STAT, WRAP, buf));
+
+    // One byte beyond each region, with no wraparound involved.
+    report("write-past-end", sys2(SYS_WRITE, END, 1));
+    report("write-straddles-end", sys2(SYS_WRITE, END - 16, 32));
+    report("write-past-readonly", sys2(SYS_WRITE, 0x009F0800, 1));
+    report("write-readonly-too-long", sys2(SYS_WRITE, 0x009F0100, 0x701));
+    report("stat-straddles-end", sys2(SYS_STAT, root, END - 39));
+    report("readdir-straddles-end", sys4(SYS_READDIR, root, 0, END - 39, 0));
+    report("fread-straddles-end", sys4(SYS_FREAD, hello, 0, END - 16, 32));
+    report("procnext-straddles-end", sys2(SYS_PROCNEXT, 0, END - 39));
+
+    // Valid calls, up to the exact edge of each region, must still work.
+    report("write-ok", sys2(SYS_WRITE, buf, 2));
+    report("write-empty-at-end", sys2(SYS_WRITE, END, 0));
+    report("write-last-byte", sys2(SYS_WRITE, END - 1, 1));
+    report("write-readonly-last-byte", sys2(SYS_WRITE, 0x009F07FF, 1));
+    report("stat-ok", sys2(SYS_STAT, root, buf));
+    report("readdir-ok-nonzero", nonzero(sys4(SYS_READDIR, root, 0, buf, 0)));
+    report("fread-ok", sys4(SYS_FREAD, hello, 0, buf, 16));
+    report("fwrite-ok", sys4(SYS_FWRITE, round, buf, 4, 1));
+    report("procnext-ok-nonzero", nonzero(sys2(SYS_PROCNEXT, 0, buf)));
+    return 0;
+}
