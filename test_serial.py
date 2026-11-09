@@ -21,6 +21,7 @@ unless the sender paces or waits for prompts. `serial` counts the drops.
 import os
 import re
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -377,12 +378,49 @@ def wait_quiet(t, idle_s=1.0, timeout_s=60):
     return False
 
 
-def uptime_seconds(t):
-    start = len(t.seen())
-    t.typed("uptime\r")
-    t.until("$ ", start, timeout_s=15)
-    found = re.search(r"uptime: (\d+) s", t.seen(start))
-    return int(found.group(1)) if found else None
+def elf_symbol(name):
+    """The address of a symbol in the built kernel, from its ELF symbol table."""
+    with open(build.ELF, "rb") as fh:
+        data = fh.read()
+    shoff = struct.unpack_from("<I", data, 32)[0]
+    shentsize, shnum = struct.unpack_from("<HH", data, 46)
+    sections = [struct.unpack_from("<10I", data, shoff + n * shentsize) for n in range(shnum)]
+    symtab = next(sec for sec in sections if sec[1] == 2)        # SHT_SYMTAB
+    strtab = sections[symtab[6]]
+    wanted = name.encode("ascii") + b"\0"
+    for n in range(symtab[5] // 16):
+        offset, value = struct.unpack_from("<II", data, symtab[4] + n * 16)
+        start = strtab[4] + offset
+        if data[start:start + len(wanted)] == wanted:
+            return value
+    raise RuntimeError(f"{name} is not in {build.ELF}")
+
+
+def guest_ticks(t, address):
+    """g_ticks, read from guest memory: this cannot be lost to a saturated COM1."""
+    reply = T._monitor(t.h, f"xp /1wx {address:#x}", timeout_s=30)
+    found = re.search(r": (0x[0-9a-f]+)", reply)
+    if found is None:
+        raise RuntimeError(f"unexpected xp reply: {reply!r}")
+    return int(found.group(1), 16)
+
+
+def answered(t, command, pattern, tries=6, timeout_s=10):
+    """Send a command until its reply is seen; the regex match, or None.
+
+    Bytes still arriving from a flood can garble one attempt, so a reply is
+    all that is required. A dead shell answers none of them.
+    """
+    for _ in range(tries):
+        start = len(t.seen())
+        t.typed("\r" + command + "\r")
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            found = re.search(pattern, t.seen(start))
+            if found:
+                return found
+            time.sleep(0.05)
+    return None
 
 
 class Flood:
@@ -408,6 +446,60 @@ class Flood:
         self.thread.join(timeout=30)
 
 
+# Flood progress is measured against work done, never the host's clock: a loaded
+# host slows the guest and the sender together. Each command the guest finishes
+# prints one prompt. Between batches of input the idle loop opens an interrupt
+# window, so ticks keep pace with commands. Measured over 1 s windows, the
+# bounded serial_service takes about 1 tick per 9 prompts (worst 1 per 47), idle
+# or under load, while an unbounded one takes none (best 1 per 110).
+FLOOD_PROMPTS = 1500             # work to observe in each flood
+PROMPTS_PER_TICK_MAX = 50        # more than this means the timer is being starved
+PS2_PROMPTS_MAX = 300            # commands a queued PS/2 key may wait behind
+FLOOD_HANG_S = 45                # only a hang guard; a slow host stays far inside it
+
+
+def prompts_seen(t, start):
+    return t.seen(start).count("$ ")
+
+
+def ticks_keep_pace(t, label, name, ticks_at):
+    """Keep the flood running for FLOOD_PROMPTS commands; ticks must keep pace."""
+    start = len(t.seen())
+    first = guest_ticks(t, ticks_at)
+    deadline = time.monotonic() + FLOOD_HANG_S
+    while prompts_seen(t, start) < FLOOD_PROMPTS and time.monotonic() < deadline:
+        time.sleep(0.05)
+    ticks = guest_ticks(t, ticks_at) - first
+    prompts = prompts_seen(t, start)
+    check(f"{label}: guest kept working through a {name} flood", prompts >= FLOOD_PROMPTS,
+          repr((prompts, ticks)))
+    check(f"{label}: ticks advance during a {name} flood",
+          ticks > 0 and ticks >= prompts // PROMPTS_PER_TICK_MAX, repr((prompts, ticks)))
+
+
+def ps2_key_reaches_shell(t, flood):
+    """A key must echo within PS2_PROMPTS_MAX commands of QEMU injecting it.
+
+    Commands run while the monitor is still answering sendkey are not counted:
+    on a loaded host that call can stall for seconds, which says nothing about
+    the kernel. Returns (ok, prompts during the call, prompts after it).
+    """
+    start = len(t.seen())
+    T._monitor(t.h, f"sendkey z {T.KEY_HOLD_MS}", timeout_s=30)
+    injected = len(t.seen())
+    during = t.seen(start)[:injected - start].count("$ ")
+    deadline = time.monotonic() + FLOOD_HANG_S
+    while time.monotonic() < deadline and flood.thread.is_alive():
+        seen = t.seen(start)
+        key_at = seen.find("z")
+        after_text = seen[injected - start:] if key_at < 0 else seen[injected - start:key_at]
+        after = after_text.count("$ ")
+        if key_at >= 0 or after > PS2_PROMPTS_MAX:
+            return key_at >= 0 and after <= PS2_PROMPTS_MAX, during, after
+        time.sleep(0.02)
+    return False, during, None
+
+
 def flood_checks(label, *boot):
     """A sustained flood must leave the timer and the keyboard running."""
     t = TcpSerial(*boot, sndbuf=4096)
@@ -415,32 +507,29 @@ def flood_checks(label, *boot):
         t.start_reading()
         if not check(f"{label}: shell is up", wait_serial_prompt(t), t.seen()[-200:]):
             return
-        before = uptime_seconds(t)
+        ticks_at = elf_symbol("m_g_ticks")
         with Flood(t, b"\r" * 64) as flood:
             time.sleep(1)
-            start = len(t.seen())
-            T._monitor(t.h, f"sendkey z {T.KEY_HOLD_MS}")
-            got_key = t.until("z", start, timeout_s=4)
-            check(f"{label}: PS/2 key handled during a CR flood",
-                  got_key and flood.thread.is_alive(), t.seen(start)[-200:])
-            time.sleep(max(0, 5 - (time.monotonic() - flood.started)))
+            ok, during, after = ps2_key_reaches_shell(t, flood)
+            check(f"{label}: PS/2 key handled during a CR flood", ok,
+                  repr((during, after)) + t.seen()[-200:])
+            ticks_keep_pace(t, label, "CR", ticks_at)
         wait_quiet(t)
-        after = uptime_seconds(t)
-        check(f"{label}: ticks advance during a CR flood",
-              before is not None and after is not None and after - before >= 3,
-              repr((before, after)))
 
-        start = len(t.seen())
         with Flood(t, b"uptime\r" * 8):
-            time.sleep(4)
-        seconds = [int(n) for n in re.findall(r"uptime: (\d+) s", t.seen(start))]
-        check(f"{label}: ticks advance during a line flood",
-              len(seconds) > 1 and seconds[-1] - seconds[0] >= 2, repr(seconds[:3] + seconds[-3:]))
+            time.sleep(1)
+            ticks_keep_pace(t, label, "line", ticks_at)
         wait_quiet(t)
-        start = len(t.seen())
-        t.typed("\recho flood-alive\r")
+
+        low = guest_ticks(t, ticks_at)
+        found = answered(t, "uptime", r"uptime: (\d+) s")
+        high = guest_ticks(t, ticks_at)
+        check(f"{label}: uptime after the flood matches g_ticks",
+              found is not None and low // 100 <= int(found.group(1)) <= high // 100,
+              repr((low, found and found.group(1), high)))
         check(f"{label}: shell answers after the flood",
-              t.until("\r\nflood-alive\r\n", start, timeout_s=30), t.seen(start)[-200:])
+              answered(t, "echo flood-alive", r"\r\nflood-alive\r\n") is not None,
+              t.seen()[-200:])
     finally:
         t.close()
 

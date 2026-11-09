@@ -2307,7 +2307,7 @@ fn user_ok(p: u32, n: u32) -> bool {
     if p < 0x00A00000 || n > 0x00020000 {
         return false;
     }
-    return p + n <= 0x00A20000;
+    return p <= 0x00A20000 - n;         // not p + n, which can wrap past 2^32
 }
 
 // As user_ok, but also allowing the line and argv buffers, for data the kernel
@@ -2319,7 +2319,7 @@ fn user_ro_ok(p: u32, n: u32) -> bool {
     if p < 0x009F0100 || n > 0x700 {
         return false;
     }
-    return p + n <= 0x009F0800;
+    return p <= 0x009F0800 - n;         // not p + n, which can wrap past 2^32
 }
 
 // Is there a NUL-terminated string at p within readable memory?
