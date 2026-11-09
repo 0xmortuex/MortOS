@@ -88,10 +88,14 @@ PROGRAMS = os.path.join(HERE, "programs")
 # Bootable-ISO tooling (downloaded + cached once under tools/).
 TOOLS = os.path.join(HERE, "tools")
 ISO = os.path.join(BUILD, "mort.iso")
-# Limine boots our multiboot1 kernel unchanged; both tools are portable Windows
-# .exe files, so no WSL/MSYS2 is needed. Pinned to a stable Limine branch.
-LIMINE_ZIP = "https://github.com/limine-bootloader/limine/archive/refs/heads/v8.x-binary.zip"
-XORRISO_ZIP = "https://github.com/PeyTy/xorriso-exe-for-windows/archive/refs/heads/master.zip"
+# Limine boots our multiboot1 kernel unchanged. On Windows both tools are portable
+# .exe files, so no WSL/MSYS2 is needed; on Linux xorriso comes from the system and
+# Limine's host tool is built from the limine.c in the same download. Both URLs are
+# pinned to a commit (Limine's is the head of its v8.x-binary branch).
+LIMINE_ZIP = ("https://github.com/limine-bootloader/limine/archive/"
+              "aad3edd370955449717a334f0289dee10e2c5f01.zip")
+XORRISO_ZIP = ("https://github.com/PeyTy/xorriso-exe-for-windows/archive/"
+               "9236798071b26ab7032cd82b4a5635fcf7c1409c.zip")
 LIMINE_CONF = """timeout: 3
 
 /MORT OS
@@ -250,16 +254,27 @@ def iso():
     build()
     os.makedirs(TOOLS, exist_ok=True)
 
-    # 1. Ensure the (portable, Windows) tools are present — download + cache once.
-    if not _find(TOOLS, "limine.exe"):
+    # 1. Ensure the tools are present — download + cache once.
+    if not _find(TOOLS, "limine-bios-cd.bin"):
         _fetch_zip(LIMINE_ZIP, os.path.join(TOOLS, "limine"))
-    if not _find(TOOLS, "xorriso.exe"):
-        _fetch_zip(XORRISO_ZIP, os.path.join(TOOLS, "xorriso"))
-    limine = _find(TOOLS, "limine.exe")
-    xorriso = _find(TOOLS, "xorriso.exe")
-    if not limine or not xorriso:
-        sys.exit("iso: could not locate limine.exe / xorriso.exe after download.")
-    lim_dir = os.path.dirname(limine)
+    lim_dir = os.path.dirname(_find(TOOLS, "limine-bios-cd.bin"))
+    if os.name == "nt":
+        if not _find(TOOLS, "xorriso.exe"):
+            _fetch_zip(XORRISO_ZIP, os.path.join(TOOLS, "xorriso"))
+        limine = _find(TOOLS, "limine.exe")
+        xorriso = _find(TOOLS, "xorriso.exe")
+        if not limine or not xorriso:
+            sys.exit("iso: could not locate limine.exe / xorriso.exe after download.")
+        host_path = _cygpath        # xorriso.exe is a Cygwin build
+    else:
+        xorriso = shutil.which("xorriso")
+        if not xorriso:
+            sys.exit("iso: xorriso not found — install it (e.g. apt install xorriso).")
+        limine = os.path.join(lim_dir, "limine")
+        if not os.path.exists(limine):
+            subprocess.run([*_zig(), "-std=c99", "-O2", os.path.join(lim_dir, "limine.c"),
+                            "-o", limine], check=True)
+        host_path = os.path.abspath
 
     # 2. Stage the ISO tree: kernel + Limine boot files + config.
     root = os.path.join(BUILD, "iso_root")
@@ -286,14 +301,13 @@ def iso():
                  "the release layout may have changed.")
 
     # 3. Master a hybrid El Torito ISO, then make the BIOS path bootable.
-    # xorriso is a Cygwin build, so host paths must be in /cygdrive/... form.
     subprocess.run([
         xorriso, "-as", "mkisofs", "-R", "-r", "-J",
         "-b", "boot/limine-bios-cd.bin",
         "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table",
         "--efi-boot", "boot/limine-uefi-cd.bin",
         "-efi-boot-part", "--efi-boot-image", "--protective-msdos-label",
-        _cygpath(root), "-o", _cygpath(ISO),
+        host_path(root), "-o", host_path(ISO),
     ], check=True)
     subprocess.run([limine, "bios-install", ISO], check=True)
     print(f"built {os.path.relpath(ISO, ROOT)}")
