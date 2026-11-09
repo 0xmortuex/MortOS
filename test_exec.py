@@ -98,6 +98,23 @@ BIG_END = "big-file-last-line"
 ulpassed = 0
 ulfailed = 0
 
+SYSBOUNDS_SRC = os.path.join(HERE, "programs", "tests", "sysbounds.mx")
+# What each call in programs/tests/sysbounds.mx must return: e<errno> or v<value>.
+SYSBOUNDS_EXPECTED = {
+    "write-wrap": "e14", "write-wrap-last-byte": "e14", "stat-wrap": "e14",
+    "readdir-wrap": "e14", "fread-wrap": "e14", "fread-wrap-largest-len": "e14",
+    "fwrite-wrap": "e14", "fwrite-wrap-readonly-len": "e14",
+    "fwrite-wrap-left-no-file": "e2", "procnext-wrap": "e14",
+    "puts-wild": "e14", "stat-path-wild": "e14",
+    "write-past-end": "e14", "write-straddles-end": "e14", "write-past-readonly": "e14",
+    "write-readonly-too-long": "e14", "stat-straddles-end": "e14",
+    "readdir-straddles-end": "e14", "fread-straddles-end": "e14",
+    "procnext-straddles-end": "e14",
+    "write-ok": "v2", "write-empty-at-end": "v0", "write-last-byte": "v1",
+    "write-readonly-last-byte": "v1", "stat-ok": "v0", "readdir-ok-nonzero": "v1",
+    "fread-ok": "v16", "fwrite-ok": "v4", "procnext-ok-nonzero": "v1",
+}
+
 
 def ul_check(label, ok, detail=None):
     global ulpassed, ulfailed
@@ -128,6 +145,9 @@ def userland():
     bins = [(os.path.join(build.BUILD, os.path.splitext(os.path.basename(mx))[0] + ".bin"),
              os.path.splitext(os.path.basename(mx))[0] + ".bin")
             for mx in build._program_sources()]
+    sysbounds_bin = os.path.join(build.BUILD, "sysbounds.bin")
+    build.build_program(SYSBOUNDS_SRC, sysbounds_bin)
+    bins.append((sysbounds_bin, "sysbounds.bin"))
     ul_img = os.path.join(TMP, "userland.img")
     mkfs.make(ul_img, adds=[(big, "big.txt")], bins=bins)
 
@@ -240,6 +260,16 @@ def userland():
         # --- the kernel's path limits reach the program as an error ---
         out = run("cat /" + "a" * 30)
         ul_check("syscall: an over-long name is refused", "cat: name too long:" in out, out)
+
+        # --- user pointers: wraparound and region edges, from a real program ---
+        out = run("exec /bin/sysbounds.bin", 60)
+        results = dict(re.findall(r"B:([a-z-]+):([ev]\d+):", out))
+        for name, want in SYSBOUNDS_EXPECTED.items():
+            ul_check(f"sysbounds: {name} gives {want}", results.get(name) == want,
+                     (results.get(name), out[-400:]))
+        ul_check("sysbounds: no unexpected cases",
+                 set(results) == set(SYSBOUNDS_EXPECTED), sorted(results))
+        ul_check("sysbounds: exits 0", exit_status(S, h) == 0, out[-400:])
 
         # --- ed: edits a file through the file syscalls ---
         def ed_lines(*lines):

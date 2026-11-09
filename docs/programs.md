@@ -107,9 +107,18 @@ A directory entry or `stat` result is 40 bytes: `name[24]`, then `type` at +24 (
 +28 (1 running, 2 exited), `status` +32, `uid` +36.
 
 Paths may be absolute or relative to the shell's working directory, up to 63 characters, with each
-component up to 23. The kernel checks that pointers passed to it lie inside the program area (or
-the argv and line buffers, for strings it only reads). This guards the kernel's copy loops against
-wild pointers. It is not protection: a program runs in ring 0 and can write anywhere.
+component up to 23.
+
+The kernel bounds-checks each pointer a syscall dereferences and returns `-EFAULT` if it fails.
+Every buffer must lie wholly inside `0x00A00000` to `0x00A20000` (the program's image, bss and
+stack), and the check rejects a range whose end would wrap past 2^32. Buffers the kernel only reads
+(syscall 5 and the data of syscall 12) and NUL-terminated strings (syscalls 1 and 2, and paths) may
+instead lie in `0x009F0100` to `0x009F0800`, the line buffer and argv area. Results written back
+(`stat`, `readdir`, file read, process list) must be in the program's own range.
+
+This check only keeps the kernel's copy loops on addresses it chose to allow. It is a range test,
+not protection: a program runs in ring 0, in the kernel's address space, and can write anywhere
+itself. The kernel cannot tell a valid buffer from a garbage one inside the permitted range.
 
 Writing checks the file's permission bits, as `write` does. Reading does not check them, matching
 the shell's `cat`.
