@@ -24,6 +24,26 @@ ISO note in [`README.md`](../README.md#a-real-bootable-iso). None of the four
 scripts touch files in the repo — scratch disk images and screendumps go to
 the system temp dir (`tempfile.mkdtemp`).
 
+## `test_boot.py`: the boot-test suite
+
+`test_boot.py` boots the real kernel headless and drives the shell over COM1 in
+lock-step: wait for the prompt, send one command, read its output. Every
+assertion is on serial output, and values are random per run. It covers the boot
+banner, `help`, `ls`, `cat`, `echo`, creating files, persistence across a warm
+`reboot` and a real power cycle, `exec` of compiled programs, error paths, a
+missing or unformatted disk, a CPU exception, and `shutdown`.
+
+```bash
+python test_boot.py                 # build, then every session
+python test_boot.py files errors    # only these sessions
+python test_boot.py --no-build      # reuse build/
+```
+
+Each session writes its transcript to `build/test-logs/boot/<session>.log`: every
+command sent, the raw COM1 text, each check, and QEMU's stderr. A session that
+hangs or faults also records the VGA screen and `info registers`. A failing
+session prints its transcript as well.
+
 ## What each script checks
 
 ### `test.py smoke`

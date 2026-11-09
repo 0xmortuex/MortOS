@@ -160,14 +160,15 @@ uv run --no-project --with ziglang --with cryptography python build.py run-iso
 | `python build.py check` | Build and validate the multiboot ELF |
 | `python build.py run` / `window` | Build, boot `-kernel` with a disk (GUI window) |
 | `python build.py iso` / `run-iso` | Build, and boot, the Windows-built ISO |
+| `python test_boot.py` | The boot-test suite: shell, files, persistence, programs and error paths, all over COM1 |
 | `python test.py smoke` | Boot and shell basics |
 | `python test_fs.py` | Disk stack and persistence |
 | `python test_exec.py` | Compiled programs |
 | `python test_gfx.py` | ISO Borehole interface by screendump |
 | `python test_serial.py` | COM1 console, on the text and ISO paths |
 
-The harnesses other than `test_serial.py` type through the QEMU monitor (`sendkey`) and read VGA
-memory (`memsave`), or screendumps in `test_gfx.py`. `test_serial.py` drives the shell over COM1,
+The harnesses other than `test_boot.py` and `test_serial.py` type through the QEMU monitor (`sendkey`) and read VGA
+memory (`memsave`), or screendumps in `test_gfx.py`. `test_boot.py` and `test_serial.py` drive the shell over COM1,
 the 16550 UART console in `kmain.mx`.
 
 Serial boot tests must not write several bytes at once to QEMU's stdio backend on Windows. That
