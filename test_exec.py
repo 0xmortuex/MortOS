@@ -172,7 +172,7 @@ def userland():
 
         # --- ls: own listing, errors, exit status ---
         out = run("ls /bin")
-        for prog in ("cat.bin", "echo.bin", "hello.bin", "kill.bin", "ls.bin", "ps.bin"):
+        for prog in ("cat.bin", "echo.bin", "ed.bin", "hello.bin", "kill.bin", "ls.bin", "ps.bin"):
             ul_check(f"ls: lists {prog}", prog in out, out)
         ul_check("ls: type, mode and size columns",
                  re.search(r"- 755\s+ls\.bin\s+\d+ bytes\s+uid 0", out) is not None, out)
@@ -238,6 +238,44 @@ def userland():
         # --- the kernel's path limits reach the program as an error ---
         out = run("cat /" + "a" * 30)
         ul_check("syscall: an over-long name is refused", "cat: name too long:" in out, out)
+
+        # --- ed: edits a file through the file syscalls ---
+        def ed_lines(*lines):
+            """Send editor input one line at a time, returning all output."""
+            mark = h.out_len()
+            for line in lines:
+                sent = h.out_len()
+                S.send(h, line + "\n")
+                S.wait_until(h, lambda t: t.endswith(": ") or t.endswith("$ "), sent, 15)
+            return S.text(h, mark)
+
+        out = ed_lines("ed note.txt")
+        ul_check("ed: reports a new file", "new file" in out, out)
+        out = ed_lines("a", "alpha", "gamma", ".", "i 2", "beta", ".", "l")
+        ul_check("ed: append and insert, in order",
+                 re.search(r"1  alpha\r\n\s+2  beta\r\n\s+3  gamma", out) is not None, out)
+        out = ed_lines("q")
+        ul_check("ed: refuses to quit with unsaved changes", "unsaved changes" in out, out)
+        out = ed_lines("d 3", "c 1 ALPHA", "d 9", "w")
+        ul_check("ed: rejects a line that does not exist", "no such line" in out, out)
+        ul_check("ed: writes the file", "wrote 2 lines" in out, out)
+        out = ed_lines("q")
+        ul_check("ed: quits to the shell once saved", out.endswith("$ "), out)
+        ul_check("ed: exits 0", exit_status(S, h) == 0, out)
+        out = run("cat note.txt")
+        ul_check("ed: the saved file holds the edits",
+                 "ALPHA\r\nbeta\r\n" in out and "gamma" not in out and "alpha" not in out, out)
+        out = ed_lines("ed note.txt", "c 2 BETA", "w", "q")
+        ul_check("ed: reopens the saved file", "2 lines" in out, out)
+        out = run("cat note.txt")
+        ul_check("ed: rewriting replaces rather than appends",
+                 "ALPHA\r\nBETA\r\n" in out and out.count("ALPHA") == 1, out)
+        out = ed_lines("ed /denied.txt", "a", "x", ".", "w", "q!")
+        ul_check("ed: reports a write the kernel refuses",
+                 "ed: permission denied: /denied.txt" in out, out)
+        out = run("ed")
+        ul_check("ed: usage message", "usage: ed <file>" in out, out)
+        ul_check("ed: usage exits 2", exit_status(S, h) == 2, out)
 
         # --- the shell still works around all of that ---
         out = run("no-such-program-here")
