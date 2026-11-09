@@ -1,0 +1,63 @@
+// ls: list directories (the current one by default). Exit status 1 if any
+// argument could not be listed.
+
+fn show(e: u32) {
+    if ent_type(e) == ENT_TYPE_DIR {
+        puts("d ");
+    } else {
+        puts("- ");
+    }
+    let mode: u32 = ent_mode(e);
+    put_char((48 + ((mode >> 6) & 7)) as u8);
+    put_char((48 + ((mode >> 3) & 7)) as u8);
+    put_char((48 + (mode & 7)) as u8);
+    puts("  ");
+    put_pad(ent_name(e), 27);
+    putf("%u bytes  uid %u\n", ent_size(e), ent_uid(e), 0);
+}
+
+fn list(path: *u8, shown_name: *u8) -> bool {
+    let ent: [u8; 40] = [0; 40];
+    let cursor: u32 = 0;
+    let count: u32 = 0;
+    while true {
+        cursor = readdir(path, cursor, &ent as u32);
+        if is_err(cursor) {
+            put_err("ls", err_of(cursor), shown_name);
+            return false;
+        }
+        if cursor == 0 {
+            break;
+        }
+        show(&ent as u32);
+        count = count + 1;
+    }
+    if count == 0 {
+        putln("(empty)");
+    }
+    return true;
+}
+
+fn main() -> int {
+    if argc() < 2 {
+        if list("", ".") {
+            return 0;
+        }
+        return 1;
+    }
+    let ok: bool = true;
+    let i: u32 = 1;
+    while i < argc() {
+        if argc() > 2 {
+            putf("%s:\n", argv(i) as u32, 0, 0);
+        }
+        if !list(argv(i), argv(i)) {
+            ok = false;
+        }
+        i = i + 1;
+    }
+    if ok {
+        return 0;
+    }
+    return 1;
+}

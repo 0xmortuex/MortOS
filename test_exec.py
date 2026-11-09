@@ -150,9 +150,9 @@ def userland():
                  re.search(r"exited\s+0\s+\d+\s+echo\b", out) is not None, out)
 
         # --- cat: several files, multi-sector read, error paths, exit status ---
-        run("write /a.txt alpha-text")
-        run("write /b.txt bravo-text")
-        out = run("cat /a.txt /b.txt")
+        run("write a.txt alpha-text")           # the default user owns only its home
+        run("write b.txt bravo-text")
+        out = run("cat a.txt b.txt")
         ul_check("cat: concatenates two files in order",
                  "alpha-text" in out and "bravo-text" in out
                  and out.index("alpha-text") < out.index("bravo-text", out.index("alpha-text")),
@@ -227,6 +227,18 @@ def userland():
             ul_check("kill: the killed process is recorded with status 143",
                      re.search(r"exited\s+143\s+\d+\s+kill\b", out) is not None, out)
 
+        # --- a program started by a script must not disturb the rest of the script ---
+        run("write job.txt echo job-line-one")
+        run("write job.txt ls /bin")
+        run("write job.txt echo job-line-three")
+        out = run("run job.txt")
+        ul_check("run: script survives programs (regression: FILEBUF clobber)",
+                 "job-line-one" in out and "ps.bin" in out and "job-line-three" in out, out)
+
+        # --- the kernel's path limits reach the program as an error ---
+        out = run("cat /" + "a" * 30)
+        ul_check("syscall: an over-long name is refused", "cat: name too long:" in out, out)
+
         # --- the shell still works around all of that ---
         out = run("no-such-program-here")
         ul_check("status: unknown command exits 127", exit_status(S, h) == 127, out)
@@ -242,5 +254,15 @@ def userland():
         S.stop(h)
 
 
+def userland_only():
+    """The COM1 half alone: python test_exec.py userland"""
+    for mx in build._program_sources():
+        out = os.path.join(build.BUILD, os.path.splitext(os.path.basename(mx))[0] + ".bin")
+        build.build_program(mx, out)
+    userland()
+    print(f"\nuserland: {ulpassed} passed, {ulfailed} failed")
+    return 1 if ulfailed else 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(userland_only() if sys.argv[1:] == ["userland"] else main())
