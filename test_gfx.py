@@ -231,7 +231,8 @@ class Vm:
     def snapshot(self, addr, size, name):
         """Dump guest physical memory to a file; returns its path."""
         path = os.path.join(self.tmp, name)
-        reply = T._monitor(self.h, f"pmemsave {addr} {size} {path.replace(chr(92), '/')}", timeout_s=120)
+        # Quoted: unquoted, the monitor reads "size /tmp/x" as a division and rejects it.
+        reply = T._monitor(self.h, f'pmemsave {addr} {size} "{path.replace(chr(92), "/")}"', timeout_s=120)
         for _ in range(600):
             if os.path.exists(path) and os.path.getsize(path) == size:
                 return path
