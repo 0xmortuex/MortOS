@@ -1,0 +1,247 @@
+// ed: a small line editor. One file at a time, up to 200 lines of up to 120
+// characters, held in memory until `w` saves it.
+//
+//   l            list lines, numbered
+//   a            append lines; a single "." ends input
+//   i N          insert lines before line N; "." ends input
+//   c N TEXT     replace line N with TEXT
+//   d N          delete line N
+//   w            save
+//   q            quit (refuses unsaved changes)
+//   q!           quit, discarding changes
+
+const MAX_LINES: u32 = 200;
+const LINE_MAX: u32 = 120;
+const LINE_SIZE: u32 = 121;
+
+let g_text: [u8; 24200] = [0; 24200];
+let g_count: u32 = 0;
+let g_dirty: bool = false;
+let g_path: u32 = 0;
+
+fn line_at(i: u32) -> u32 {
+    return (&g_text as u32) + i * LINE_SIZE;
+}
+
+// Open a hole at index `at` and copy text into it.
+fn insert_line(at: u32, text: *u8) {
+    let i: u32 = g_count;
+    while i > at {
+        mem_copy(line_at(i) as *u8, line_at(i - 1) as *u8, LINE_SIZE);
+        i = i - 1;
+    }
+    str_copy(line_at(at) as *u8, text);
+    g_count = g_count + 1;
+}
+
+fn delete_line(at: u32) {
+    let i: u32 = at;
+    while i + 1 < g_count {
+        mem_copy(line_at(i) as *u8, line_at(i + 1) as *u8, LINE_SIZE);
+        i = i + 1;
+    }
+    g_count = g_count - 1;
+}
+
+// Read the file into memory. A missing file is a new, empty document.
+fn load() -> bool {
+    let buf: [u8; 512] = [0; 512];
+    let cur: [u8; 121] = [0; 121];
+    let len: u32 = 0;
+    let off: u32 = 0;
+    while true {
+        let got: u32 = fs_read(g_path as *u8, off, &buf as *u8, 512);
+        if is_err(got) {
+            if err_of(got) == ENOENT {
+                putln("new file");
+                return true;
+            }
+            put_err("ed", err_of(got), g_path as *u8);
+            return false;
+        }
+        if got == 0 {
+            break;
+        }
+        let i: u32 = 0;
+        while i < got {
+            let c: u8 = buf[i];
+            if c == 10 {
+                if g_count == MAX_LINES {
+                    putln("ed: file has more than 200 lines");
+                    return false;
+                }
+                cur[len] = 0;
+                insert_line(g_count, &cur as *u8);
+                len = 0;
+            } else if c != 13 {
+                if len == LINE_MAX {
+                    putln("ed: file has a line over 120 characters");
+                    return false;
+                }
+                cur[len] = c;
+                len = len + 1;
+            }
+            i = i + 1;
+        }
+        off = off + got;
+    }
+    if len > 0 {                                     // a last line with no newline
+        if g_count == MAX_LINES {
+            putln("ed: file has more than 200 lines");
+            return false;
+        }
+        cur[len] = 0;
+        insert_line(g_count, &cur as *u8);
+    }
+    putf("%u lines\n", g_count, 0, 0);
+    return true;
+}
+
+fn save() -> bool {
+    let buf: [u8; 512] = [0; 512];
+    let used: u32 = 0;
+    let flags: u32 = FW_REPLACE;
+    let i: u32 = 0;
+    while i < g_count {
+        let p: u32 = line_at(i);
+        let n: u32 = str_len(p as *u8);
+        let k: u32 = 0;
+        while k <= n {                               // the line, then its newline
+            if used == 512 {
+                let w: u32 = fs_write(g_path as *u8, &buf as *u8, used, flags);
+                if is_err(w) {
+                    put_err("ed", err_of(w), g_path as *u8);
+                    return false;
+                }
+                flags = FW_APPEND;
+                used = 0;
+            }
+            if k < n {
+                buf[used] = *((p + k) as *u8);
+            } else {
+                buf[used] = 10;
+            }
+            used = used + 1;
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    let w: u32 = fs_write(g_path as *u8, &buf as *u8, used, flags);   // also empties an empty document
+    if is_err(w) {
+        put_err("ed", err_of(w), g_path as *u8);
+        return false;
+    }
+    g_dirty = false;
+    putf("wrote %u lines\n", g_count, 0, 0);
+    return true;
+}
+
+// Read lines until "." and insert them from index `at`.
+fn input_lines(at: u32) {
+    let pos: u32 = at;
+    while true {
+        let line: *u8 = read_line();
+        if str_eq(line, ".") {
+            return;
+        }
+        if g_count == MAX_LINES {
+            putln("ed: buffer full (200 lines)");
+            return;
+        }
+        insert_line(pos, line);
+        pos = pos + 1;
+        g_dirty = true;
+    }
+}
+
+// The number at s + off into *g_num, past any digits. Sets g_num_end.
+let g_num_end: u32 = 0;
+
+fn number_at(s: u32) -> u32 {
+    let v: u32 = 0;
+    let i: u32 = s;
+    while *(i as *u8) >= 48 && *(i as *u8) <= 57 && i - s < 9 {
+        v = v * 10 + ((*(i as *u8)) as u32 - 48);
+        i = i + 1;
+    }
+    g_num_end = i;
+    return v;
+}
+
+// The 1-based line number after the command letter, or 0 if it is out of range.
+fn line_arg(s: u32) -> u32 {
+    let v: u32 = number_at(s + 2);
+    if v == 0 || v > g_count {
+        putln("ed: no such line");
+        return 0;
+    }
+    return v;
+}
+
+fn list() {
+    let i: u32 = 0;
+    while i < g_count {
+        put_u32_w(i + 1, 3);
+        puts("  ");
+        putln(line_at(i) as *u8);
+        i = i + 1;
+    }
+}
+
+fn main() -> int {
+    if argc() != 2 {
+        putln("usage: ed <file>");
+        return 2;
+    }
+    g_path = argv(1) as u32;
+    if !load() {
+        return 1;
+    }
+    while true {
+        puts(": ");
+        let s: *u8 = read_line();
+        let c: u8 = *s;
+        let cmd2: u8 = *((s as u32 + 1) as *u8);
+        if str_eq(s, "q") {
+            if g_dirty {
+                putln("ed: unsaved changes (w to save, q! to discard)");
+            } else {
+                return 0;
+            }
+        } else if str_eq(s, "q!") {
+            return 0;
+        } else if str_eq(s, "w") {
+            save();
+        } else if str_eq(s, "l") {
+            list();
+        } else if str_eq(s, "a") {
+            input_lines(g_count);
+        } else if c == 105 && cmd2 == 32 {           // i N
+            let v: u32 = number_at(s as u32 + 2);
+            if v == 0 || v > g_count + 1 {
+                putln("ed: no such line");
+            } else {
+                input_lines(v - 1);
+            }
+        } else if c == 100 && cmd2 == 32 {           // d N
+            let v: u32 = line_arg(s as u32);
+            if v != 0 {
+                delete_line(v - 1);
+                g_dirty = true;
+            }
+        } else if c == 99 && cmd2 == 32 {            // c N TEXT
+            let v: u32 = line_arg(s as u32);
+            if v != 0 {
+                let t: u32 = g_num_end;
+                if *(t as *u8) == 32 {
+                    t = t + 1;
+                }
+                str_copy(line_at(v - 1) as *u8, t as *u8);
+                g_dirty = true;
+            }
+        } else if c != 0 {
+            putln("?");
+        }
+    }
+    return 0;
+}

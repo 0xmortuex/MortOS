@@ -82,8 +82,10 @@ ELF = os.path.join(BUILD, "kernel.elf")
 DISK = os.path.join(BUILD, "disk.img")
 
 # User programs: compiled from programs/*.mx into flat binaries the kernel
-# loads at 0x00A00000 and enters at byte 0 (see programs/prog.ld / pstart.s).
+# loads at 0x00A00000 and enters at byte 0 (see programs/prog.ld).
 PROGRAMS = os.path.join(HERE, "programs")
+# The userland library, prepended to every program's source.
+ULIB = os.path.join(PROGRAMS, "lib", "ulib.mx")
 
 # Bootable-ISO tooling (downloaded + cached once under tools/).
 TOOLS = os.path.join(HERE, "tools")
@@ -318,43 +320,44 @@ def build_program(mx_path, out_bin):
     """Compile one Mort program (programs/*.mx) into a flat binary at out_bin.
 
     Same proven 4-step recipe as the kernel, but linked with programs/prog.ld
-    so the whole image sits at the fixed load base 0x00A00000 with the entry
-    stub (pstart.s) first, then objcopy'd to a raw flat binary (no ELF headers).
+    so the whole image sits at the fixed load base 0x00A00000 with Mort's main
+    as its first byte, then objcopy'd to a raw flat binary (no ELF headers).
     Intermediate .c/.o/.elf land in BUILD, never the repo.
     """
     os.makedirs(BUILD, exist_ok=True)
     cc = _zig()
     name = os.path.splitext(os.path.basename(mx_path))[0]
 
-    # 1. Mort program -> freestanding C (main becomes mort_main, which pstart calls).
+    # 1. ulib + Mort program -> freestanding C (main becomes mort_main, the entry).
+    with open(ULIB, encoding="utf-8") as fh:
+        source = fh.read() + "\n"
     with open(mx_path, encoding="utf-8") as fh:
-        c_source = mortc.compile_to_c(fh.read(), freestanding=True)
+        source += fh.read()
+    c_source = mortc.compile_to_c(source, freestanding=True)
     prog_c = os.path.join(BUILD, name + ".c")
     with open(prog_c, "w", encoding="utf-8") as fh:
         fh.write(c_source)
 
     c_flags = ["-target", TARGET, "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
                "-fno-pie", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
-               "-O2"]
-    asm_flags = ["-target", TARGET, "-fno-pie"]  # assembling needs no C flags
+               "-mno-sse", "-mno-sse2", "-mno-mmx",   # SSE is off (CR4.OSFXSR=0): it would #UD
+               "-ffunction-sections", "-fdata-sections",  # prog.ld puts main first; gc drops
+               "-O2"]                                     # the parts of ulib a program skips
     prog_o = os.path.join(BUILD, name + ".o")
     runtime_o = os.path.join(BUILD, "runtime.o")
-    pstart_o = os.path.join(BUILD, name + ".pstart.o")
     prog_elf = os.path.join(BUILD, name + ".elf")
 
-    # 2. Compile the program C and assemble the entry stub.
+    # 2. Compile the program C.
     subprocess.run([*cc, *c_flags, "-c", prog_c, "-o", prog_o], check=True)
     subprocess.run([*cc, *c_flags, "-c", os.path.join(HERE, "runtime.c"),
                     "-o", runtime_o], check=True)
-    subprocess.run([*cc, *asm_flags, "-c", os.path.join(PROGRAMS, "pstart.s"),
-                    "-o", pstart_o], check=True)
 
     # 3. Link at the fixed load base with the flat-image linker script.
     subprocess.run([
         *cc, "-target", TARGET, "-nostdlib", "-static", "-no-pie",
         "-Wl,-T," + os.path.join(PROGRAMS, "prog.ld"),
-        "-Wl,--build-id=none", "-Wl,-e,_pstart",   # entry stub, silences _start warning
-        "-o", prog_elf, pstart_o, prog_o, runtime_o,
+        "-Wl,--build-id=none", "-Wl,-e,mort_main", "-Wl,--gc-sections",
+        "-o", prog_elf, prog_o, runtime_o,
     ], check=True)
 
     # 4. Strip ELF headers down to a raw flat binary the kernel loads verbatim.

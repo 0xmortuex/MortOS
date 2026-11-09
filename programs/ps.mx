@@ -1,0 +1,43 @@
+// ps: print the process table. By default only what is alive: the kernel and
+// ps itself, because a program runs to completion and nothing else can be
+// running. -a also shows records of programs that have exited.
+
+fn main() -> int {
+    let all: bool = false;
+    if argc() == 2 && str_eq(argv(1), "-a") {
+        all = true;
+    } else if argc() != 1 {
+        putln("usage: ps [-a]");
+        return 2;
+    }
+    let rec: [u8; 40] = [0; 40];
+    let r: u32 = &rec as u32;
+    putln("  PID STATE   STATUS  UID NAME");
+    let cursor: u32 = 0;
+    while true {
+        cursor = proc_next(cursor, r);
+        if is_err(cursor) {
+            put_err("ps", err_of(cursor), "process list");
+            return 1;
+        }
+        if cursor == 0 {
+            break;
+        }
+        if proc_state(r) == PROC_RUNNING || all {
+            put_u32_w(proc_pid(r), 5);
+            puts(" ");
+            if proc_state(r) == PROC_RUNNING {
+                put_pad("running", 7);
+                puts("       -");
+            } else {
+                put_pad("exited", 7);
+                put_u32_w(proc_status(r), 8);
+            }
+            puts(" ");
+            put_u32_w(proc_uid(r), 4);
+            puts(" ");
+            putln(proc_name(r));
+        }
+    }
+    return 0;
+}
