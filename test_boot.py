@@ -318,6 +318,18 @@ def lost_nothing(log, guest):
               found is not None and found.groups() == ("0", "0", "0"), repr(out))
 
 
+LS_ENTRY = r"^[-d] (?P<mode>[0-7]{3}) +%s +\d+ bytes +uid +(?P<uid>\d+)$"
+
+
+def ls_field(guest, name, field):
+    """The mode or owner `ls` shows for name in the current directory, or None."""
+    for line in guest.cmd("ls"):
+        found = re.match(LS_ENTRY % re.escape(name), line)
+        if found:
+            return found.group(field)
+    return None
+
+
 # ----- sessions -----
 
 def session_boot(run, log):
@@ -488,12 +500,33 @@ def session_errors(run, log):
             ("run nope.txt", "not found: nope.txt"),
             ("exec nope.bin", "not found: nope.bin"),
             ("export =bad", "usage: export NAME=value"),
+            ("export NOEQUALS", "usage: export NAME=value"),
+            ("chmod 777", "usage: chmod <octal> <path>"),
             ("chmod 777 nope.txt", "chmod: not found"),
             ("chown 0 /seeded.txt", "chown: not permitted (root only)"),
         ):
             check_lines(log, f"{line!r} reports {want!r}", g.cmd(line), [want])
         check_lines(log, "the refused rm left the file alone", g.cmd("cat /seeded.txt"),
                     ["first line from mkfs", "second line from mkfs"])
+
+        # A usage error must not act on what a longer command left past the NUL.
+        g.cmd("write mode.txt x")
+        g.cmd("chmod 640 mode.txt")
+        log.check("chmod sets the mode", ls_field(g, "mode.txt", "mode") == "640", repr(g.cmd("ls")))
+        check_lines(log, "chmod with no path after a longer chmod is a usage error", g.cmd("chmod 777"),
+                    ["usage: chmod <octal> <path>"])
+        log.check("that usage error left the mode alone", ls_field(g, "mode.txt", "mode") == "640",
+                  repr(g.cmd("ls")))
+        g.cmd("export STALEVALUE=stale")
+        check_lines(log, "export with no '=' after a longer export is a usage error",
+                    g.cmd("export NOEQUALS"), ["usage: export NAME=value"])
+        check_lines(log, "that usage error set no variable", g.cmd("echo x$NOEQUALS"), ["x"])
+        owner = ls_field(g, "mode.txt", "uid")
+        g.send_until("sudo chown 5", "password for")
+        reply = g.answer(PASSWORD)
+        log.check("chown with no path is a usage error", "usage: chown <uid> <path>" in reply, repr(reply))
+        log.check("that usage error left the owner alone", ls_field(g, "mode.txt", "uid") == owner,
+                  repr(g.cmd("ls")))
 
         g.cmd("write meta.txt run meta.txt")
         tok = TOKEN()
