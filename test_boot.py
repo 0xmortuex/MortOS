@@ -322,9 +322,9 @@ def lost_nothing(log, guest):
 LS_ENTRY = r"^[-d] (?P<mode>[0-7]{3}) +%s +\d+ bytes +uid +(?P<uid>\d+)$"
 
 
-def ls_field(guest, name, field):
-    """The mode or owner `ls` shows for name in the current directory, or None."""
-    for line in guest.cmd("ls"):
+def ls_field(guest, name, field, where=""):
+    """The mode or owner `ls` shows for name in directory where (default: cwd), or None."""
+    for line in guest.cmd(f"ls {where}".strip()):
         found = re.match(LS_ENTRY % re.escape(name), line)
         if found:
             return found.group(field)
@@ -522,6 +522,21 @@ def session_errors(run, log):
         check_lines(log, "export with no '=' after a longer export is a usage error",
                     g.cmd("export NOEQUALS"), ["usage: export NAME=value"])
         check_lines(log, "that usage error set no variable", g.cmd("echo x$NOEQUALS"), ["x"])
+        # A trailing space is still no path: it must not mean "the current directory".
+        home_mode = ls_field(g, USER, "mode", "/home")
+        check_lines(log, "chmod with only a trailing space is a usage error", g.cmd("chmod 777 "),
+                    ["usage: chmod <octal> <path>"])
+        log.check("that usage error left the current directory alone",
+                  home_mode is not None and ls_field(g, USER, "mode", "/home") == home_mode,
+                  repr(g.cmd("ls /home")))
+        home_owner = ls_field(g, USER, "uid", "/home")
+        g.send_until("sudo chown 5 ", "password for")
+        reply = g.answer(PASSWORD)
+        log.check("chown with only a trailing space is a usage error",
+                  "usage: chown <uid> <path>" in reply, repr(reply))
+        log.check("that usage error left the owner of the current directory alone",
+                  home_owner is not None and ls_field(g, USER, "uid", "/home") == home_owner,
+                  repr(g.cmd("ls /home")))
         owner = ls_field(g, "mode.txt", "uid")
         g.send_until("sudo chown 5", "password for")
         reply = g.answer(PASSWORD)
