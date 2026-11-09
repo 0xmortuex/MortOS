@@ -1,0 +1,331 @@
+// ulib: the MORT OS userland library, the libc-equivalent every program uses.
+//
+// build.py concatenates this file in front of each programs/*.mx, so a program
+// calls these functions directly. Nothing in here touches kernel memory; the
+// only way to the kernel is sysN below. docs/programs.md documents the ABI.
+//
+// Error convention: a syscall that fails returns -errno as a u32 (see is_err
+// and err_of). Everything else in this library follows that convention too.
+
+// ----- syscall numbers -----
+
+const SYS_PUTLN: u32 = 1;
+const SYS_PUTS: u32 = 2;
+const SYS_UPTIME: u32 = 3;
+const SYS_READLINE: u32 = 4;
+const SYS_WRITE: u32 = 5;
+const SYS_EXIT: u32 = 6;
+const SYS_ARGC: u32 = 7;
+const SYS_ARGV: u32 = 8;
+const SYS_STAT: u32 = 9;
+const SYS_READDIR: u32 = 10;
+const SYS_FREAD: u32 = 11;
+const SYS_FWRITE: u32 = 12;
+const SYS_GETPID: u32 = 13;
+const SYS_PROCNEXT: u32 = 14;
+const SYS_KILL: u32 = 15;
+
+// ----- errors -----
+
+const EPERM: u32 = 1;
+const ENOENT: u32 = 2;
+const ESRCH: u32 = 3;
+const EIO: u32 = 5;
+const EACCES: u32 = 13;
+const EFAULT: u32 = 14;
+const ENOTDIR: u32 = 20;
+const EISDIR: u32 = 21;
+const EINVAL: u32 = 22;
+const EFBIG: u32 = 27;
+const ENOSPC: u32 = 28;
+const ENAMETOOLONG: u32 = 36;
+const ENOSYS: u32 = 38;
+
+// True when a syscall result is -errno rather than a value.
+fn is_err(r: u32) -> bool {
+    return r >= 0xFFFFF000;
+}
+
+fn err_of(r: u32) -> u32 {
+    return 0xFFFFFFFF - r + 1;
+}
+
+fn err_str(e: u32) -> *u8 {
+    if e == EPERM { return "operation not permitted"; }
+    if e == ENOENT { return "not found"; }
+    if e == ESRCH { return "no such process"; }
+    if e == EIO { return "i/o error"; }
+    if e == EACCES { return "permission denied"; }
+    if e == EFAULT { return "bad address"; }
+    if e == ENOTDIR { return "not a directory"; }
+    if e == EISDIR { return "is a directory"; }
+    if e == EINVAL { return "invalid argument"; }
+    if e == EFBIG { return "file too large"; }
+    if e == ENOSPC { return "no space left"; }
+    if e == ENAMETOOLONG { return "name too long"; }
+    if e == ENOSYS { return "not implemented"; }
+    return "error";
+}
+
+// ----- the syscall entry: mailbox at 0x009F0000, then int 0x80 -----
+
+fn sys4(n: u32, a: u32, b: u32, c: u32, d: u32) -> u32 {
+    volatile_write<u32>(0x009F0000 as *u32, n);
+    volatile_write<u32>(0x009F0004 as *u32, a);
+    volatile_write<u32>(0x009F0008 as *u32, b);
+    volatile_write<u32>(0x009F0014 as *u32, c);
+    volatile_write<u32>(0x009F0018 as *u32, d);
+    asm("int $0x80");
+    return volatile_read<u32>(0x009F000C as *u32);
+}
+
+fn sys2(n: u32, a: u32, b: u32) -> u32 { return sys4(n, a, b, 0, 0); }
+fn sys1(n: u32, a: u32) -> u32 { return sys4(n, a, 0, 0, 0); }
+fn sys0(n: u32) -> u32 { return sys4(n, 0, 0, 0, 0); }
+
+// ----- strings -----
+
+fn str_len(s: *u8) -> u32 {
+    let n: u32 = 0;
+    while *((s as u32 + n) as *u8) != 0 {
+        n = n + 1;
+    }
+    return n;
+}
+
+fn str_eq(a: *u8, b: *u8) -> bool {
+    let i: u32 = 0;
+    while true {
+        let ca: u8 = *((a as u32 + i) as *u8);
+        if ca != *((b as u32 + i) as *u8) { return false; }
+        if ca == 0 { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Copy src, NUL included, into dst.
+fn str_copy(dst: *u8, src: *u8) {
+    let i: u32 = 0;
+    while true {
+        let c: u8 = *((src as u32 + i) as *u8);
+        *((dst as u32 + i) as *u8) = c;
+        if c == 0 { return; }
+        i = i + 1;
+    }
+}
+
+fn mem_copy(dst: *u8, src: *u8, n: u32) {
+    let i: u32 = 0;
+    while i < n {
+        *((dst as u32 + i) as *u8) = *((src as u32 + i) as *u8);
+        i = i + 1;
+    }
+}
+
+// The decimal number held in s, or NOT_A_NUMBER if s is not all digits.
+const NOT_A_NUMBER: u32 = 0xFFFFFFFF;
+
+fn str_to_u32(s: *u8) -> u32 {
+    let i: u32 = 0;
+    let v: u32 = 0;
+    while *((s as u32 + i) as *u8) != 0 {
+        let c: u8 = *((s as u32 + i) as *u8);
+        if c < 48 || c > 57 { return NOT_A_NUMBER; }
+        if v > 429496728 { return NOT_A_NUMBER; }        // would not fit in u32
+        v = v * 10 + (c as u32 - 48);
+        i = i + 1;
+    }
+    if i == 0 { return NOT_A_NUMBER; }
+    return v;
+}
+
+// ----- output -----
+
+fn puts(s: *u8) { sys1(SYS_PUTS, s as u32); }
+fn putln(s: *u8) { sys1(SYS_PUTLN, s as u32); }
+
+// Write n bytes, which may hold newlines and need no NUL.
+fn put_bytes(p: *u8, n: u32) { sys2(SYS_WRITE, p as u32, n); }
+
+fn put_char(c: u8) {
+    let b: [u8; 2] = [0; 2];
+    b[0] = c;
+    put_bytes(&b as *u8, 1);
+}
+
+// Write n's decimal digits into buf (at least 11 bytes), NUL-terminated.
+fn fmt_u32(n: u32, buf: *u8) {
+    let tmp: [u8; 11] = [0; 11];
+    let len: u32 = 0;
+    let v: u32 = n;
+    if v == 0 {
+        tmp[0] = 48;
+        len = 1;
+    }
+    while v > 0 {
+        tmp[len] = (48 + v % 10) as u8;
+        v = v / 10;
+        len = len + 1;
+    }
+    let i: u32 = 0;
+    while i < len {
+        *((buf as u32 + i) as *u8) = tmp[len - 1 - i];
+        i = i + 1;
+    }
+    *((buf as u32 + len) as *u8) = 0;
+}
+
+fn put_u32(n: u32) {
+    let b: [u8; 11] = [0; 11];
+    fmt_u32(n, &b as *u8);
+    puts(&b as *u8);
+}
+
+fn put_spaces(n: u32) {
+    let i: u32 = 0;
+    while i < n {
+        put_char(32);
+        i = i + 1;
+    }
+}
+
+// s, then spaces out to `width` columns (left aligned).
+fn put_pad(s: *u8, width: u32) {
+    puts(s);
+    let n: u32 = str_len(s);
+    if n < width { put_spaces(width - n); }
+}
+
+// n in `width` columns (right aligned).
+fn put_u32_w(n: u32, width: u32) {
+    let b: [u8; 11] = [0; 11];
+    fmt_u32(n, &b as *u8);
+    let len: u32 = str_len(&b as *u8);
+    if len < width { put_spaces(width - len); }
+    puts(&b as *u8);
+}
+
+// Print fmt, replacing %s (string) and %u (decimal) with a, b, c in order.
+// %% is a literal percent. Unused arguments are ignored.
+fn putf(fmt: *u8, a: u32, b: u32, c: u32) {
+    let args: [u32; 3] = [a, b, c];
+    let used: u32 = 0;
+    let i: u32 = 0;
+    while *((fmt as u32 + i) as *u8) != 0 {
+        let ch: u8 = *((fmt as u32 + i) as *u8);
+        if ch == 37 {                                    // '%'
+            i = i + 1;
+            let spec: u8 = *((fmt as u32 + i) as *u8);
+            if spec == 115 && used < 3 {                 // %s
+                puts(args[used] as *u8);
+                used = used + 1;
+            } else if spec == 117 && used < 3 {          // %u
+                put_u32(args[used]);
+                used = used + 1;
+            } else if spec == 37 {
+                put_char(37);
+            } else if spec == 0 {
+                i = i - 1;                               // a lone '%' ends the string
+            } else {
+                put_char(37);
+                put_char(spec);
+            }
+        } else {
+            put_char(ch);
+        }
+        i = i + 1;
+    }
+}
+
+// "prog: message: arg", the shape every program reports errors in.
+fn put_err(prog: *u8, e: u32, arg: *u8) {
+    puts(prog);
+    puts(": ");
+    puts(err_str(e));
+    puts(": ");
+    putln(arg);
+}
+
+// ----- input -----
+
+// Read a line from the console (blocking). The line stays valid until the
+// next read_line.
+fn read_line() -> *u8 {
+    return sys0(SYS_READLINE) as *u8;
+}
+
+// ----- process: argv, identity, exit -----
+
+fn argc() -> u32 { return sys0(SYS_ARGC); }
+
+// argument i, as a NUL-terminated string, or 0 past the end.
+fn argv(i: u32) -> *u8 { return sys1(SYS_ARGV, i) as *u8; }
+
+fn getpid() -> u32 { return sys0(SYS_GETPID); }
+fn uptime() -> u32 { return sys0(SYS_UPTIME); }
+
+// End this program now, with `status` as its exit status.
+fn exit(status: u32) { sys1(SYS_EXIT, status); }
+
+// ----- files -----
+
+// One directory entry or stat result: 40 bytes at any u32 address.
+//   name[24]  +24 type (0 file, 1 directory)  +28 size  +32 mode  +36 uid
+const ENT_SIZE: u32 = 40;
+const ENT_TYPE_DIR: u32 = 1;
+
+fn ent_name(e: u32) -> *u8 { return e as *u8; }
+fn ent_type(e: u32) -> u32 { return *((e + 24) as *u32); }
+fn ent_size(e: u32) -> u32 { return *((e + 28) as *u32); }
+fn ent_mode(e: u32) -> u32 { return *((e + 32) as *u32); }
+fn ent_uid(e: u32) -> u32 { return *((e + 36) as *u32); }
+
+// Fill ent for path. 0 or -errno.
+fn stat(path: *u8, ent: u32) -> u32 {
+    return sys2(SYS_STAT, path as u32, ent);
+}
+
+// Next entry of directory `path` after `cursor` (start at 0). Returns the next
+// cursor, 0 at the end, or -errno. ent is filled when the result is a cursor.
+fn readdir(path: *u8, cursor: u32, ent: u32) -> u32 {
+    return sys4(SYS_READDIR, path as u32, cursor, ent, 0);
+}
+
+// Copy up to len bytes of `path` from `offset` into buf. Bytes read, 0 at end
+// of file, or -errno.
+fn fs_read(path: *u8, offset: u32, buf: *u8, len: u32) -> u32 {
+    return sys4(SYS_FREAD, path as u32, offset, buf as u32, len);
+}
+
+const FW_APPEND: u32 = 0;      // add to the end, creating the file if needed
+const FW_REPLACE: u32 = 1;     // empty the file first, creating it if needed
+
+// Write len bytes to `path`. Bytes written or -errno.
+fn fs_write(path: *u8, buf: *u8, len: u32, flags: u32) -> u32 {
+    return sys4(SYS_FWRITE, path as u32, buf as u32, len, flags);
+}
+
+// ----- processes -----
+
+// One process record: 40 bytes.
+//   name[24]  +24 pid  +28 state  +32 status  +36 uid
+const PROC_SIZE: u32 = 40;
+const PROC_RUNNING: u32 = 1;
+const PROC_EXITED: u32 = 2;
+
+fn proc_name(p: u32) -> *u8 { return p as *u8; }
+fn proc_pid(p: u32) -> u32 { return *((p + 24) as *u32); }
+fn proc_state(p: u32) -> u32 { return *((p + 28) as *u32); }
+fn proc_status(p: u32) -> u32 { return *((p + 32) as *u32); }
+fn proc_uid(p: u32) -> u32 { return *((p + 36) as *u32); }
+
+// Next process record after `cursor` (start at 0). Next cursor, or 0 at the end.
+fn proc_next(cursor: u32, rec: u32) -> u32 {
+    return sys2(SYS_PROCNEXT, cursor, rec);
+}
+
+// Send the only signal there is. 0 or -errno. Killing yourself does not return.
+fn kill(pid: u32) -> u32 {
+    return sys1(SYS_KILL, pid);
+}

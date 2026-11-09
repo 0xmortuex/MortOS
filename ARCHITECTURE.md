@@ -26,7 +26,6 @@ system in one place. For deep detail it links to the existing references in
 | `boot.s` | 51 | `kernel.elf` | Multiboot header, 16 KiB stack, `_start` |
 | `runtime.c` | 35 | `kernel.elf` and every program | `memset`, `memcpy`, `memmove` |
 | **Total in the kernel image** | **312** | | |
-| `programs/pstart.s` | 8 | every program, not the kernel | Program entry stub |
 | `linker.ld` / `programs/prog.ld` | 19 / 13 | layout scripts, contribute no code | Load addresses and section order |
 
 `font_data.mxinc` (264 lines) is Mort-syntax data that nothing includes, so it is not in the
@@ -108,27 +107,15 @@ address space and one stack.
 
 ## Syscall ABI
 
-A program writes the number and `arg0` to a fixed mailbox, then raises `int 0x80`. No registers
-carry arguments, because Mort's `asm()` cannot bind operands.
+A program fills a fixed mailbox at `0x009F0000` and raises `int 0x80`. No registers carry
+arguments, because Mort's `asm()` cannot bind operands. There are 15 calls: console, exit, argv,
+stat, readdir, file read and write, getpid, process list and kill. Failures return `-errno`.
+[`docs/programs.md`](docs/programs.md) is the complete reference, including the userland library
+in `programs/lib/ulib.mx`.
 
-| Address | Field | Direction |
-|---|---|---|
-| `0x009F0000` | syscall number | to kernel |
-| `0x009F0004` | arg0 | to kernel |
-| `0x009F000C` | return value | to program |
-| `0x009F0010` | program entry (kernel-internal) | kernel only |
-| `0x009F0100` | syscall 4 line buffer, 120 chars + NUL | to program |
-
-| # | Call | Argument | Returns |
-|---|---|---|---|
-| 1 | Print and newline | string pointer | none |
-| 2 | Print inline | string pointer | none |
-| 3 | Uptime | none | seconds |
-| 4 | Read line, polling PS/2 | none | pointer to `0x009F0100` |
-
-Unknown numbers are ignored. Programs load at `0x00A00000`, are entered by a plain `call`
-(`exec_enter`, `kmain.mx:1890`), and run in ring 0 on the kernel stack. There is no exit
-syscall (a program returns), no argv, no file I/O, no exit status.
+Programs load at `0x00A00000`, are entered by a plain `call` at byte 0 (`exec_enter`), run in
+ring 0 on their own stack, and end by returning or through syscall 6. See "Processes" in that
+file for the process model, and `BLOCKERS.md` for what it lacks.
 
 ## Build pipeline
 

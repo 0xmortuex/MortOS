@@ -1,126 +1,118 @@
 # Writing MORT OS Programs
 
-MORT OS runs real compiled programs — `.mx` sources in [`programs/`](../programs/),
-built by `build.py` into flat binaries and `exec`'d from the shell. This is a
-grounded reference for the format and the syscall ABI a program uses to talk
-to the kernel; see [`docs/shell.md`](shell.md) for the `exec` command itself
-and [`docs/memory-map.md`](memory-map.md) for where everything below lives in
-physical memory.
+MORT OS runs compiled programs: `.mx` sources in [`programs/`](../programs/), built by `build.py`
+into flat binaries and launched from the shell by name. This file is the reference for the program
+format, the syscall ABI and the userland library. See [`docs/shell.md`](shell.md) for the shell and
+[`docs/memory-map.md`](memory-map.md) for the physical layout.
 
 ## What a program is
 
-A program is **a flat 32-bit binary with no ELF header** — just raw
-`.text`/`.rodata`/`.data`/`.bss` bytes linked to load at the fixed address
-`0x00A00000` (`kmain.mx:1779`). It shares no symbols with the kernel: the
-only way in is its entry point, and the only way to ask the kernel for
-anything is the syscall mailbox below.
+A program is **a flat 32-bit binary with no ELF header**, linked to load at `0x00A00000`. It shares
+no symbols with the kernel. The kernel enters it at byte 0, and that byte is the compiled Mort
+`main`: `programs/prog.ld` places `.text.mort_main` first and fails the link if `mort_main` is not
+at the load base. No assembly entry stub exists any more. A program ends by returning from `main`
+or by calling `exit`; both give the kernel an exit status (the low 8 bits).
 
-Every program links against two small pieces the kernel doesn't need at
-runtime, both in `programs/`:
-
-- **`pstart.s`** — the entry stub. The kernel calls the first byte of the
-  loaded binary, so this must be linked first; it just calls the compiled
-  Mort `main` (emitted as `mort_main`) and returns:
-  ```
-  _pstart:
-      call mort_main
-      ret
-  ```
-  (`programs/pstart.s:6-8`)
-- **`prog.ld`** — the linker script that places everything at
-  `0x00A00000` and discards ELF metadata sections (`programs/prog.ld:4`,
-  `:12`).
+| Region | Address | Size | Note |
+|---|---|---|---|
+| Image and bss | `0x00A00000` | 64 KiB | Zeroed, then the file is copied in. `prog.ld` fails the link if image + bss is larger |
+| Stack | `0x00A10000` to `0x00A20000` | 64 KiB | Grows down from `0x00A20000`. The program's own, not the kernel's |
+| Mailbox | `0x009F0000` | 0x180 B | Syscall arguments and results |
+| argv | `0x009F0200` | 0x600 B | Filled by the kernel before entry; read it through syscalls 7 and 8 |
 
 ## Build pipeline
 
-`build_program()` (`build.py:274`-`320`) compiles one `programs/*.mx` file
-into a seedable `.bin`, the same four-step recipe as the kernel itself but
-linked differently:
+`build_program()` in `build.py` concatenates `programs/lib/ulib.mx` with one `programs/*.mx`, then:
 
-1. **Mort → freestanding C** via `mortc.compile_to_c(..., freestanding=True)`
-   (`build.py:288`) — the program's `main` becomes `mort_main`.
-2. **Compile + assemble**: the generated C, `runtime.c` (freestanding
-   `memset`/`memcpy`/`memmove`, no hosted libc), and `pstart.s`
-   (`build.py:303`-`307`).
-3. **Link** at the fixed base with `prog.ld`, entry `_pstart`
-   (`build.py:310`-`315`).
-4. **`objcopy -O binary`** strips the ELF wrapper down to the raw bytes the
-   kernel loads verbatim (`build.py:318`-`319`).
+1. Compiles the Mort to freestanding C (`main` becomes `mort_main`).
+2. Compiles that and `runtime.c` with `-ffunction-sections -fdata-sections -mno-sse -mno-sse2 -mno-mmx`.
+   SSE is disabled in this kernel, so vector code would raise `#UD`.
+3. Links at the fixed base with `prog.ld`, entry `mort_main`, `--gc-sections` (a program only
+   carries the parts of the library it uses).
+4. Runs `objcopy -O binary`.
 
-`python build.py prog` builds every `programs/*.mx` this way
-(`prog()`, `build.py:331`-`338`, via `_program_sources()`,
-`build.py:323`-`328`, which just globs `programs/*.mx` — **any new `.mx`
-file dropped in `programs/` is picked up automatically**, no registration
-needed). `python build.py disk`/`ensure_disk()` builds and seeds all of them
-onto `build/disk.img` as `<name>.bin` (`build.py:357`-`365`) so they're
-present the moment the OS boots.
+Compiler error line numbers count from the start of the concatenation, so a program's errors are
+offset by the length of `ulib.mx`.
 
-**That disk-seeding happens exactly once.** `ensure_disk()` returns
-immediately if `build/disk.img` already exists (`build.py:349`-`350`) —
-true after the very first `run`/`window`/`disk`/`run-iso`, since none of
-them ever delete or rewrite an existing image. `prog()` itself never
-touches `disk.img` at all; it only (re)writes the loose `build/*.bin`
-files. So editing an existing `programs/*.mx` file, or adding a new one,
-and re-running `python build.py prog` does **not** change what `exec`
-sees inside a running OS — the binary already seeded on disk is
-untouched. To pick up the rebuilt program, delete `build/disk.img` (or
-reseed it by hand, e.g. `python mkfs.py build/disk.img --add-bin
-build/<name>.bin` for each program you want on it) so the next
-`run`/`window`/`disk` reseeds it via `ensure_disk()`. This is the
-opposite of the kernel itself: `_run()` (`build.py:403`-`421`) calls
-`build()` on every `run`/`window`, so kernel-source changes always take
-effect on the next boot — only the disk image, program binaries
-included, is create-once.
+Any new `.mx` in `programs/` is picked up automatically by `python build.py prog`. `lib/` is not
+scanned.
+
+**The disk image is seeded once.** `ensure_disk()` does nothing if `build/disk.img` exists, so after
+adding or rebuilding a program delete that file (or reseed it with `python mkfs.py build/disk.img
+--add-bin build/<name>.bin`). A new `<name>.bin` is moved from `/` into `/bin` and marked 0755 at
+first boot.
 
 ## Running one
 
-From the MORT OS shell: `exec <name>.bin` (`exec_file`, `kmain.mx:1896`-
-`1924`, dispatched at `kmain.mx:2351`). It looks the file up on MortFS,
-reads it into `FILEBUF`, zeroes the full 64 KiB program region at
-`0x00A00000`, copies the binary in, and calls into it (`exec_enter`,
-`kmain.mx:1890`-`1892`, an indirect call through the stored entry address
-so the call's register clobber can't reach live kernel state). There is no
-process isolation or separate stack — a program that overflows the stack
-corrupts kernel state (see the note in `docs/memory-map.md`).
+From the shell, type its name: the lookup tries `<name>`, `/bin/<name>`, `<name>.bin` and
+`/bin/<name>.bin`. `exec <path> [args...]` runs one by path.
 
-**`main`'s return value is compiled in but never used.** `_pstart` calls
-`mort_main` and then just `ret`s (`programs/pstart.s:6`-`8`) — under the
-cdecl convention the Mort compiler targets, that leaves `main`'s `int`
-result sitting in `eax`. Control lands back in `exec_enter`'s single `asm`
-statement (`kmain.mx:1890`-`1892`) and then in `exec_file`, whose body ends
-right after the `exec_enter();` call with no following statement
-(`kmain.mx:1896`-`1924`) — nothing reads `eax`, prints it, or branches on
-it. There is no shell-visible exit code or `$?`-style variable anywhere in
-`run_command_impl` (grepped: no reference to a program's return value
-outside `pstart.s` itself). All three example programs always `return 0`
-(`programs/hello.mx:16`, `programs/count.mx:17`, `programs/ask.mx:30`), so
-this has no observable effect yet, but a program that returns nonzero to
-signal failure has no way to make that visible to the shell that ran it.
+`ls`, `cat` and `echo` exist both as programs and as shell builtins. When `/bin/<name>.bin` is
+present and executable the shell runs the program; the builtin is only the fallback for a machine
+with no disk or an older disk image without the program. `ps`, `kill` and `ed` are programs only.
+
+`$?` expands to the exit status of the last command. A program sets it to its exit status. A
+command that is not found sets 127. Builtins always set 0, including when they print an error,
+because they have no status of their own.
+
+Argument splitting: words are separated by spaces, and `"double quotes"` group a word. `$VAR` and
+`$?` expand before splitting. The limit is 16 arguments.
 
 ## The syscall ABI
 
-A program asks the kernel to do something by filling a fixed mailbox and
-raising `int 0x80`. Every field is a 4-byte little-endian value
-(`kmain.mx:1782`-`1783`):
+A program fills the mailbox and raises `int 0x80`. All fields are 4-byte little-endian. Registers
+carry nothing, because Mort's `asm()` takes one string and cannot bind operands (`BLOCKERS.md`).
 
 | Address | Field | Direction |
 |---|---|---|
-| `0x009F0000` | syscall number | program → kernel |
-| `0x009F0004` | arg0 | program → kernel |
-| `0x009F000C` | return value | kernel → program |
+| `0x009F0000` | syscall number | to kernel |
+| `0x009F0004` | arg0 | to kernel |
+| `0x009F0008` | arg1 | to kernel |
+| `0x009F000C` | return value | to program |
+| `0x009F0010` | entry address | kernel only |
+| `0x009F0014` | arg2 | to kernel |
+| `0x009F0018` | arg3 | to kernel |
+| `0x009F001C` | saved kernel stack | kernel only |
+| `0x009F0020` | exit status of the finished program | kernel only |
+| `0x009F0024` | status passed to the exit path | kernel only |
+| `0x009F0100` | syscall 4 line buffer, 120 chars + NUL | to program |
 
-`on_syscall()` (`kmain.mx:1864`-`1885`) reads the number and implements
-exactly four calls:
+Calls that can fail return `-errno` as a u32 (`is_err`, `err_of`). The kernel prints no messages on
+a program's behalf: error text is the program's job. Numbers are the POSIX ones.
 
-| # | Name | arg0 | Returns | Behavior |
-|---|---|---|---|---|
-| `1` | print + newline | pointer to a NUL-terminated string | — | Prints the string, then a newline (`kmain.mx:1866`-`1871`) |
-| `2` | print inline | pointer to a NUL-terminated string | — | Prints the string with no trailing newline, so a prompt and typed input can share a line (`kmain.mx:1872`-`1875`) |
-| `3` | uptime | — | seconds since boot | Writes `g_ticks / 100` to the return slot (`kmain.mx:1876`-`1879`) |
-| `4` | read line | — | pointer to the input buffer at `0x009F0100` | Polls the keyboard ports directly rather than via IRQ1, since the handler that services `int 0x80` runs with interrupts off (`kmain.mx:1880`-`1884`); the returned buffer holds up to 120 chars + NUL (`docs/memory-map.md`) |
+| # | Name | Arguments | Returns |
+|---|---|---|---|
+| 1 | print and newline | `str` | none |
+| 2 | print inline | `str` | none |
+| 3 | uptime | none | seconds |
+| 4 | read a line, polling | none | pointer to `0x009F0100` |
+| 5 | write bytes | `buf`, `len` | `len`; `\n` starts a new line, `\r` is dropped |
+| 6 | exit | `status` | does not return |
+| 7 | argc | none | argument count |
+| 8 | argv | `i` | pointer to argument `i`, or 0 past the end |
+| 9 | stat | `path`, `ent` | 0 |
+| 10 | readdir | `path`, `cursor` (start at 0), `ent` | next cursor, 0 at the end |
+| 11 | read file | `path`, `offset`, `buf`, `len` | bytes read, 0 at end of file |
+| 12 | write file | `path`, `buf`, `len`, `flags` (0 append, 1 replace) | `len`; creates a missing file |
+| 13 | getpid | none | pid |
+| 14 | process list | `cursor` (start at 0), `rec` | next cursor, 0 at the end |
+| 15 | kill | `pid` | 0; killing yourself does not return |
 
-There is no syscall 0 and no calls above 4 — an unrecognized number is
-silently a no-op (`on_syscall` falls through its `if` chain with no `else`).
+Unknown numbers return `-ENOSYS` (38). Errors used: `EPERM` 1, `ENOENT` 2, `ESRCH` 3, `EIO` 5,
+`EACCES` 13, `EFAULT` 14, `ENOTDIR` 20, `EISDIR` 21, `EINVAL` 22, `EFBIG` 27, `ENOSPC` 28,
+`ENAMETOOLONG` 36, `ENOSYS` 38.
+
+A directory entry or `stat` result is 40 bytes: `name[24]`, then `type` at +24 (0 file, 1 directory),
+`size` +28, `mode` +32, `uid` +36. A process record is 40 bytes: `name[24]`, then `pid` +24, `state`
++28 (1 running, 2 exited), `status` +32, `uid` +36.
+
+Paths may be absolute or relative to the shell's working directory, up to 63 characters, with each
+component up to 23. The kernel checks that pointers passed to it lie inside the program area (or
+the argv and line buffers, for strings it only reads). This guards the kernel's copy loops against
+wild pointers. It is not protection: a program runs in ring 0 and can write anywhere.
+
+Writing checks the file's permission bits, as `write` does. Reading does not check them, matching
+the shell's `cat`.
 
 ### Typing a long answer to syscall 4 corrupts the row below it
 
@@ -159,35 +151,37 @@ of 62 characters or more places the 62nd character at column 80, which
 overwrites column 0 of the line below the prompt instead of wrapping onto a
 new one.
 
-A minimal caller (from `programs/hello.mx:6`-`10`):
+## The userland library
 
-```
-fn sys_print(s: *u8) {
-    *((0x009F0000) as *u32) = 1;          // syscall #1 = print string
-    *((0x009F0004) as *u32) = s as u32;   // arg0 = string pointer
-    asm("int $0x80");
-}
-```
+`programs/lib/ulib.mx` is the libc-equivalent, and every program gets it. It is all Mort.
 
-and reading input back (`programs/ask.mx:18`-`22`):
+| Area | Functions |
+|---|---|
+| Syscalls | `sys0` to `sys2`, `sys4`, `is_err`, `err_of`, `err_str` |
+| Strings | `str_len`, `str_eq`, `str_copy`, `mem_copy`, `str_to_u32` (`NOT_A_NUMBER` on bad input) |
+| Output | `puts`, `putln`, `put_bytes`, `put_char`, `put_u32`, `put_u32_w`, `put_pad`, `put_spaces`, `fmt_u32`, `putf` (`%s %u %%`, up to three arguments), `put_err` |
+| Input | `read_line` |
+| Process | `argc`, `argv`, `getpid`, `uptime`, `exit`, `kill`, `proc_next`, `proc_name`, `proc_pid`, `proc_state`, `proc_status`, `proc_uid` |
+| Files | `stat`, `readdir`, `fs_read`, `fs_write` (`FW_APPEND`, `FW_REPLACE`), `ent_name`, `ent_type`, `ent_size`, `ent_mode`, `ent_uid` |
 
-```
-fn sys_readline() -> *u8 {
-    *((0x009F0000) as *u32) = 4;
-    asm("int $0x80");
-    return (*((0x009F000C) as *u32)) as *u8;
-}
-```
+The names `file_read` and `file_write` are reserved by the Mort compiler, hence `fs_read` and
+`fs_write`.
 
-See [`programs/hello.mx`](../programs/hello.mx),
-[`programs/count.mx`](../programs/count.mx), and
-[`programs/ask.mx`](../programs/ask.mx) for three complete, working examples
-(print-only, multiple prints, and interactive input).
+## Processes: what actually exists
+
+There is no scheduler and no preemption. A program runs to completion inside the shell's command
+path with interrupts off, in ring 0, in the one shared address space. Exactly one program can be
+alive at a time, and it is always the one making the syscall.
+
+The process table is real but small: one permanent record for the kernel (pid 1), the running
+program, and records of up to 7 programs that have exited, the oldest overwritten first. Pids count
+up from 2 and are not reused.
+
+`kill` therefore has three real outcomes. Killing pid 1 is refused with `EPERM`. Killing your own
+pid ends you with status 143. Every other pid, including one that has already exited, is `ESRCH`.
+`BLOCKERS.md` records what is missing for anything more.
 
 ## Writing a new one
 
-Drop a `.mx` file in `programs/` with a `fn main() -> int` — no other setup
-needed, `build.py prog`/`disk` finds it by directory listing. It can only
-reach the kernel through the four syscalls above; there is no heap, no file
-I/O syscall, and no way to spawn another program (see the Roadmap in the
-main [README](../README.md) for what's planned there).
+Drop a `.mx` file with `fn main() -> int` in `programs/`. Call the library directly; do not
+redeclare syscalls. [`programs/echo.mx`](../programs/echo.mx) is the smallest complete example.
