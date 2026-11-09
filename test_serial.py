@@ -43,6 +43,9 @@ ESC = chr(27)
 BANNER = "MORT OS -- interrupt-driven"
 SESSION_LIMIT_S = 180            # watchdog: no QEMU outlives this
 BYTE_GAP_S = 0.02                # longer than one 10 ms kernel tick
+LINE_FLOOD_EXTRA_S = 30          # how long a slow host may take for 2 guest seconds
+STALL_MIN_CATS = 4
+STALL_MAX_CATS = 80              # 4.8 MB: more than a Linux loopback send buffer holds
 # 256 MB guest and a capped translation cache: uncapped QEMU reached 1.4 GB.
 QEMU_BASE = ["-display", "none", "-m", "256", "-accel", "tcg,tb-size=32"]
 
@@ -385,6 +388,14 @@ def uptime_seconds(t):
     return int(found.group(1)) if found else None
 
 
+def uptimes_since(t, start):
+    return [int(n) for n in re.findall(r"uptime: (\d+) s", t.seen(start))]
+
+
+def advanced_two(seconds):
+    return len(seconds) > 1 and seconds[-1] - seconds[0] >= 2
+
+
 class Flood:
     """Send one chunk over and over until the block ends. A small send buffer
     keeps the input ahead of the guest without a long backlog afterwards."""
@@ -433,9 +444,15 @@ def flood_checks(label, *boot):
         start = len(t.seen())
         with Flood(t, b"uptime\r" * 8):
             time.sleep(4)
-        seconds = [int(n) for n in re.findall(r"uptime: (\d+) s", t.seen(start))]
+            # Commands run with interrupts off and lose timer ticks, so a slow host
+            # needs longer for the same two guest seconds. The bar stays at 2.
+            deadline = time.monotonic() + LINE_FLOOD_EXTRA_S
+            seconds = uptimes_since(t, start)
+            while not advanced_two(seconds) and time.monotonic() < deadline:
+                time.sleep(0.5)
+                seconds = uptimes_since(t, start)
         check(f"{label}: ticks advance during a line flood",
-              len(seconds) > 1 and seconds[-1] - seconds[0] >= 2, repr(seconds[:3] + seconds[-3:]))
+              advanced_two(seconds), repr(seconds[:3] + seconds[-3:]))
         wait_quiet(t)
         start = len(t.seen())
         t.typed("\recho flood-alive\r")
@@ -545,16 +562,32 @@ def session_overflow():
         t.close()
 
 
+def vga_tx_dropped(t, n):
+    """The tx-dropped counter, read off the VGA console: serial output is stalled."""
+    t.typed(f"serial\recho probed-{n}\r")
+    if not T.wait_for(t.h, f"probed-{n}", timeout_s=40):
+        return None
+    found = re.findall(r"tx-dropped (\d+)", T.screen_text(t.h))
+    return int(found[-1]) if found else None
+
+
 def session_stall():
     """A reader that stops reading must not cost us the serial console."""
     t = TcpSerial("-kernel", build.ELF, "-hda", BIGIMG, rcvbuf=2048)
     try:
         T.wait_for(t.h, "$ ", timeout_s=30)
-        for n in range(4):           # nothing reads the socket: 240 KB backs up
+        # Nothing reads the socket. The UART only backs up once QEMU's socket is
+        # full: Windows reaches that within 240 KB, but a Linux loopback send buffer
+        # autotunes to a few MB, so keep going until the kernel has really dropped.
+        n = 0
+        while n < STALL_MAX_CATS:
             t.typed("cat /big.txt\r")
             t.typed(f"echo stalled-{n}\r")
             check(f"stall: shell runs with the reader stalled ({n})",
                   T.wait_for(t.h, f"stalled-{n}", timeout_s=40), T.screen_text(t.h))
+            n += 1
+            if n >= STALL_MIN_CATS and vga_tx_dropped(t, n):
+                break
         t.start_reading()
         time.sleep(3)
         start = len(t.seen())
