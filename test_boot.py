@@ -46,6 +46,7 @@ LOG_DIR = os.path.join(build.BUILD, "test-logs", "boot")
 CMD_TIMEOUT_S = 20               # one command, prompt to prompt
 BOOT_TIMEOUT_S = 60              # power-on or reset to the first prompt
 QUIT_TIMEOUT_S = 15              # monitor `quit` to process exit
+SLOW_WRITE_TIMEOUT_S = 60        # one `write` on the throttled disk: 10 sector writes
 GUEST_LIMIT_S = 180              # watchdog: no QEMU outlives this
 
 passed = 0
@@ -94,7 +95,7 @@ class Transcript:
 class Guest:
     """One QEMU process with COM1 on a socket and the monitor on stdio."""
 
-    def __init__(self, log, kernel, disk=None, tag="boot"):
+    def __init__(self, log, kernel, disk=None, tag="boot", drive_opts=""):
         self.log = log
         self.tag = tag
         self.rx = bytearray()
@@ -111,7 +112,7 @@ class Guest:
         cmd = [build._find_qemu(), *build.QEMU_HEADLESS, "-monitor", "stdio",
                "-serial", f"tcp:127.0.0.1:{port}", "-kernel", kernel]
         if disk:
-            cmd += ["-drive", f"file={disk},format=raw,if=ide,index=0,media=disk"]
+            cmd += ["-drive", f"file={disk},format=raw,if=ide,index=0,media=disk{drive_opts}"]
         log.add(f"=== {tag}: {' '.join(cmd)}")
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, bufsize=0)
@@ -599,9 +600,29 @@ def session_power(run, log):
         log.check("QEMU's exit status is 0", code == 0, repr(code))
 
 
+def session_slowdisk(run, log):
+    """A disk that takes its time over a write must not cost the data.
+
+    QEMU holds each sector write for 500 ms, as a busy host disk can. The first
+    boot is unthrottled, so only the write under test is slow.
+    """
+    disk = run.image("slowdisk")
+    with Guest(log, run.kernel, disk=disk, tag="first boot") as g:
+        boot_ok(log, g, "first boot")
+    tok = TOKEN()
+    with Guest(log, run.kernel, disk=disk, tag="slow disk", drive_opts=",throttling.iops-write=2") as g:
+        boot_ok(log, g, "slow disk")
+        check_lines(log, "write reports no error on a slow disk",
+                    g.cmd(f"write slow.txt {tok}", timeout_s=SLOW_WRITE_TIMEOUT_S), [])
+        check_lines(log, "cat reads back what the slow write stored", g.cmd("cat slow.txt"), [tok])
+    with Guest(log, run.kernel, disk=disk, tag="after slow disk") as g:
+        boot_ok(log, g, "after slow disk")
+        check_lines(log, "the slow write survives a power cycle", g.cmd("cat slow.txt"), [tok])
+
+
 SESSIONS = {f.__name__.replace("session_", ""): f for f in (
     session_boot, session_shell, session_files, session_persistence, session_exec,
-    session_errors, session_nodisk, session_fault, session_power)}
+    session_errors, session_nodisk, session_fault, session_power, session_slowdisk)}
 
 
 def run_sessions(run, names):

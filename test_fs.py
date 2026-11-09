@@ -66,6 +66,9 @@ def main():
         T.type_line(h, "write notes.txt remember to feed the kernel")
         T.type_line(h, "ls")
         expect(h, "notes.txt", "ls shows written file")
+        # The size, because the typed command line is on screen too and would
+        # satisfy a check for its own text.
+        expect(h, "28 bytes", "the first write stored its line")
         T.type_line(h, "write notes.txt second entry here")
         T.type_line(h, "cat notes.txt")
         expect(h, "remember to feed the kernel", "cat line 1 after append")
