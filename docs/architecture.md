@@ -327,10 +327,12 @@ only places them in the picture:
 
 No paging (`docs/memory-map.md` notes CR0/CR3 are never touched), no
 long-mode transition, no scheduler or multitasking, no dynamic loading
-(programs are flat binaries at a fixed address), and no window-manager
-abstraction beyond the four hardcoded `g_app` slots described above. These
-aren't gaps in this document — they're genuinely absent from the kernel as
-it stands today.
+(programs are flat binaries at a fixed address), and no window manager or
+multiple apps — just the single `g_scene` full-screen state machine
+described in [The Borehole interface](#the-borehole-interface) above
+(`g_scene`, `ui/borehole.mx:38`; the eight `SC_*` scene constants,
+`ui/borehole.mx:10-17`). These aren't gaps in this document — they're
+genuinely absent from the kernel as it stands today.
 
 ## Orphaned files
 

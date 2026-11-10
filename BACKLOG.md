@@ -41,10 +41,10 @@ behavior, add a backlog item describing it and stop.
 - [x] README's "What it does" list only names three apps (Terminal, Files, Vex browser) switched with F1/F2/F3, but the source has four: `on_key` (`kmain.mx:3503-3508`) maps F1-F4 to `switch_app(0..3)` where app `3` is a Settings app (`settings_on_key`/`settings_draw`, dispatched at `kmain.mx:2849`), and F5 opens a home launcher (`open_launcher`, `kmain.mx:3362`) not mentioned in the README at all. Found while writing `docs/architecture.md`; feeds the "audit README for drifted claims" item above. Done 2026-07-30: fixed both the intro paragraph and the "What it does" bullet to name all four apps (Terminal, Files, Vex, Settings — the latter backed by `net/settings.mx`, confirmed a real personalization/clock/network/hardware control center, not a stub) plus the F5 launcher, citing `kmain.mx:3503-3508` and `kmain.mx:3362`.
 - [x] `net/settings.mx` implements the Settings app (`settings_draw`/`settings_on_key`) but lives under `net/` alongside the actual networking stack — it's pulled in only because `build.py`'s `build()` (`build.py:110-119`) glues every `net/*.mx` file into the same translation unit as `kmain.mx`. Not a bug (build works fine), just a confusing location for a file with nothing to do with networking; worth a one-line comment at the top of `net/settings.mx` noting why it's there, or a human could move it to a top-level file as a build.py-touching change. Found while verifying the app-list fix above. Done 2026-08-03: added a comment block at the top of `net/settings.mx` explaining the file's location, citing the actual glue loop (`build.py:113-121`, confirmed by reading the current file — line numbers had drifted slightly from this item's original `build.py:110-119`). Comment-only change, no behavior touched.
 - [x] `draw_tab()` (`kmain.mx:453-462`) — a helper for drawing a highlighted app-switcher tab in the top bar — is defined but never called anywhere in the source (confirmed by grep); `draw_topbar()` (`kmain.mx:467-473`) only draws static "F5 home"/"F12 power" hint text, no per-app tabs. Either dead code a human can remove, or an unfinished feature; found while verifying the app-list fix above. Done 2026-08-05: `draw_topbar()`'s own header comment was itself stale — it claimed to draw "app switcher tabs (F1/F2/F3)" when the function body never does. Fixed both comments (source-comment-only change, verified line count unchanged so no other doc's `kmain.mx:` citations drifted): `draw_tab()` now notes it's unused, `draw_topbar()` now describes what it actually draws and points at `draw_tab()` as the unused helper. No other doc referenced "app switcher tabs" so nothing else needed correcting. The underlying dead-code-or-unfinished-feature question is still a human call — left as a new backlog item below since it requires a code decision, not a doc one.
-- [ ] `draw_tab()` (`kmain.mx:453-462`) is a fully-working unused helper — a code-level decision, not a doc one: either wire it into `draw_topbar()` to actually render F1-F4 tabs (an unfinished feature), or delete it as dead code. Either way needs a local QEMU boot test to confirm the top bar still renders correctly. Left open when correcting `draw_topbar()`'s stale comment (2026-08-05); this item is the follow-up code work the comment fix doesn't cover.
+- [x] `draw_tab()` (`kmain.mx:453-462`) is a fully-working unused helper — a code-level decision, not a doc one: either wire it into `draw_topbar()` to actually render F1-F4 tabs (an unfinished feature), or delete it as dead code. Either way needs a local QEMU boot test to confirm the top bar still renders correctly. Left open when correcting `draw_topbar()`'s stale comment (2026-08-05); this item is the follow-up code work the comment fix doesn't cover. OBSOLETE 2026-11-10: moot — see the "Borehole GUI rewrite" entry below. `draw_tab`/`draw_topbar` (and `g_app`/the whole F1-F4 app model) no longer exist anywhere in the source (0 grep hits across `kmain.mx`/`ui/borehole.mx`/`net/*.mx`); the old GUI was deleted wholesale (`git log --oneline -- ui/borehole.mx`, first commit `95770a7 Borehole: delete the old GUI and build the drill-site start screen`).
 - [x] There is no serial console anywhere in this kernel (`boot.s`, `idt.s`, `kmain.mx` — grepped, nothing touches COM1/0x3F8 or any UART). All console output is VGA text (`put_index`) or a drawn framebuffer console (`draw_glyph`), both behind `put_cell_at` (`kmain.mx:505-517`). Worth a one-line note wherever a reader might assume a serial log exists (there is currently no such assumption in the docs, but the original wording of the README-quickstart backlog item above assumed one — future doc work should not repeat that assumption). Found while grounding the 2026-07-31 README quickstart addition. Done 2026-08-10: added the note right after README's quickstart transcript (the one place a reader watching QEMU output might reach for a serial log instead), citing the same grep result and `put_cell_at` (`kmain.mx:505-517`, verified exact) as the funnel point for both VGA and framebuffer output. Re-confirmed the grep: no `serial`/`0x3F8`/`COM1`/`UART` hit anywhere in `boot.s`, `idt.s`, or `kmain.mx`.
-- [ ] The `run-iso` boot path opens straight to the home launcher overlay (`open_launcher`, `kmain.mx:3619`, called unconditionally when `g_gfx`) rather than the terminal, so first-time users booting the ISO see icon tiles, not a shell prompt, until they press `Esc` or `Enter` on Terminal. Not necessarily a bug, but worth confirming is the intended first-boot experience — a human with a local QEMU boot test could decide whether to change it (code change, out of scope for the docs agent) or just leave it as designed. Found while writing the ISO transcript in the README quickstart addition (2026-07-31).
-- [ ] `test_gfx.py`'s per-app top-bar tab assertions (`test_gfx.py:105`-`140`) check for pixel colors that no current source path produces — see `docs/testing.md`'s `test_gfx.py` section for the full trace (`draw_topbar()` draws no tabs; `draw_tab()`, the helper that would, is unused dead code per the existing `draw_tab()` backlog item above). A human with a local QEMU + ISO toolchain should actually run `test_gfx.py` to confirm whether these specific checks currently pass or fail. If they fail, this is the same underlying code decision as the `draw_tab()` item (wire it up or remove it) plus a test fix; if they somehow pass, this doc's reasoning has a gap worth finding. Found 2026-08-12 while writing `docs/testing.md`.
+- [x] The `run-iso` boot path opens straight to the home launcher overlay (`open_launcher`, `kmain.mx:3619`, called unconditionally when `g_gfx`) rather than the terminal, so first-time users booting the ISO see icon tiles, not a shell prompt, until they press `Esc` or `Enter` on Terminal. Not necessarily a bug, but worth confirming is the intended first-boot experience — a human with a local QEMU boot test could decide whether to change it (code change, out of scope for the docs agent) or just leave it as designed. Found while writing the ISO transcript in the README quickstart addition (2026-07-31). OBSOLETE 2026-11-10: `open_launcher` no longer exists (0 grep hits) — the whole launcher/icon-tile GUI it describes was deleted in the Borehole rewrite (see entry below).
+- [x] `test_gfx.py`'s per-app top-bar tab assertions (`test_gfx.py:105`-`140`) check for pixel colors that no current source path produces — see `docs/testing.md`'s `test_gfx.py` section for the full trace (`draw_topbar()` draws no tabs; `draw_tab()`, the helper that would, is unused dead code per the existing `draw_tab()` backlog item above). A human with a local QEMU + ISO toolchain should actually run `test_gfx.py` to confirm whether these specific checks currently pass or fail. If they fail, this is the same underlying code decision as the `draw_tab()` item (wire it up or remove it) plus a test fix; if they somehow pass, this doc's reasoning has a gap worth finding. Found 2026-08-12 while writing `docs/testing.md`. OBSOLETE 2026-11-10: `test_gfx.py` no longer contains any `draw_topbar`/tab-color assertion (grepped: zero hits) — it was rewritten for the Borehole UI along with the rest of the old-GUI test surface.
 - [x] `python build.py iso`/`run-iso` (and `test_gfx.py`, which calls `build.iso()` directly) only work on Windows — undocumented anywhere. Done 2026-08-14: read `build.py` in full looking for fresh doc gaps (BACKLOG's own doc items were all already checked off) and found `iso()` (`build.py:219`-`271`) fetches `limine.exe`/`xorriso.exe` — Windows PE binaries, `LIMINE_ZIP`/`XORRISO_ZIP` at `build.py:65`-`66` — and executes them directly via `subprocess.run` (`build.py:261`-`269`), with `_cygpath()` (`build.py:212`-`216`) converting paths to the Cygwin form `xorriso.exe` expects; no Wine invocation or OS branch anywhere in the script. Added a grounded note to README's "A real bootable ISO" section and to `docs/testing.md`'s harness-requirements paragraph (linking back to the README note), so a Linux/macOS reader hits this before an opaque exec-format failure instead of after. `build`/`check`/`run`/`window`/`disk`/`prog`/`test.py`/`test_fs.py`/`test_exec.py` are unaffected — confirmed none of them call `iso()` or touch `TOOLS`/`LIMINE_ZIP`/`XORRISO_ZIP`.
 - [ ] `build.py iso()` fails on non-Windows hosts with a raw `subprocess`/OS-level exec error (attempting to run a fetched `.exe` directly, `build.py:261`/`269`) rather than a clear message. A human with the ability to test on Linux/macOS could add an early `sys.platform` check in `iso()` that exits with a clear "Windows only (or install/invoke via Wine)" message instead — a `build.py`-behavior change, out of scope for the docs-only agent, and small enough to verify without a QEMU boot (just needs running `python build.py iso` on a non-Windows host to confirm the current failure mode first). Found 2026-08-14 while grounding the Windows-only ISO note above.
 - [x] `font_data.mxinc` (repo root, 258 lines) declares a `g_font: [u8; 4096]` bitmap font but is never referenced by `build.py` or any `*.mx`/`*.s` file. Done 2026-08-15: all prior doc-item leads in this backlog were either already checked off or explicitly out-of-scope code changes, so this pass re-read the repo root for undocumented surface and found this file by grepping for `font_data` across the whole tree (zero hits outside the file itself). Diffed it byte-for-byte against the `g_font` array actually compiled into the kernel (`kmain.mx:74`-`331`, used by `draw_glyph`, `kmain.mx:420`) — identical. Added a header comment to `font_data.mxinc` itself (comment-only, no behavior change) explaining it's an orphaned duplicate, and a new "Orphaned files" section in `docs/architecture.md` with the same finding, cited and cross-linked. Left the file in place rather than deleting it — deleting an unreferenced file is safe (nothing includes it) but is a repo-structure change outside this pass's README/docs/comments scope; noted below as a follow-up a human can do in one command.
@@ -55,7 +55,7 @@ behavior, add a backlog item describing it and stop.
 - [x] `mkfs.py:60`'s `make()` function docstring still says `"""Create (or overwrite) a MortFS v1 image at \`path\`."""` even though `mkfs.py` writes `VERSION = 2` (`mkfs.py:33`), self-checks `version == VERSION` (`mkfs.py:152` after this pass's edit; was `:148`), and its own success message prints "MortFS v2" (`mkfs.py:134` after this pass's edit; was `:130`). The *module-level* docstring (`mkfs.py:19`-`21`) was already corrected to v2 during the 2026-08-08 pass (see the "Audit README and docs/ for claims that have drifted" item above), but that pass missed this second, function-level docstring 40 lines later. One-word fix (`v1` → `v2`), comment-only, no behavior change — small enough for tomorrow's docs pass to pick up directly. Done 2026-08-20: corrected the `make()` docstring to "MortFS v2" and, since a fresh image is the one case that never hits the kernel's v1->v2 upgrade path, added a sentence noting `make()` writes every entry's v2 metadata directly (file/root-parent/uid 0/mode `0o644`, `mkfs.py:120`-`123`, `struct.pack("<BBBBII", 0, 255, 0, 0, 0o644, 0)`) so the docstring's own claim is verifiable at the code right below it. Also fixed a stale citation this item introduced: the doc claim in `docs/fs-design.md` pointed at `mkfs.py:31` for the version constant, but `VERSION = 2` is at `mkfs.py:33` (line 31 is `SECTOR = 512`) — corrected the citation and named the constant (`VERSION`) so it survives future line drift. Docstring/doc-only change, no `argparse` or write behavior touched. Re-ran the citation/link check across `README.md` + all `docs/*.md`: 329 citations, 0 out of range; 43 links, 0 broken.
 - [x] README's "Build & run" section documents `check`/`run`/`iso`/`run-iso`/`prog` each with an explanation, but `python build.py window` (`build.py:432` → `run_windowed()` → `_run(fullscreen=False)`, `build.py:428`-`429`) is only ever name-dropped once, in the aside listing which commands aren't Windows-only (`README.md:155`). Worth a one-line addition near `README.md:71`-`73` alongside `check`/`run` explaining it boots the same kernel+disk as `run` but in a resizable window instead of fullscreen. Found 2026-08-18 while looking for fresh doc gaps after the rest of the backlog was resolved or out-of-scope. Done 2026-08-19: verified `run_windowed()` (`build.py:428`-`429`) calls the same `_run()` (`build.py:403`-`421`) as `run()`, differing only in the `fullscreen` flag (skips the `-full-screen` QEMU arg, `build.py:413`-`414`) — same `build()`+`ensure_disk()`+disk-attached QEMU invocation either way. Added a one-line `python build.py window` entry to the `check`/`run` code block (`README.md:71`-`73`).
 - [x] `docs/*.png` had three screenshots (`app-vex.png`, `mortos-home.png`, `mortos-lock.png`) that no `README.md`/`docs/*.md` file referenced (checked with a grep of every `.png` basename across all markdown) — found 2026-08-21 while looking for fresh doc gaps after every unchecked backlog item turned out to be an explicitly out-of-scope code/asset change. Done 2026-08-21: viewed all three. `mortos-home.png` and `mortos-lock.png` are accurate, current screenshots — text-matched byte-for-byte against `draw_launcher()`'s tile labels/hint string (`kmain.mx:3327`-`3359`, "Terminal"/"Files"/"Vex"/"Settings"/"Power", "arrows move   Enter open   Esc close   (F5 = home)") and `draw_lock()`'s copy (`kmain.mx:3168`-`3195`, "Locked"/"type your password, then Enter") — so added both to README: the lock screen next to the existing power-menu screenshot in "Session & power" (both describe `open_lock`/the power menu in the same paragraph), and the home launcher in "What it does" right before the existing Files screenshot (the launcher is the F5 entry point the same bullet already describes). `app-vex.png` turned out to be stale, not just unused: it shows per-app tabs (`F1 terminal`/`F2 files`/`F3 vex`) drawn in the top bar, but `draw_topbar()` (`kmain.mx:467`-`473`) draws no such tabs — confirmed by this backlog's own earlier finding that `draw_tab()`, the helper that would draw them, is unused dead code (`kmain.mx:453`-`462`). Left it out and added a follow-up below rather than publish a doc image that contradicts the already-documented current behavior. Verified every `.png` reference across `README.md`/`docs/*.md` resolves to an existing file (script-checked).
-- [ ] `docs/app-vex.png` is a stale screenshot: it shows `F1 terminal`/`F2 files`/`F3 vex` tabs drawn in the top bar, but current `draw_topbar()` (`kmain.mx:467`-`473`) draws no per-app tabs at all (`draw_tab()`, the would-be tab-drawing helper, is confirmed unused dead code — see the existing `draw_tab()` backlog item). Either the screenshot predates a since-removed feature, or it was staged/mocked rather than captured from a real boot. A human with a local QEMU+ISO boot (`python build.py run-iso`, screen-dumped) could recapture an accurate one and add it next to the existing `docs/app-files.png` in README's "What it does" section — the Vex app currently has prose but no screenshot, same gap this pass filled for the home launcher and lock screen. Found 2026-08-21 while adding the other two previously-unused screenshots to README.
+- [x] `docs/app-vex.png` is a stale screenshot: it shows `F1 terminal`/`F2 files`/`F3 vex` tabs drawn in the top bar, but current `draw_topbar()` (`kmain.mx:467`-`473`) draws no per-app tabs at all (`draw_tab()`, the would-be tab-drawing helper, is confirmed unused dead code — see the existing `draw_tab()` backlog item). Either the screenshot predates a since-removed feature, or it was staged/mocked rather than captured from a real boot. A human with a local QEMU+ISO boot (`python build.py run-iso`, screen-dumped) could recapture an accurate one and add it next to the existing `docs/app-files.png` in README's "What it does" section — the Vex app currently has prose but no screenshot, same gap this pass filled for the home launcher and lock screen. Found 2026-08-21 while adding the other two previously-unused screenshots to README. OBSOLETE 2026-11-10: moot both ways — `docs/app-vex.png` no longer exists in the tree, and the Vex app itself is gone (deleted along with the rest of the old GUI in the Borehole rewrite, see entry below).
 - [x] `net/netcfg.mx`'s header comments (lines 10-11, 19 before this fix) said our IPv4 address was "fixed to QEMU's default SLIRP guest address so the demo needs no DHCP (that arrives in M3)" and that `net_set_ip` was "hardcoded at boot, or learned from DHCP in M3" — stale milestone language from before DHCP existed, same pattern as the already-fixed `net/rtl8139.mx` header comment. DHCP is fully implemented (`net/dhcp.mx`) and already wired up: `net_dhcp()` (`net/netapp.mx:46`-`121`) zeroes `g_our_ip` at the start of every lease attempt (`net/netapp.mx:57`-`58`) and calls `net_set_ip()` again with the DHCP-leased address on ACK (`net/netapp.mx:95`) — confirmed by reading `net_dhcp` in full and cross-checking `docs/networking.md`'s own already-correct note about this (`docs/networking.md:61`-`65`, added in an earlier pass) against the two now-corrected comments. Done 2026-08-23: rewrote both comments to describe DHCP as implemented rather than a future milestone, citing the real functions/lines above; comment-only change, no behavior touched. Since the new comment adds lines, updated the two `net/netcfg.mx:` citations that shifted in `docs/networking.md` (`g_our_ip`'s declaration: `:13` -> `:18`; `net_handle_frame`: `:29` -> `:35`) and re-ran the repo's citation/link checks (all `file:line` citations across `README.md`+`docs/*.md` in range, all markdown links resolve).
 - [x] The users/authentication/permissions subsystem (`kmain.mx:2852`-`3009`, plus the `can_write` call sites in the FS code) had real depth — an account table, hashed passwords, auto-login, `su`/`sudo`/`passwd`, and owner/mode bits on every MortFS v2 entry — but no dedicated doc: `docs/shell.md` documented the commands one row each, and the only prose about the *model* was a single clause in `docs/architecture.md`'s kernel-entry section. Done 2026-08-24: every remaining unchecked backlog item was an explicitly out-of-scope code change, so this pass read the subsystem in full and wrote `docs/accounts.md`: the in-memory 8-slot account table and its two default accounts (`root`/`toor` uid 0, `mortuex`/`mort` uid 1, `acct_init` `kmain.mx:2900`-`2904`) with djb2 hashes (`hash_pw` `kmain.mx:2860`-`2868`); the three consequences of the table being in-memory and fixed (nothing persists across a reboot, `acct_add` `kmain.mx:2870`-`2885` has no caller but `acct_init` so `su` can only target those two names, and `chown` `kmain.mx:2533` accepts a uid with no account behind it); the boot-time auto-login sequence (`kmain.mx:3603`-`3606`) and why `ensure_home`/`fs_ensure_layout`/`fs_populate_bin` produce root-owned entries (they run before `login_default()` sets `g_uid = 1`, while `g_uid` is still its initial 0, `kmain.mx:25`); the six places the current user surfaces (prompt, `whoami`, `$USER`/`$HOME`, `ls`'s uid column, the launcher's welcome line, and the lock screen); and the permission model itself — `can_write` (`kmain.mx:2974`-`2982`) and its exactly three call sites (`fs_create_full` `kmain.mx:1540`-`1544`, `write` `kmain.mx:2296`-`2300`, `rm` `kmain.mx:2334`-`2338`) plus `chmod`'s owner-or-root and `chown`'s root-only checks. Two grounded findings worth the doc on their own: `lock_ok` (`kmain.mx:3212`-`3219`) checks the *current user's* hash, so README's "the lock password is `mort`" is only true before an `su root` (then it's `toor`) — documented rather than changing README's line, which is correct for the default session; and the mode bits are only partly live — read bits are never consulted (`cat`, `kmain.mx:2258`-`2277`), execute bits are never consulted (`exec_file`, `kmain.mx:1892`-`1920`, runs a `0600` file just as happily as the `0755` one `fs_populate_bin` marks at `kmain.mx:1649`), and `rmdir` (`kmain.mx:2235`-`2257`) makes no `can_write` call at all. Linked from README's "What it does" list and `docs/architecture.md`'s kernel-entry paragraph — and while linking, corrected that paragraph's "the one built-in user account", which has been wrong since `acct_init` has always created two. Re-ran the citation/link check across `README.md` + all `docs/*.md`: 305 citations, 0 out of range; 51 links, 0 broken.
 
@@ -108,7 +108,7 @@ behavior, add a backlog item describing it and stop.
   link-resolution check (0 broken) across `README.md` + all of `docs/*.md`.
 
 ## Code follow-ups (found 2026-09-17, need a local QEMU boot test)
-- [ ] `vex_page_home` (`kmain.mx:2782`-`2791`) prints "This page is a local
+- [x] `vex_page_home` (`kmain.mx:2782`-`2791`) prints "This page is a local
   tribute rendered by MORT OS -- there is no network stack here yet, so it
   can't load real websites" (`kmain.mx:2789`-`2790`) — stale since mortnet
   shipped (`net/`, documented in `docs/networking.md`). MORT OS does have a
@@ -118,14 +118,19 @@ behavior, add a backlog item describing it and stop.
   `httpd`), it can't fetch one, so this can't load real websites" — needs a
   boot test to confirm the new line(s) still fit the window's text budget.
   Found 2026-09-17 while fixing `docs/architecture.md`'s Vex paragraph.
-- [ ] `vex_page_about` (`kmain.mx:2793`-`2800`) has the hint line "Switch
+  OBSOLETE 2026-11-10: the entire Vex app is gone — `vex_page_home` has 0
+  grep hits in current source. Deleted along with the rest of the old GUI
+  in the Borehole rewrite (see entry below).
+- [x] `vex_page_about` (`kmain.mx:2793`-`2800`) has the hint line "Switch
   apps any time with F1 / F2 / F3" (`kmain.mx:2799`), which predates the F4
   Settings app (`g_app == 3`) — same class of miscount as the already-fixed
   README app list (2026-07-30 entry above) and `g_overlay`/`g_settings_view`
   stale-comment findings, just in an on-screen string this time. A human
   with a local QEMU boot could change it to "F1 / F2 / F3 / F4" (or name
   Settings) and confirm it still fits the line. Found 2026-09-17 while
-  fixing `docs/architecture.md`'s Vex paragraph.
+  fixing `docs/architecture.md`'s Vex paragraph. OBSOLETE 2026-11-10: same
+  as the `vex_page_home` item above — `vex_page_about` has 0 grep hits in
+  current source.
 
 ## Code follow-ups (found 2026-08-24, all need a local QEMU boot test)
 - [ ] `fs_create` (`kmain.mx:1587`) is confirmed dead code (see the doc-quality item above) — a human could `git rm` it, i.e. delete the function, since nothing calls it and MortFS v2's real creation path is `fs_create_full`. Low risk (removing an uncalled function changes no behavior) but still needs a local build to confirm nothing else in the translation unit references it in a way a text grep missed, and a QEMU boot to confirm `write`/`mkdir`/login still work exactly as before. Found 2026-08-25.
@@ -242,7 +247,7 @@ behavior, add a backlog item describing it and stop.
   links, 0 broken) across `README.md` + all of `docs/*.md`.
 
 ## Code follow-ups (found 2026-09-19, needs a local QEMU boot test)
-- [ ] The Files app (`kmain.mx:2695`-`2778`) lists MortFS's whole file
+- [x] The Files app (`kmain.mx:2695`-`2778`) lists MortFS's whole file
   table flattened, with no way to browse into a subdirectory and no
   visual distinction between files and directories (see the doc-quality
   item above for the full trace). A human with a local QEMU boot could
@@ -253,7 +258,12 @@ behavior, add a backlog item describing it and stop.
   `cd` already does. Needs a boot test to confirm the new list still fits
   the window and Up/Down/Enter/Esc still behave correctly at each nesting
   level. Found 2026-09-19 while documenting the current flat-listing
-  behavior.
+  behavior. OBSOLETE 2026-11-10: that Files app (`files_draw`) is gone —
+  0 grep hits in current source. Borehole's Objects scene (`ui_scan_dir`/
+  `ui_compose_objects`, `ui/borehole.mx`) replaced it and already does
+  real directory navigation (per `docs/architecture.md`'s "Objects"
+  paragraph), so the underlying ask is also already satisfied, not just
+  moot. See the Borehole-rewrite entry below.
 
 ## Code follow-ups (found 2026-09-04, needs a local QEMU boot test)
 - [ ] `heap_used()` (`kmain.mx:1121`-`1131`) is a fully-working, correctly-implemented function with zero callers — not even `mem` (`kmain.mx:2127`), which reports total RAM from the multiboot map but says nothing about heap usage. A human could wire it into `mem`'s output (e.g. an added "heap: X/Y KB used" line) or leave it as unused infrastructure alongside `kmalloc`/`kfree` themselves, which are also only ever exercised by `memtest`. Needs a QEMU boot to confirm the added output fits the existing print budget and doesn't break `mem`'s current callers/tests. Found 2026-09-04 while documenting the heap allocator in `docs/memory-map.md`.
@@ -405,7 +415,7 @@ behavior, add a backlog item describing it and stop.
   broken) across `README.md` + all of `docs/*.md`.
 
 ## Code follow-ups (found 2026-09-23, needs a local QEMU boot test)
-- [ ] `open_launcher()`'s `if !g_gfx { return; }` guard (`kmain.mx:3367-3369`)
+- [x] `open_launcher()`'s `if !g_gfx { return; }` guard (`kmain.mx:3367-3369`)
   is confirmed dead code (see the doc-quality item above) — a human could
   delete it, since both of `open_launcher()`'s call sites are already
   behind their own `g_gfx` check one level up. Low risk (removing an
@@ -413,6 +423,9 @@ behavior, add a backlog item describing it and stop.
   confirm nothing else in the translation unit calls `open_launcher()` in a
   way a text grep missed, and a QEMU boot to confirm `F5` and the boot-time
   greet still open the launcher exactly as before. Found 2026-09-23.
+  OBSOLETE 2026-11-10: `open_launcher` itself is gone (0 grep hits) — the
+  whole function, dead guard included, was deleted in the Borehole rewrite
+  (see entry below).
 
 ## Doc quality (found 2026-09-24, not yet done)
 - [x] `docs/programs.md`'s "Running one" section documented how `exec_file`
@@ -596,7 +609,7 @@ behavior, add a backlog item describing it and stop.
   citations checked, 0 out of range; 60 links checked, 0 broken.
 
 ## Doc quality (found 2026-09-29, not yet done)
-- [ ] `restore_desktop()` (`kmain.mx:3163`-`3168`) calls `draw_clock()`
+- [x] `restore_desktop()` (`kmain.mx:3163`-`3168`) calls `draw_clock()`
   right after `switch_app(g_app)`, but `switch_app()`'s own `draw_topbar()`
   (`kmain.mx:2843`-`2845`) already redraws the clock unconditionally — the
   explicit call is a redundant second repaint of the same 108x24 region
@@ -605,7 +618,13 @@ behavior, add a backlog item describing it and stop.
   from `restore_desktop()` and confirm the clock still updates correctly on
   every overlay-close path (unlock, sleep-wake, launcher Esc/Enter-an-app).
   Found 2026-09-29 while documenting `on_tick()`'s clock-refresh behavior in
-  `docs/architecture.md`.
+  `docs/architecture.md`. OBSOLETE 2026-11-10: this `restore_desktop()`/
+  `switch_app()`/`draw_clock()` are all gone from `kmain.mx` (0 grep hits
+  for any of the three) — deleted with the rest of the old GUI in the
+  Borehole rewrite (see entry below). Note there is a *different*,
+  same-named `restore_desktop()` now in `ui/borehole.mx:1836`, unrelated to
+  this item's finding (it doesn't call `draw_clock` at all) — see the new
+  dead-code finding about that function below.
 
 ## Doc quality (found 2026-09-30, not yet done)
 - [x] `docs/architecture.md`'s overlay-state-machine section already traced
@@ -2219,3 +2238,92 @@ behavior, add a backlog item describing it and stop.
   `docs/memory-map.md`, `docs/fs-design.md`, `docs/programs.md`) has now
   had its citations verified line-by-line against current source, not
   just range-checked.
+
+## Doc quality (found 2026-11-10, done same day)
+- [x] The entire old GUI (`g_app`, `switch_app`, `draw_tab`, `draw_topbar`,
+  `open_launcher`, the Files/Vex/Settings/Terminal app model, the old
+  `restore_desktop`/`draw_clock`) was deleted and replaced by the Borehole
+  interface (`ui/borehole.mx`, a single `g_scene` full-screen state
+  machine) on 2026-11-08 — the same day as this backlog's last entry above
+  — by the merged `feat/gui-remake` branch (`git log`: `95770a7 Borehole:
+  delete the old GUI and build the drill-site start screen` through
+  `5c51c57 Merge feat/gui-remake: replace the whole GUI with Borehole`,
+  with docs updated in the same merge by `84ed1ba Docs: describe the
+  Borehole interface and replace the old UI images`). That doc update
+  missed one sentence: `docs/architecture.md`'s "What isn't here" section
+  still said "no window-manager abstraction beyond the four hardcoded
+  `g_app` slots described above" — `g_app` no longer exists anywhere in
+  the source (confirmed by grep across `kmain.mx`/`ui/borehole.mx`/
+  `net/*.mx`: 0 hits), and nothing "above" in the doc describes it either
+  (the section above it, "The Borehole interface", already correctly
+  describes `g_scene` instead, added in the same `84ed1ba` commit — so
+  this one sentence was the one spot that commit's own rewrite didn't
+  reach). Found 2026-11-10 while doing the daily unchecked-item review:
+  every currently-unchecked item was an explicitly out-of-scope
+  code/build.py/QEMU-test change *except* that this review also re-ran the
+  "does this item's cited function still exist" check (grep every
+  function name named in an unchecked item against current source) for
+  the first time since the GUI rewrite landed, since the daily process
+  had not yet accounted for a rewrite this size. Done 2026-11-10: fixed
+  the sentence to describe the real model — "no window manager or
+  multiple apps — just the single `g_scene` full-screen state machine...
+  (`g_scene`, `ui/borehole.mx:38`; the eight `SC_*` scene constants,
+  `ui/borehole.mx:10-17`)" — and linked it to the "The Borehole interface"
+  section above instead of repeating the description. Also went through
+  every other currently-unchecked backlog item and the still-open
+  "Code follow-ups" sections, grepping each one's named function/variable
+  against current source: nine items (the `draw_tab` wire-or-delete call,
+  the `run-iso`-opens-the-launcher item, `test_gfx.py`'s old per-app tab
+  assertions, the stale `docs/app-vex.png` screenshot item, both
+  `vex_page_home`/`vex_page_about` on-screen-string items, the flat
+  Files-app-navigation item, the dead `open_launcher()` guard item, and
+  the redundant-`draw_clock()`-in-`restore_desktop()` item) all named code
+  that is now confirmed gone, so marked each one `[x]` with an inline
+  `OBSOLETE 2026-11-10:` note and its own grep/source evidence rather than
+  leaving them as live-looking TODOs for code that no longer exists.
+  Every other unchecked item (e.g. `fs_mkdir`'s `64`-sentinel overload,
+  `rmdir`'s missing permission check, the mode-bits-never-read items,
+  `git rm font_data.mxinc`, the non-Windows `iso()` error message) is
+  filesystem/account/build.py code untouched by the GUI rewrite and still
+  accurately describes current source — left as-is. Doc/backlog-only
+  change, no kernel/build.py logic touched.
+
+### Follow-ups found but not actioned (new, for a future pass)
+- [ ] The post-rewrite source has a *new* unreferenced function the old
+  one never had: `restore_desktop()` in `ui/borehole.mx:1836` (comment:
+  "Put the shell back on screen at once, from anywhere: no reveal, so a
+  caller outside the keyboard path (the serial console) can draw
+  immediately after") has exactly one match for its name in the entire
+  `.mx` tree — its own `fn` line (grepped `kmain.mx`, `ui/borehole.mx`,
+  every `net/*.mx`) — so despite the comment describing an intended
+  serial-console caller, nothing currently calls it. Either the serial
+  input path (added in the same window by the merged `feat/boot-tests-ci`
+  branch, `7159acd`) is meant to call this and doesn't yet, or the comment
+  describes a planned caller that hasn't landed. Found 2026-11-10 while
+  grounding the `restore_desktop`-related backlog item above. Needs a
+  human to trace the actual serial-input handling path and either wire
+  this in or confirm it's for a future change, plus a QEMU/serial boot
+  test either way — not a doc fix on its own, but worth a doc note once
+  the real answer is known.
+- [ ] `docs/architecture.md`'s own header already discloses that its
+  `kmain.mx:NNN` citations "predate the Borehole remake, which removed
+  about 735 lines" and that only function *names* are claimed accurate —
+  but that disclaimer was written for the GUI deletion specifically; it
+  has not been re-verified line-by-line the way `docs/shell.md`/
+  `docs/accounts.md`/etc. were in the 2026-08-27 through 2026-11-08
+  passes, which all predate this rewrite. The "Orphaned files" section's
+  `font_data.mxinc` citation (`kmain.mx:74`-`331`) is one concrete example
+  already known to be off (the real `g_font` declaration is now at
+  `kmain.mx:81`, confirmed while writing this entry) — but the disclaimer
+  means there could be more. A full re-audit of `docs/architecture.md`'s
+  citations against current source (same method as the 2026-08-27/28/29
+  passes) is the natural next step. `docs/testing.md` was checked while
+  writing this entry and is *not* on this list — its `test_gfx.py` section
+  is already headed "the Borehole interface" and makes no mention of the
+  old per-app tab assertions, so it was updated along with the rest of the
+  Borehole docs commit. `docs/shell.md` and `docs/accounts.md` were not
+  checked this pass and still cite pre-rewrite `kmain.mx` line numbers for
+  shell-command/account functions that `wc -l kmain.mx` confirms moved
+  (the file is 3,809 lines now, versus the ~3,629 these two docs' citations
+  were last verified against on 2026-08-27/28) — worth the same
+  read-the-actual-cited-line check next. Found 2026-11-10.
