@@ -2305,7 +2305,7 @@ behavior, add a backlog item describing it and stop.
   this in or confirm it's for a future change, plus a QEMU/serial boot
   test either way — not a doc fix on its own, but worth a doc note once
   the real answer is known.
-- [ ] `docs/architecture.md`'s own header already discloses that its
+- [x] `docs/architecture.md`'s own header already discloses that its
   `kmain.mx:NNN` citations "predate the Borehole remake, which removed
   about 735 lines" and that only function *names* are claimed accurate —
   but that disclaimer was written for the GUI deletion specifically; it
@@ -2326,4 +2326,87 @@ behavior, add a backlog item describing it and stop.
   shell-command/account functions that `wc -l kmain.mx` confirms moved
   (the file is 3,809 lines now, versus the ~3,629 these two docs' citations
   were last verified against on 2026-08-27/28) — worth the same
-  read-the-actual-cited-line check next. Found 2026-11-10.
+  read-the-actual-cited-line check next. Found 2026-11-10. Done 2026-11-11:
+  did exactly the re-audit this item called for, `docs/architecture.md`
+  only (left `docs/shell.md`/`docs/accounts.md` for a future pass, per this
+  item's own scoping). Read every function/line this doc cites directly
+  against current source (not a blanket-offset guess — the drift turned
+  out non-uniform, e.g. `g_row`/`g_uid` globals hadn't moved at all while
+  `g_gfx` 20 lines later had, because new globals were inserted in between)
+  and fixed every stale `kmain.mx`/`build.py` citation (both files drifted;
+  `boot.s`/`idt.s`/`linker.ld`/`runtime.c`/`net/netapp.mx`/`ui/borehole.mx`
+  citations were all still exact, confirmed by reading each cited line, not
+  just range-checking). Removed the now-satisfied header disclaimer.
+  Found real behavioral drift, not just renumbering, while grounding each
+  citation — all fixed in the doc, all from the merged `feat/boot-tests-ci`
+  branch (`7159acd`, same day as this backlog's last real entry before
+  the GUI rewrite) adding a serial/COM1 input path:
+  (1) `on_key()` (`kmain.mx:3688`) is now a thin `key_event(inb(0x60))`
+  wrapper — the scancode-to-ASCII/Enter/history logic the doc attributed to
+  `on_key()` actually lives in the new `key_event(sc)` (`kmain.mx:3692`),
+  which has a second caller, `serial_service()` (`kmain.mx:735`), so a
+  command typed over COM1 runs through the identical function as one typed
+  on the keyboard — re-attributed every such citation. (2) `kmain()`'s
+  tail is no longer `while true { asm("hlt"); }` — it's a loop
+  (`kmain.mx:3800-3808`) that re-enables interrupts every iteration
+  (`sti; hlt`, or `sti; nop; cli` when `serial_pending()`), disables them
+  again, and calls `serial_service()` to drain buffered COM1 bytes — so the
+  doc's "the only two `sti`/`cli` calls in the whole kernel" claim (always
+  going to be fragile prose) is now flatly wrong; rewrote it to point at
+  the actual sites (`kmain.mx:3682` `poweroff`, `ui/borehole.mx:92`
+  `ui_fatal`, plus the loop's own toggle) instead of a count, and corrected
+  the Execution model/Kernel entry text to describe the loop precisely
+  rather than a one-time boot `sti`. (3) `on_syscall()` (`kmain.mx:2574`)
+  now dispatches on far more than the "four calls" the doc enumerated —
+  file read/write, process queries, directory listing, and kill have all
+  been added — so removed the stale enumeration rather than requantify it
+  (an exact current count belongs in `docs/programs.md`, not repeated
+  here); flagged in the text that `docs/programs.md` itself may now predate
+  some of these and is worth checking directly. (4) Found and fixed a
+  correctness bug, not just a stale line number: `exec_file`'s own header
+  comment (`kmain.mx:2644`-`2646`) says plainly "the image does not go
+  through FILEBUF" — confirmed by reading `fs_read_at` (`kmain.mx:2027`-
+  `2056`), which stages through SECBUF only — but this doc said `exec`
+  "copies a file's bytes from the disk's FILEBUF straight to the fixed
+  load address"; fixed to SECBUF, citing both functions. (5) `read_line`
+  and `kread_line` now poll `input_wait()` ("PS/2 or COM1" per its own
+  comment, `kmain.mx:3570`), not the keyboard alone, so corrected the
+  doc's "polling the keyboard ports directly" claim. Also fixed one
+  citation this doc's own prose had wrong independent of the rewrite: "The
+  Borehole interface" section's **Keys** paragraph said `on_key()` calls
+  `ui_on_key(sc)` first, but that call is in `key_event()` (same split as
+  above) — fixed. Verified every citation in the rewritten doc resolves
+  in-range with a script; verified every markdown link still resolves.
+
+## Doc quality (found 2026-11-11, not yet done)
+- [ ] `docs/shell.md` and `docs/accounts.md` still cite pre-`feat/boot-tests-ci`/
+  pre-Borehole `kmain.mx` line numbers for shell-command and account
+  functions — the same re-audit just done for `docs/architecture.md` above
+  (read every cited line directly against current source; the drift is
+  non-uniform, not a flat offset) is the natural next target. Likely also
+  worth the same check for `docs/memory-map.md`, `docs/fs-design.md`,
+  `docs/networking.md`, and `docs/programs.md`, none of which were touched
+  by this pass either. Carried over from the 2026-11-10 entry, which named
+  this as the next step; still true after today's `architecture.md` pass.
+- [ ] `docs/memory-map.md` is internally inconsistent about whether `exec`
+  touches FILEBUF: its address table (line 21) lists `FILEBUF` as used by
+  "`cat`/`run`/`exec`", but its own "Why exactly these buffers" section
+  (lines 111-115) already says `exec`'s reads go through sectors "without
+  touching `FILEBUF`." Reading `fs_read_at` (`kmain.mx:2027`-`2056`, the
+  function `exec_file` actually calls) confirms the second claim is right
+  and the table row is wrong: `exec` stages through SECBUF only. Found
+  2026-11-11 while grounding `docs/architecture.md`'s `exec_file` citation
+  against the same function. A small, bounded fix for a future pass: drop
+  "`exec`" from that table row's use-list (and double-check its citations,
+  which weren't re-verified this pass).
+- [ ] `docs/programs.md`'s syscall table almost certainly predates several
+  syscalls `on_syscall()` (`kmain.mx:2574-2634`) now implements — reading
+  it in full while grounding `docs/architecture.md`'s syscall paragraph
+  this pass showed the dispatch now has at least 15 cases (file read/write,
+  process queries, directory listing, kill, in addition to the original
+  print/uptime/read-line four), where `docs/architecture.md` previously
+  said "four calls." `docs/programs.md` was not opened this pass to check
+  which of these it already covers — it may be fully current (it has its
+  own "Done" history in this backlog) or just as stale as
+  `docs/architecture.md` was. Worth reading `docs/programs.md` against
+  `on_syscall()` directly before assuming either way. Found 2026-11-11.

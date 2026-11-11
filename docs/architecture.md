@@ -1,7 +1,5 @@
 # MORT OS — Architecture
 
-> `kmain.mx:NNN` citations below predate the Borehole remake, which removed about 735 lines; function names remain accurate.
-
 How the pieces fit together, from power-on to the running shell. This is a
 map for navigating the source, not a spec — where behavior is detailed
 elsewhere ([`docs/memory-map.md`](memory-map.md), [`docs/shell.md`](shell.md),
@@ -21,8 +19,8 @@ same kernel entry point:
    request (`boot.s:23-30`), so the kernel falls back to VGA text mode.
 2. **The Limine ISO** (`build.py iso` / `run-iso`): Limine honors the
    graphics request and hands the kernel a linear framebuffer, which
-   `fb_init()` (`kmain.mx:340-355`) detects via the multiboot info struct's
-   bit 12 (`kmain.mx:342`) and 32-bpp direct-RGB check (`kmain.mx:345-348`).
+   `fb_init()` (`kmain.mx:347-366`) detects via the multiboot info struct's
+   bit 12 (`kmain.mx:349`) and 32-bpp direct-RGB check (`kmain.mx:352-355`).
 
 From `_start` (`boot.s:39-51`):
 
@@ -37,7 +35,7 @@ From `_start` (`boot.s:39-51`):
    (`idt.s:98-101`), the timer gate at `0x20` (`idt.s:103-106`), and the
    syscall gate at `0x80` (`idt.s:108-111`) — then `lidt`s it (`idt.s:113`).
 3. `push %ebx; call mort_kmain` hands the multiboot info pointer (left in
-   `%ebx` by the bootloader) to `kmain(mbinfo)` in `kmain.mx:3593`.
+   `%ebx` by the bootloader) to `kmain(mbinfo)` in `kmain.mx:3763`.
 4. If `kmain` ever returns, `_start` does `cli; hlt` in a loop rather than
    running off into undefined memory (`boot.s:47-50`).
 
@@ -46,53 +44,52 @@ From `_start` (`boot.s:39-51`):
 (`linker.ld:8-13`) — the address `docs/memory-map.md` calls the kernel load
 address.
 
-## Build pipeline (`build()`, `build.py:105-155`)
+## Build pipeline (`build()`, `build.py:139-190`)
 
 Before any of the above can boot, `python build.py build` (or `check`/`run`)
 turns the Mort source into the multiboot ELF that the boot chain loads:
 
 1. **Concatenate, then compile to C.** `kmain.mx` isn't compiled alone —
-   `build()` first reads every `net/*.mx` file (sorted, so output is
-   deterministic) and prepends that combined source to `kmain.mx` before
-   handing the whole thing to `mortc.compile_to_c(..., freestanding=True)`
-   as **one translation unit** (`build.py:109-122`). `ui/*.mx`, the Borehole
-   interface, joins through the same loop. Mort emits forward prototypes, so
-   it doesn't matter that these files are compiled before the `kmain.mx` code
-   that calls into them.
+   `build()` first reads every `net/*.mx` and `ui/*.mx` file (sorted, so
+   output is deterministic) and prepends that combined source to `kmain.mx`
+   before handing the whole thing to `mortc.compile_to_c(..., freestanding=True)`
+   as **one translation unit** (`build.py:143-157`). Mort emits forward
+   prototypes, so it doesn't matter that these files are compiled before the
+   `kmain.mx` code that calls into them.
 2. **Cross-compile to 32-bit x86.** The generated C is compiled for
-   `x86-freestanding-none` (`build.py:51`) via Zig's C compiler
-   (`_zig()`, `build.py:96-103` — the reason `pip install ziglang` is a
+   `x86-freestanding-none` (`build.py:79`) via Zig's C compiler
+   (`_zig()`, `build.py:130-136` — the reason `pip install ziglang` is a
    build requirement). Two flags are load-bearing rather than cosmetic:
    `-ffreestanding`/`-fno-builtin` (no hosted libc — see step 3) and
    `-mno-sse -mno-sse2 -mno-mmx` — the kernel runs with SSE disabled
    (`CR4.OSFXSR=0`), and at `-O2` the compiler can otherwise vectorize a
    `memset`/zero-init into an `xorps` instruction, which would fault
    (`#UD`) on real hardware; forbidding vector codegen keeps the network
-   buffers scalar (`build.py:127-132`).
+   buffers scalar (`build.py:162-167`).
 3. **Link in the freestanding runtime.** `runtime.c` (repo root) supplies
    `memset`/`memcpy`/`memmove` — the primitives the optimizer reaches for
    when lowering Mort array initialization or copies — since MortOS links
    no hosted C library (`runtime.c:1-4`). It's compiled and linked into the
-   kernel exactly like `kmain.c`, `boot.s`, and `idt.s` (`build.py:139-146`).
+   kernel exactly like `kmain.c`, `boot.s`, and `idt.s` (`build.py:174-189`).
 4. **Link into the multiboot ELF.** `boot.o`, `kmain.o`, `runtime.o`, and
    `idt.o` are linked `-nostdlib -static -no-pie` with `linker.ld`
-   (`build.py:148-153`) into `build/kernel.elf` — the file the boot chain
+   (`build.py:183-189`) into `build/kernel.elf` — the file the boot chain
    above actually boots. `python build.py check` then re-parses that ELF's
    header to confirm it's a valid 32-bit multiboot image before reporting
-   success (`check()`, `build.py:158-190`).
+   success (`check()`, `build.py:193-225`).
 
 `check()` does more than a one-line magic-number check. Its internal
 `require()` closure raises via `sys.exit` rather than `assert`, specifically
 so the checks can't be silently skipped by running under `python -O`
-(`build.py:163`-`166`). It confirms the ELF magic bytes, that the ELF class
+(`build.py:199`-`201`). It confirms the ELF magic bytes, that the ELF class
 is 32-bit (`ELFCLASS32`, `data[4] == 1`), and that `e_machine` is `EM_386`
-(`0x03`, `build.py:168`-`171`); then it scans every 4-byte-aligned offset in
+(`0x03`, `build.py:203`-`206`); then it scans every 4-byte-aligned offset in
 the first 8 KiB of the file for the multiboot magic `0x1BADB002` — the
 alignment and 8 KiB bound are what the multiboot spec itself requires, and
 once a candidate is found it validates the *whole* 12-byte header rather
 than just the magic word: `flags` must be exactly `0x7`
 (`ALIGN|MEMINFO|GRAPHICS`, the same three bits `boot.s:8`-`11` sets) and
-`magic + flags + checksum` must wrap to zero mod 2^32 (`build.py:173`-`187`).
+`magic + flags + checksum` must wrap to zero mod 2^32 (`build.py:208`-`222`).
 It prints the file offset the header was found at, then suggests
 `python build.py run`.
 
@@ -100,23 +97,34 @@ It prints the file offset the header was found at, then suggests
 differently (a fixed load address, no kernel symbols) — see
 [`docs/programs.md`](programs.md)'s build pipeline section for that path.
 
-## Kernel entry (`kmain`, `kmain.mx:3593-3629`)
+## Kernel entry (`kmain`, `kmain.mx:3763-3809`)
 
 In order: `heap_init()` carves the dynamic-memory heap out of high RAM,
-`fb_init()` looks for a framebuffer, `fs_init()`/`fs_ensure_layout()`/
-`fs_populate_bin()` mount MortFS and seed `/bin /etc /home /var` on a fresh
-disk, `acct_init()`/`ensure_home()`/`login_default()` build the two built-in
-accounts (`root` and `mortuex`) and auto-log-in as the latter — see
-[`docs/accounts.md`](accounts.md) — `run_script(1)` runs the boot script from a
-multiboot module if one was passed in, and the prompt is drawn. Only after
-all of that does `kmain` call `usb_boot_init()` (a one-shot, polling-only
-UHCI enumeration — see [`docs/hardware.md`](hardware.md)), `init_pit()`
-(arms the ~100 Hz PIT on IRQ0), optionally `ui_start()` on the graphics
-path, and
-finally `asm("sti")` to enable interrupts — everything before that line runs
-with interrupts off. The function ends in `while true { asm("hlt"); }`
-(`kmain.mx:3626-3628`): once interrupts are on, all real work happens inside
-IRQ handlers.
+`fb_init()` looks for a framebuffer, `serial_init()` (COM1 — everything
+printed from here on is mirrored to it, see [`docs/testing.md`](testing.md)),
+`fs_init()`/`fs_ensure_layout()`/`fs_populate_bin()` mount MortFS and seed
+`/bin /etc /home /var` on a fresh disk, `acct_init()`/`ensure_home()`/
+`login_default()` build the two built-in accounts (`root` and `mortuex`)
+and auto-log-in as the latter — see [`docs/accounts.md`](accounts.md) —
+`run_script(1)` runs the boot script from a multiboot module if one was
+passed in, and the prompt is drawn. Only after all of that does `kmain` call
+`usb_boot_init()` (a one-shot, polling-only UHCI enumeration — see
+[`docs/hardware.md`](hardware.md)), `init_pit()` (arms the ~100 Hz PIT on
+IRQ0), and optionally `ui_start()` on the graphics path. Everything up to
+this point runs with interrupts off.
+
+`kmain` then enters its final loop (`kmain.mx:3800-3808`), which is not a
+bare `hlt` forever — each iteration re-enables interrupts just long enough
+to admit one pending IRQ (`asm("sti; hlt")` when no serial byte is waiting,
+so a keyboard or timer IRQ can still fire and wake it; `asm("sti; nop; cli")`
+instead when `serial_pending()` is true, so the loop doesn't block on `hlt`
+waiting for a hardware IRQ that may not come), disables them again, and
+calls `serial_service()` (`kmain.mx:710-714`, whose own header comment states
+it runs "from the idle loop with interrupts off, the same context `on_key`
+runs commands in") to drain up to 8 buffered COM1 bytes into the shell
+before looping. Keyboard and timer IRQs still do their real work inside
+their own ISRs; COM1 input is drained by this polling loop rather than a
+UART IRQ of its own.
 
 ## Execution model: no scheduler, no processes
 
@@ -124,29 +132,35 @@ There is no scheduler, no task list, and no preemption anywhere in this
 codebase — the repo has exactly one flow of control besides interrupts.
 Shell and UI state lives in global variables at the top of `kmain.mx`
 (e.g. `g_row` at `kmain.mx:10`, `g_uid` at `kmain.mx:25`, `g_gfx` at
-`kmain.mx:42`), and four interrupt sources drive
-all behavior after `sti`:
+`kmain.mx:62`), and four interrupt sources drive all behavior once
+`kmain`'s main loop starts admitting interrupts (see Kernel entry above —
+it's a repeating `sti`/`cli` toggle now, not a single one-time `sti`):
 
 - **IRQ1 (keyboard)** → `keyboard_isr` (`idt.s:137-145`) → `mort_on_key` →
-  `on_key()` (`kmain.mx:3495`), which reads the scancode and, in graphics mode,
-  offers it to `ui_on_key()` first; keys the interface doesn't take reach the
-  shell's scancode-to-ASCII path.
+  `on_key()` (`kmain.mx:3688`), a thin wrapper that reads the scancode off
+  port `0x60` and hands it to `key_event(sc)` (`kmain.mx:3692`), which does
+  the actual work: in graphics mode it offers the scancode to `ui_on_key()`
+  first; keys the interface doesn't take reach the shell's scancode-to-ASCII
+  path. `key_event()` has a second caller too — `serial_service()`
+  (`kmain.mx:735`) feeds it bytes decoded from COM1, so a command typed over
+  the serial line runs through the exact same function as one typed on the
+  keyboard.
 - **IRQ0 (timer, ~100 Hz)** → `timer_isr` (`idt.s:147-155`) → `mort_on_tick` →
-  `on_tick()` (`kmain.mx:2617-2624`), which bumps `g_ticks` (backs the
+  `on_tick()` (`kmain.mx:3458-3463`), which bumps `g_ticks` (backs the
   `uptime` command) and, in graphics mode, calls `ui_tick()`, which drives
   the interface's motion and clock; see [The Borehole interface](#the-borehole-interface)
   and [`docs/settings.md`](settings.md) for the RTC read's caveats.
 - **`int 0x80` (syscall)** → `syscall_isr` (`idt.s:170-174`) → `on_syscall()`
-  (`kmain.mx:1864`), described below.
+  (`kmain.mx:2574`), described below.
 - **CPU exceptions (vectors 0-31)** → each vector gets its own stub
   (`ISR_STUB`, `idt.s:180-184`) that pushes the vector number and jumps to
   a shared `isr_common` (`idt.s:219-226`), which `cli`s, calls
-  `on_exception(vec)` (`kmain.mx:2629-2635`), then `hlt`s in an infinite
+  `on_exception(vec)` (`kmain.mx:3468-3484`), then `hlt`s in an infinite
   loop. Unlike the three sources above, this path never returns — no
   `iret`, no end-of-interrupt — so a fault is unrecoverable; only a reboot
   clears it. `on_exception` reports the raw vector number on the VGA console's last
   row, or as a red band across the bottom of the screen in graphics mode
-  (`ui_fault`, whatever scene is up), not a per-vector fault name: the `crash` shell command's `ud2` (`kmain.mx:2573`,
+  (`ui_fault`, whatever scene is up), not a per-vector fault name: the `crash` shell command's `ud2` (`kmain.mx:3410`,
   vector 6, `#UD`) prints `*** CPU EXCEPTION #6 -- HALTED ***`, not
   "Invalid Opcode".
 
@@ -173,12 +187,18 @@ handler reaches `iret`. `keyboard_isr` (`idt.s:137`-`145`) never re-enables
 it early — it calls `mort_on_key` (`on_key()`) first and only sends the PIC
 its end-of-interrupt, then `iret`s, *after* that call returns
 (`idt.s:142`-`145`). Pressing Enter runs the typed command inside that same,
-still-uninterruptible call: `on_key()`'s Enter branch calls `run_command()`
-directly (`kmain.mx:3557`), which reaches `run_command_impl()`'s dispatch
-(e.g. the `net`/`httpd` rows, `kmain.mx:2135`-`2140`) with no `asm("sti")`
-anywhere in between — the only two `sti`/`cli` calls in the whole kernel are
-`kmain()`'s one-time boot `sti` (`kmain.mx:3625`) and `poweroff()`'s `cli`
-(`kmain.mx:3259`). Two commands make this observable:
+still-uninterruptible call: `key_event()`'s Enter branch calls `run_command()`
+directly (`kmain.mx:3730`), which reaches `run_command_impl()`'s dispatch
+(e.g. the `net`/`httpd` rows, `kmain.mx:2937`-`2944`) with no `asm("sti")`
+anywhere in between — the same holds for a command arriving over COM1, since
+`serial_service()` calls `key_event()` from `kmain`'s main loop with
+interrupts already turned back off (see Kernel entry above). Outside the
+IDT's own interrupt-gate mechanism, the only `sti`/`cli` use in the kernel is
+that main loop's repeating toggle (`kmain.mx:3800`-`3808`) plus two
+unrecoverable halts that disable interrupts and never re-enable them:
+`poweroff()`'s shutdown `cli` (`kmain.mx:3682`) and the Borehole interface's
+own init-failure halt, `ui_fatal()`'s `cli` (`ui/borehole.mx:92`). Two
+commands make the interrupts-off-during-dispatch behavior observable:
 
 - **`net` freezes the clock and the keyboard for its whole DHCP wait.**
   `net_dhcp()`'s receive-poll loop (`net/netapp.mx:77`,
@@ -196,21 +216,21 @@ anywhere in between — the only two `sti`/`cli` calls in the whole kernel are
   `reboot`) and no IRQ0 (the clock) can fire again. `net_httpd`'s own
   printed `"(reboot to stop)"` (`net/netapp.mx:182`-`187`, see
   [`docs/networking.md`](networking.md)) therefore means a physical reset
-  or power-cycle — the shell's own `reboot` command (`kmain.mx:1024`-`1029`)
+  or power-cycle — the shell's own `reboot` command (`kmain.mx:3369`-`3372`)
   can't run, since the shell can no longer read a keystroke to launch it.
 
 Every text-entry point funnels raw scancodes through the same
-`scancode_to_ascii(sc, shift)` (`kmain.mx:606-641`): a fixed, hand-built
+`scancode_to_ascii(sc, shift)` (`kmain.mx:839-874`): a fixed, hand-built
 US-QWERTY table covering only the alphabetic keys, the digit row (with its
 shifted symbols `!@#$%^&*()`), space, and eleven punctuation keys
 (`-_=+[]{};:'"` `` `~ `` `\|,.<>/?`), each `if sc == N` line mapping one
 scancode. Anything else — Tab, Caps Lock, function keys, the numpad, media
 keys — falls through to `return 0`. All four call sites treat `0` the same
 way, silently dropping the keystroke rather than inserting a character: the
-main shell prompt (`on_key`, `kmain.mx:3580-3581`), the blocking poll-based
+main shell prompt (`key_event`, `kmain.mx:3750-3751`), the blocking poll-based
 line reader used for `su`/`passwd`/masked prompts (`kread_line`,
-`kmain.mx:2935`, `ch != 0` at `kmain.mx:2961`), the program `read-line`
-syscall (`read_line`, `kmain.mx:1810`, `ch != 0` at `kmain.mx:1843`), and
+`kmain.mx:3565`, `ch != 0` at `kmain.mx:3590`), the program `read-line`
+syscall (`read_line`, `kmain.mx:2196`, `ch != 0` at `kmain.mx:2228`), and
 the lock screen (`ui_lock_key`, `ui/borehole.mx`). There is no Caps Lock state anywhere in the source — only
 the tracked Shift flag (`g_shift` or a local `shift`) selects the
 upper/shifted row, so `scancode_to_ascii`'s own two-value `shift: bool`
@@ -221,12 +241,12 @@ two-byte `0xE0`-prefixed sequence rather than the single scancodes
 `scancode_to_ascii` maps. `ui_on_key()` tracks that prefix for every
 non-shell scene, which use the raw scancodes `72` (Up), `80` (Down), and
 `73`/`81` (PgUp/PgDn, in the core sample) once it is seen — as does the shell
-prompt's own history recall
-(`kmain.mx:3524`, see
+prompt's own history recall, now in `key_event()`
+(`kmain.mx:3697`-`3709`, see
 [`docs/shell.md`](shell.md)'s Line editing section). The three plain
 text-entry readers do not: `kread_line` and `read_line` drop the prefix
 only incidentally, since `224` fails their own `sc < 128` gate
-(`kmain.mx:2959`, `kmain.mx:1841`) before ever reaching
+(`kmain.mx:3588`, `kmain.mx:2226`) before ever reaching
 `scancode_to_ascii`; `ui_lock_key` ignores it explicitly (`if ext`). Either way, the arrow key's second byte (`72`/
 `75`/`77`/`80`) also maps to `0` in `scancode_to_ascii` — none of those
 values fall inside any of its mapped ranges — so pressing an arrow key
@@ -269,7 +289,7 @@ shell is on screen. That is why leaving the shell loses nothing, and why output
 produced before the first frame still appears. A cell is 10x20 px, so the
 console fills 800x500 inside the gallery.
 
-**Keys.** `on_key()` calls `ui_on_key(sc)` first. In the shell gallery only Esc
+**Keys.** `key_event()` calls `ui_on_key(sc)` first. In the shell gallery only Esc
 is taken; everything else returns `false` and reaches the normal shell path.
 Every other scene consumes all keys. A key pressed during a reveal finishes the
 reveal first. On the surface `M`, `O`, `R` and `T` drill straight to a stratum.
@@ -295,18 +315,28 @@ at once, with no reveal, for callers outside the keyboard path.
 
 ## Programs and syscalls
 
-`exec <file>` (`exec_file`, `kmain.mx:1896`) copies a file's bytes from the
-disk's FILEBUF straight to the fixed load address `0x00A00000`
-(`kmain.mx:1912-1920`, see `docs/memory-map.md` for why not `0x01000000`)
-and calls into it. The loaded program shares no symbols with the kernel;
-it communicates entirely through a fixed mailbox at `0x009F0000` plus
-`int 0x80` (`kmain.mx:1777-1783`). `on_syscall()` (`kmain.mx:1864`) reads
-the syscall number from the mailbox and implements four calls: print with
-newline (1), print inline (2), return uptime in seconds (3), and read a
-line of input by polling the keyboard ports directly rather than via IRQ1,
-since the handler runs with interrupts off (`read_line`, `kmain.mx:1805-1858`).
-See [`docs/programs.md`](programs.md) for the full syscall table and how to
-build and write your own program.
+`exec <file>` (`exec_file`, `kmain.mx:2647`) copies a file's bytes from the
+disk straight to the fixed load address `0x00A00000` via `fs_read_at`
+(`kmain.mx:2669-2684`, see `docs/memory-map.md` for why not `0x01000000`)
+and calls into it — through SECBUF, sector by sector (`fs_read_at`,
+`kmain.mx:2027-2056`), *not* FILEBUF: `exec_file`'s own header comment notes
+"the image does not go through FILEBUF, which may hold the script that
+launched this program" (`kmain.mx:2644-2646`), since `run` may be what's
+calling `exec`. The loaded program shares no symbols with the kernel; it
+communicates entirely through a fixed mailbox at `0x009F0000` plus
+`int 0x80` (`kmain.mx:2153-2157`). `on_syscall()` (`kmain.mx:2574-2634`)
+reads the syscall number from the mailbox and dispatches on it — the ABI has
+grown well past its original four calls (print with newline (1), print
+inline (2), return uptime in seconds (3), and read a line of input (4));
+file read/write, process queries, directory listing, and kill have all been
+added since, so this doc doesn't enumerate them — see
+[`docs/programs.md`](programs.md) for the syscall table and how to build and
+write your own program (check it against `on_syscall()` directly, since it
+may itself predate some of these). Read-line (4) still works by polling
+rather than via IRQ1, since the handler runs with interrupts off — but
+`read_line` (`kmain.mx:2196-2243`) and the masked-prompt reader `kread_line`
+now poll `input_wait()`, which the latter's own comment marks "PS/2 or
+COM1" (`kmain.mx:3570`), not the keyboard alone.
 
 ## Filesystem, networking, shell
 
@@ -341,8 +371,8 @@ no `build.py` step, and no `*.mx`/`*.s` file includes or imports it
 (confirmed by grepping the whole repo for `font_data`). It declares a
 `g_font: [u8; 4096]` bitmap-font array that is byte-for-byte identical to
 the one actually compiled in, which is embedded directly inside `kmain.mx`
-at `kmain.mx:74`-`331` (also named `g_font`, used by `draw_glyph`,
-`kmain.mx:420`). The file appears to be a leftover from before the font
+at `kmain.mx:81`-`338` (also named `g_font`, used by `draw_glyph`,
+`kmain.mx:419`). The file appears to be a leftover from before the font
 data was inlined into the kernel source; it costs nothing at build time
 since nothing pulls it in, but it's dead weight in the tree. A human could
 safely `git rm` it — deleting an unreferenced file changes no kernel
