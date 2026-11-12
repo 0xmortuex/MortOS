@@ -2384,11 +2384,13 @@ behavior, add a backlog item describing it and stop.
   functions — the same re-audit just done for `docs/architecture.md` above
   (read every cited line directly against current source; the drift is
   non-uniform, not a flat offset) is the natural next target. Likely also
-  worth the same check for `docs/memory-map.md`, `docs/fs-design.md`,
-  `docs/networking.md`, and `docs/programs.md`, none of which were touched
-  by this pass either. Carried over from the 2026-11-10 entry, which named
-  this as the next step; still true after today's `architecture.md` pass.
-- [ ] `docs/memory-map.md` is internally inconsistent about whether `exec`
+  worth the same check for `docs/fs-design.md` and `docs/networking.md`,
+  neither of which has been touched by this method yet (`docs/memory-map.md`
+  and `docs/programs.md`, the other two named when this item was written,
+  are now done — see the two entries below). Carried over from the
+  2026-11-10 entry, which named this as the next step; still true after
+  today's `architecture.md` pass.
+- [x] `docs/memory-map.md` is internally inconsistent about whether `exec`
   touches FILEBUF: its address table (line 21) lists `FILEBUF` as used by
   "`cat`/`run`/`exec`", but its own "Why exactly these buffers" section
   (lines 111-115) already says `exec`'s reads go through sectors "without
@@ -2399,7 +2401,47 @@ behavior, add a backlog item describing it and stop.
   against the same function. A small, bounded fix for a future pass: drop
   "`exec`" from that table row's use-list (and double-check its citations,
   which weren't re-verified this pass).
-- [ ] `docs/programs.md`'s syscall table almost certainly predates several
+
+  Done 2026-11-12: fixed the FILEBUF row (dropped `exec`, added a clause
+  on the SECBUF row pointing at `fs_read_at`/`exec_file` instead, both
+  cited), then went further per this item's own "double-check its
+  citations" note and re-audited every citation in the file line-by-line
+  against current source (same method as the `architecture.md` pass this
+  item references) rather than just the one row — the whole file turned
+  out to predate the Borehole rewrite, same as `docs/shell.md`/
+  `docs/accounts.md` above: every `kmain.mx:` line past roughly line 900
+  was stale by a non-uniform amount (e.g. `heap_init`/`kmalloc`/`kfree`
+  moved by +237, `read_line` by +386, `exec_enter` by +750), and two
+  citations (`net/settings.mx:233-234`/`325-326`/`320`) pointed at a file
+  that no longer exists (`net/settings.mx` was deleted with the rest of
+  the old Settings app). Read every cited function/line directly against
+  current source and fixed all of them — not a blanket offset; verified
+  each with a script-checked range pass plus direct reads of every
+  function's actual opening/closing brace line (caught and fixed two
+  off-by-one function-end citations, `fb_init` and `fs_read_file`, that
+  the range check alone wouldn't have flagged). Beyond renumbering, found
+  and fixed one real correctness bug in the doc's own prose, not just
+  stale lines: the "boot stack" note claimed `exec_enter` "does a plain
+  `call`, not a stack switch, so a program that overflows the stack
+  corrupts kernel state" — but `exec_enter`'s actual asm
+  (`kmain.mx:2641`) saves the kernel's `%esp` to `0x009F001C`, switches
+  `%esp` to `0x00A20000` (the top of the program's own stack range) for
+  the `call`, and restores the kernel's `%esp` afterward on return, so
+  there *is* a stack switch — a program stack overflow runs into its own
+  image/bss region (`0x00A00000`-`0x00A10000`), not kernel state. This
+  also contradicts `docs/programs.md`'s own (correct, already-cited)
+  "the program's own, not the kernel's" line on the same stack, so the two
+  docs had been disagreeing with each other, not just with source.
+  Rewrote the Settings-app heap-fields bullet entirely: it now describes
+  `ui_compose_machine()`'s single "Heap used" row (`ui/borehole.mx:1441`-
+  `1453`) that replaced the old Settings app's two separate fields, cross-
+  checked against `docs/settings.md` (already current post-rewrite) to
+  confirm the new field name and behavior rather than guessing. The byte-
+  math argument underneath (why the field reads `0 KiB` and stays there)
+  was still correct and only needed its `kmain.mx:` line citations fixed.
+  Re-ran both an in-range citation check and a markdown-link check across
+  `README.md` + all of `docs/*.md`: 0 out of range, 0 broken, repo-wide.
+- [x] `docs/programs.md`'s syscall table almost certainly predates several
   syscalls `on_syscall()` (`kmain.mx:2574-2634`) now implements — reading
   it in full while grounding `docs/architecture.md`'s syscall paragraph
   this pass showed the dispatch now has at least 15 cases (file read/write,
@@ -2410,3 +2452,44 @@ behavior, add a backlog item describing it and stop.
   own "Done" history in this backlog) or just as stale as
   `docs/architecture.md` was. Worth reading `docs/programs.md` against
   `on_syscall()` directly before assuming either way. Found 2026-11-11.
+
+  Done 2026-11-12: read `docs/programs.md`'s syscall table (15 rows, #1-15)
+  against `on_syscall()` (`kmain.mx:2574-2634`) case by case, and against
+  the four dispatched-to helpers' real signatures (`sys_stat`/`sys_readdir`/
+  `sys_fread`/`sys_fwrite`/`sys_procnext`/`sys_kill`, `kmain.mx:2467`-
+  `2563`) argument by argument — this item's premise turned out false, not
+  true: the table already matches current source exactly (same 15 cases,
+  same argument order for every multi-arg syscall), so no table edit was
+  needed. This item's own suspicion ("may be fully current... or just as
+  stale") is now resolved in favor of current. Did **not** audit this
+  file's other `kmain.mx:` line citations (the prose above/below the
+  table, e.g. the "Typing a long answer to syscall 4" section) against the
+  post-Borehole source — spot checks while working the memory-map.md item
+  above show at least `read_line`'s citation there (`kmain.mx:1810-1858`)
+  and `put_cell_at`'s (`kmain.mx:505-517`) are stale (real: `2196-2243` and
+  `752-759`); a follow-up below covers this.
+
+## Doc quality (found 2026-11-12, not yet done)
+- [ ] `docs/programs.md`'s prose citations outside the syscall table — the
+  "Typing a long answer to syscall 4 corrupts the row below it" section and
+  the userland-library table above it — were not checked against current
+  source this pass (see the syscall-table item just above, which only
+  verified the table itself). At least two are confirmed stale already:
+  `read_line()` (`kmain.mx:1810`-`1858`) is now at `kmain.mx:2196`-`2243`,
+  and `put_cell_at()` (`kmain.mx:505`-`517`) is now at `kmain.mx:746`-`759`
+  — found incidentally while re-grounding `docs/memory-map.md`'s citations
+  to the same two functions. `print_inline()`/`kread_line()`/`put_index()`
+  and the rest of that section's citations are unverified either way.
+  Needs the same read-every-cited-line method as the `architecture.md`/
+  `memory-map.md` passes.
+- [ ] `read_line()`'s own source comment (`kmain.mx:2191`-`2195`) still says
+  it reads "by polling the PS/2 controller directly... we read status port
+  0x64... ourselves" — but the function body actually calls `input_wait()`
+  (`kmain.mx:2202`, commented "PS/2 or COM1"), the same serial-aware input
+  path the 2026-11-11 `docs/architecture.md` audit already corrected two
+  *other* docs to describe correctly. This is the source comment itself
+  drifting, not a doc — in scope for this agent (source comments are
+  explicitly allowed) but out of scope for today's pass, which was already
+  committed to the `docs/memory-map.md`/`docs/programs.md` items above.
+  Found 2026-11-12 while re-grounding `read_line`'s line range for
+  `docs/memory-map.md`.
