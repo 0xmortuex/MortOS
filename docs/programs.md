@@ -125,40 +125,47 @@ the shell's `cat`.
 
 ### Typing a long answer to syscall 4 corrupts the row below it
 
-`read_line()` (`kmain.mx:1810`-`1858`), the function behind syscall 4, echoes
+`read_line()` (`kmain.mx:2196`-`2243`), the function behind syscall 4, echoes
 each typed character by incrementing `g_pcol` with no upper bound besides
-the 120-character buffer cap (`kmain.mx:1844`) — it never checks `g_pcol`
+the 120-character buffer cap (`kmain.mx:2229`) — it never checks `g_pcol`
 against the console's 80-column width the way its neighbors do. Two other
-text-entry paths in the same file both guard against this: `print_inline()`
-(`kmain.mx:1788`-`1803`, the function syscalls 1 and 2 print through) wraps
-to a fresh line whenever `g_pcol >= 80` (`kmain.mx:1795`-`1798`), and
-`kread_line()` (`kmain.mx:2935`-`2973`, the shell's own masked-input reader
-for `su`/`passwd`) sidesteps the problem by capping input at 60 characters
-(`kmain.mx:2961`) — comfortably under 80 even with a prompt already on the
-line. `read_line()` has neither a wrap check nor a cap low enough to make
-one unnecessary. That margin is specific to `su`/`passwd`'s fixed-length
-prompts, though — `sudo` reuses the same `kread_line()` behind a
-variable-length prompt and reopens this exact overflow; see
+text-entry paths in the same file both guard against this: `print_prog_byte()`
+(`kmain.mx:2162`-`2177`, the per-character helper `print_inline()`
+(`kmain.mx:2179`-`2189`, the function syscalls 1 and 2 print through) calls
+for each byte, and that syscall 5's write-bytes loop also calls directly,
+`kmain.mx:2602`) wraps to a fresh line whenever `g_pcol >= 80`
+(`kmain.mx:2171`-`2174`), and `kread_line()` (`kmain.mx:3565`-`3602`, the
+shell's own masked-input reader for `su`/`passwd`) sidesteps the problem by
+capping input at 60 characters (`kmain.mx:3590`) — comfortably under 80 even
+with a prompt already on the line. `read_line()` has neither a wrap check
+nor a cap low enough to make one unnecessary. That margin is specific to
+`su`/`passwd`'s fixed-length prompts, though — `sudo` reuses the same
+`kread_line()` behind a variable-length prompt and reopens this exact
+overflow; see
 [`docs/accounts.md`](accounts.md#sudos-password-prompt-can-overflow-past-column-79-unlike-sus-or-passwds)
 for the concrete repro.
 
-The effect once `g_pcol` reaches 80: `put_cell_at()` (`kmain.mx:505`-`517`)
+The effect once `g_pcol` reaches 80: `put_cell_at()` (`kmain.mx:752`-`759`)
 computes a plain `put_index(row * 80 + col, ...)` in VGA text mode
-(`kmain.mx:516`), and `put_index()` itself (`kmain.mx:499`-`503`) does no
+(`kmain.mx:758`), and `put_index()` itself (`kmain.mx:746`-`749`) does no
 bounds check — so column 80 lands at `(row + 1) * 80 + 0`, column 0 of the
 row below, silently overwriting whatever is drawn there instead of
-scrolling. In graphics mode `draw_glyph` is called at `x = 192 + col * 8`
-(`kmain.mx:513`), so the glyph keeps marching right past the console's drawn
-edge instead of wrapping there either.
+scrolling. In graphics mode, `put_cell_at()` instead calls `ui_put_cell()`
+(`ui/borehole.mx:581`-`591`), which bounds-checks `col >= 80` and silently
+drops the write instead — no glyph is drawn at all, which is a different
+failure than the text-mode row-corruption above, not the same one: this
+section's older wording ("marching right past the console's drawn edge")
+described a pre-Borehole `draw_glyph` call that no longer exists.
 
 This is concretely reachable with the shipped `ask.bin` sample, not just a
 theoretical overflow: `exec_file` resets `g_pcol` to `0` right before
-entering a program (`kmain.mx:1921`-`1922`), and `ask.mx`'s prompt,
-`"what is your name? "` (`programs/ask.mx:25`), is 19 characters, so
-`g_pcol` is already 19 when `sys_readline()` starts echoing. Typing a name
-of 62 characters or more places the 62nd character at column 80, which
-overwrites column 0 of the line below the prompt instead of wrapping onto a
-new one.
+entering a program (`kmain.mx:2681`-`2682`), and `ask.mx`'s prompt,
+`"what is your name? "` (`programs/ask.mx:5`), is 19 characters, so
+`g_pcol` is already 19 when ulib's `read_line()` (`programs/lib/ulib.mx:254`-
+`256`, wrapping syscall 4) starts echoing. Typing a name of 62 characters or
+more places the 62nd character at column 80, which overwrites column 0 of
+the line below the prompt in VGA text mode, or is silently dropped in
+graphics mode, instead of wrapping onto a new one either way.
 
 ## The userland library
 

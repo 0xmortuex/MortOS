@@ -2470,7 +2470,7 @@ behavior, add a backlog item describing it and stop.
   `752-759`); a follow-up below covers this.
 
 ## Doc quality (found 2026-11-12, not yet done)
-- [ ] `docs/programs.md`'s prose citations outside the syscall table — the
+- [x] `docs/programs.md`'s prose citations outside the syscall table — the
   "Typing a long answer to syscall 4 corrupts the row below it" section and
   the userland-library table above it — were not checked against current
   source this pass (see the syscall-table item just above, which only
@@ -2482,6 +2482,44 @@ behavior, add a backlog item describing it and stop.
   and the rest of that section's citations are unverified either way.
   Needs the same read-every-cited-line method as the `architecture.md`/
   `memory-map.md` passes.
+
+  Done 2026-11-13: re-read every citation in the "Typing a long answer to
+  syscall 4" section directly against current source (userland-library
+  table checked too — every listed function/constant still exists in
+  `programs/lib/ulib.mx` by name, no line citations there to drift).
+  Fixed the renumbering (`read_line()` `kmain.mx:2196`-`2243`, cap check
+  `kmain.mx:2229`; `kread_line()` `kmain.mx:3565`-`3602`, cap check
+  `kmain.mx:3590`; `put_index()` `kmain.mx:746`-`749`; `put_cell_at()`
+  `kmain.mx:752`-`759`, its `put_index` call site `kmain.mx:758` — this
+  item's own guess of one combined `746`-`759` range for `put_cell_at()`
+  was close but off, since that range actually spans both functions) and
+  found two real correctness drifts beyond renumbering, not just stale
+  line numbers: (1) the wrap-at-column-80 check the doc attributed to
+  `print_inline()` itself now lives in a helper, `print_prog_byte()`
+  (`kmain.mx:2162`-`2177`), that `print_inline()` (`kmain.mx:2179`-`2189`)
+  calls per character — and syscall 5's write-bytes loop
+  (`kmain.mx:2602`) calls the same helper directly, bypassing
+  `print_inline()` entirely, so the doc's "the function syscalls 1 and 2
+  print through" framing undersold which syscalls the wrap check actually
+  covers; re-attributed. (2) The doc's graphics-mode claim ("`draw_glyph`
+  is called at `x = 192 + col * 8`... the glyph keeps marching right past
+  the console's drawn edge") describes pre-Borehole-rewrite behavior that
+  no longer exists: `put_cell_at()`'s graphics branch now calls
+  `ui_put_cell()` (`ui/borehole.mx:581`-`591`), which bounds-checks
+  `col >= 80` and silently drops the write instead of drawing anywhere —
+  a different failure mode (dropped glyph, not an off-edge one), not just
+  a renamed function doing the same thing. Also fixed the `exec_file`
+  citation (`kmain.mx:1921`-`1922` -> `2681`-`2682`), `ask.mx`'s prompt
+  citation (`programs/ask.mx:25` -> `:5`, confirmed still 19 characters,
+  `"what is your name? "`), and corrected "`sys_readline()` starts
+  echoing" to name the real function, ulib's `read_line()`
+  (`programs/lib/ulib.mx:254`-`256`, wrapping syscall 4) — no such
+  function as `sys_readline` exists in the source. Left the
+  `docs/accounts.md` cross-link untouched (checked: that anchor still
+  resolves). Re-ran an in-range citation check (script, this file's
+  citations against the real line counts of every file they reference)
+  and a markdown-link-resolution check across `README.md` + all of
+  `docs/*.md`: 0 out of range, 0 broken.
 - [ ] `read_line()`'s own source comment (`kmain.mx:2191`-`2195`) still says
   it reads "by polling the PS/2 controller directly... we read status port
   0x64... ourselves" — but the function body actually calls `input_wait()`
