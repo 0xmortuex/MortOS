@@ -2188,11 +2188,11 @@ fn print_inline(s: *u8) {
     }
 }
 
-// Read a line of input by polling the PS/2 controller directly. We run inside
-// int 0x80 with interrupts off, so the IRQ-driven keyboard path is unavailable
-// — we read status port 0x64 (bit 0 = output buffer full) and data port 0x60
-// ourselves. Echoes inline, handles Shift and Backspace, stops at Enter. The
-// line is written NUL-terminated to 0x009F0100 (the syscall input buffer).
+// Read a line of input via input_wait() (kmain.mx:682), which polls PS/2
+// (status port 0x64, then data port 0x60) or COM1 serial for a key. We run
+// inside int 0x80 with interrupts off, so the IRQ-driven keyboard path is
+// unavailable. Echoes inline, handles Shift and Backspace, stops at Enter.
+// The line is written NUL-terminated to 0x009F0100 (the syscall input buffer).
 fn read_line() {
     let buf: u32 = 0x009F0100;
     let len: u32 = 0;
@@ -3560,8 +3560,8 @@ fn cwd_init() {
     path_of(g_cwd, &g_cwdpath as u64);
 }
 
-// Read a line from the keyboard by polling (interrupts are off inside a shell
-// command). Echoes each character, or '*' when mask is true. Returns length.
+// Read a line via input_wait() (PS/2 or COM1); interrupts are off
+// in a shell command. Echoes each char, or '*' if mask. Returns length.
 fn kread_line(buf: u64, mask: bool) -> u32 {
     let len: u32 = 0;
     let shift: bool = false;

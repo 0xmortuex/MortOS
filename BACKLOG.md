@@ -2520,7 +2520,7 @@ behavior, add a backlog item describing it and stop.
   citations against the real line counts of every file they reference)
   and a markdown-link-resolution check across `README.md` + all of
   `docs/*.md`: 0 out of range, 0 broken.
-- [ ] `read_line()`'s own source comment (`kmain.mx:2191`-`2195`) still says
+- [x] `read_line()`'s own source comment (`kmain.mx:2191`-`2195`) still says
   it reads "by polling the PS/2 controller directly... we read status port
   0x64... ourselves" — but the function body actually calls `input_wait()`
   (`kmain.mx:2202`, commented "PS/2 or COM1"), the same serial-aware input
@@ -2531,3 +2531,21 @@ behavior, add a backlog item describing it and stop.
   committed to the `docs/memory-map.md`/`docs/programs.md` items above.
   Found 2026-11-12 while re-grounding `read_line`'s line range for
   `docs/memory-map.md`.
+
+  Done 2026-11-14: rewrote the comment to name `input_wait()`
+  (`kmain.mx:682`-`693`) as the actual input path — it polls PS/2 (status
+  port `0x64` then data port `0x60`, same as before) and additionally
+  checks `serial_read_key()` (`kmain.mx:666`-`679`) for COM1, which the old
+  comment never mentioned. Confirmed the gate really does disable
+  interrupts (int 0x80 is a `0x8E` 32-bit interrupt gate, `idt.s:73`), so
+  that part of the old comment's reasoning still holds. Kept the comment at
+  exactly 5 lines so `read_line`'s own line number (`kmain.mx:2196`) and
+  every citation to it elsewhere don't drift. While here, found and fixed
+  the identical issue in `kread_line()`'s comment (`kmain.mx:3563`-`3564`,
+  "Read a line from the keyboard by polling") — it calls the same
+  `input_wait()` and is just as PS/2-or-COM1, not keyboard-only; fixed,
+  again holding the comment at its original 2-line length so
+  `kread_line`'s line number (`kmain.mx:3565`) doesn't move. Spot-checked
+  every existing citation to both functions across `docs/*.md` and
+  `BACKLOG.md` (`kmain.mx:2196`, `kread_line` at `kmain.mx:3565`, etc.) —
+  all still point at the right lines.
