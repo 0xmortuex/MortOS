@@ -155,10 +155,13 @@ subsequent prompt redraw rather than a one-time global write. As with
 `path_of`, what actually gets clobbered depends on the compiler's stack
 layout — not pinned down here, just the overflow and its repro.
 
-A third, unrelated unbounded write sits right next to the already-documented
-sentinel-overload bug in `fs_parent_of` (`kmain.mx:1448`-`1490`; see
-[`docs/shell.md`](shell.md#mkdirs-parent-directory-does-not-exist-is-often-a-lie)
-for that bug) — and unlike the two above, it needs no nesting at all; one
+A third, unrelated unbounded write sits in the same function that used to
+produce the overloaded `64` return value, which `docs/shell.md` now
+documents a fix for — `fs_mkdir` has its own sentinel, `66`, for an `fs_create_full`
+failure distinct from `fs_parent_of`'s genuine "parent missing" `64`; see
+[`docs/shell.md`](shell.md#mkdirs-double-error-message-is-fixed-a-buffer-overflow-is-not)
+for that fix and the overflow below, which is unrelated and still live.
+Unlike the two overflows above, this one needs no nesting at all; one
 `mkdir` or `write` with a long enough argument triggers it on the first try.
 `fs_parent_of` takes the caller's whole path argument and writes two pieces
 of it straight into fixed-size stack buffers with no length check anywhere:

@@ -838,7 +838,7 @@ behavior, add a backlog item describing it and stop.
   check (62 links, 0 broken) across `README.md` + all of `docs/*.md`.
 
 ## Code follow-ups (found 2026-10-04, needs a local QEMU boot test)
-- [ ] `fs_mkdir` (`kmain.mx:1597`-`1607`) returns the same `64` sentinel
+- [x] `fs_mkdir` (`kmain.mx:1597`-`1607`) returns the same `64` sentinel
   for "parent directory missing" and for every unrelated `fs_create_full`
   failure (name too long, permission denied, file table full, disk full),
   so the `mkdir` dispatch (`kmain.mx:2226`-`2238`) prints a false "parent
@@ -852,6 +852,23 @@ behavior, add a backlog item describing it and stop.
   the parent-missing message for plain `64`. Needs a QEMU boot to confirm
   `mkdir`'s other call sites and messages are unaffected. Found 2026-10-04
   while documenting the shell's error messages.
+
+  DONE (by a human commit, not this docs agent) 2026-11-15: a human already
+  made exactly this change — commit `dd76371` ("kernel: report disk errors
+  instead of pretending a write worked", merged via `fix/syscall-bounds`)
+  gave `fs_mkdir` the suggested `66` sentinel (now `kmain.mx:1886`-`1888`)
+  for an `fs_create_full` failure distinct from the genuine parent-missing
+  `64`, and left the `mkdir` dispatch unchanged (`kmain.mx:3028`-`3039`,
+  which already only checked `64`/`65` — exactly the "stop printing the
+  parent-missing message for plain 64" effect this item asked for, since
+  `66` now simply doesn't match either check). Found while re-auditing
+  `docs/shell.md` against current source for the 2026-11-11 backlog item
+  below; rewrote that doc's `mkdir`-error section (now titled "`mkdir`'s
+  double error message is fixed; a buffer overflow is not") to describe
+  the fixed behavior instead of the bug, and fixed the one other doc that
+  linked to it (`docs/fs-design.md`'s `fs_parent_of` paragraph, whose
+  anchor target and "sentinel-overload bug" phrasing both needed updating
+  since the section it pointed at changed). No code touched by this pass.
 
 ## Doc quality (found 2026-10-05, not yet done)
 - [x] Syscall 4 (read line, documented in `docs/programs.md`'s syscall ABI
@@ -2390,6 +2407,86 @@ behavior, add a backlog item describing it and stop.
   are now done — see the two entries below). Carried over from the
   2026-11-10 entry, which named this as the next step; still true after
   today's `architecture.md` pass.
+
+  Partial progress 2026-11-15: did `docs/shell.md` only — it turned out to
+  need far more than renumbering, so splitting the two files across two
+  days (rather than doing both shallowly in one) kept today's change
+  reviewable. `kmain.mx` had grown by ~800 lines since `docs/shell.md`'s
+  citations were last correct (three merges: `ffaca90` added argv/exit-
+  status/process/file/kill syscalls, `b91ff0b`/`7e09d35`/`b3c3c4e` added
+  the COM1 serial console, `dd76371` added disk-error reporting), so almost
+  every citation in the file had drifted. Read every citation directly
+  against current source (script-checked range pass, then every multi-line
+  range read and verified by hand) and fixed all of them, plus five real
+  behavioral findings beyond renumbering: (1) a new `serial` shell command
+  (`serial_status`, `kmain.mx:554`-`574`) had no row at all — added one;
+  (2) `run_command_impl` now has a `try_migrated_program` pre-dispatch
+  (`kmain.mx:2873`-`2886`) that runs `/bin/ls.bin`/`/bin/cat.bin`/
+  `/bin/echo.bin` instead of the kernel builtins for `ls`/`cat`/`echo`
+  whenever the filesystem is mounted and those binaries are executable
+  (true on a normal boot) — `docs/programs.md` already documented this
+  from the programs side ("Running one" section) but `docs/shell.md` had
+  no mention; added a note and marked those three rows builtin-fallback-
+  only; (3) `on_key()` is now a 3-line wrapper around `key_event(sc)`,
+  which has a second caller (`serial_service()`) so serial-typed commands
+  run through identical handling — the "After Enter" section described
+  `on_key` directly and needed rewriting around `key_event`; (4) the old
+  `g_overlay` flag that let `power`/`lock`/`sleep` skip the post-command
+  prompt redraw no longer exists anywhere in the source (confirmed by
+  grep) — replaced by the Borehole `g_scene` state machine — so that bullet
+  was deleted rather than renumbered. **Left unverified and worth a
+  follow-up**: whether/how the terminal's now-unconditional post-Enter
+  `draw_prompt()`/`move_cursor()` (`kmain.mx:3734`-`3737`) interacts with a
+  scene `ui_open_lock`/`ui_open_terminate`/`ui_open_sleep` just switched to
+  — tracing `ui_reveal`/`ui_start`/the per-tick redraw path in
+  `ui/borehole.mx` to confirm the scene's own draw wins was out of scope
+  for a docs-only pass already this large. (5) `fs_mkdir`'s double-error-
+  message bug (separate backlog item above, "Code follow-ups found
+  2026-10-04") turned out to already be fixed in source by a human commit
+  — rewrote that section of `docs/shell.md` to describe the fix instead of
+  the bug, and checked off that backlog item. Also fixed a link this
+  rename broke: `docs/fs-design.md`'s `fs_parent_of` paragraph pointed at
+  the old section anchor and called the (now-fixed) bug "the sentinel-
+  overload bug in `fs_parent_of`", which was already a bit of a stretch
+  (the bug was really in `fs_mkdir`'s return value, not `fs_parent_of`
+  itself) — retargeted the link and reworded the clause; did **not**
+  re-audit the rest of that paragraph's own `kmain.mx:` citations
+  (`fs_parent_of` `kmain.mx:1448`-`1490`, its `leaf`/`ppath` buffer writes,
+  both call sites' `leaf` declarations), which predate this pass and are
+  still stale (`fs_parent_of` is actually at `kmain.mx:1705`-`1747` now) —
+  flagged as a follow-up below rather than scope-creeping into a third
+  file. Verified every citation in the rewritten `docs/shell.md` resolves
+  in-range with a script, and every markdown link across `README.md` +
+  all of `docs/*.md` still resolves (the one break this pass caused, the
+  `fs-design.md` anchor above, is the one it also fixed).
+  **`docs/accounts.md` is still untouched and still stale** — same
+  ~800-line drift window applies. Scouted ahead while cross-referencing
+  `docs/shell.md`'s account-related rows, so tomorrow's pass can start from
+  real numbers instead of re-deriving them: `acct_init` is now
+  `kmain.mx:3534`-`3538` (not `2904`-`2908`), `login_default`
+  `kmain.mx:3540`-`3543`, `cwd_init` `kmain.mx:3546`-`3561`, `ensure_home`
+  `kmain.mx:3629`-`3642`, `hash_pw` `kmain.mx:3494`-`3502`, `acct_add`
+  `kmain.mx:3504`-`3519`, `acct_find` `kmain.mx:3521`-`3531`, `can_write`
+  `kmain.mx:3607`-`3615`, `dir_owner`/`dir_mode` `kmain.mx:3618`-`3625`,
+  `draw_prompt` `kmain.mx:939`-`957`. The account-table globals themselves
+  (`g_uid` `kmain.mx:25`, `g_username` `:27`, `g_acct_name` `:29`,
+  `g_acct_uid` `:30`, `g_acct_hash` `:31`) have **not** moved — confirmed by
+  direct read, so those five citations in `docs/accounts.md` are already
+  correct and need no change. The kmain() init-order citation needs
+  updating to `kmain.mx:3781`-`3784` for the four calls this doc walks
+  through (the order itself — `acct_init`, `ensure_home`, `login_default`,
+  `cwd_init` — is unchanged); the "both run at `kmain.mx:3605`-`3606`,
+  ahead of `acct_init()`" sentence about `fs_ensure_layout`/`fs_populate_bin`
+  needs `kmain.mx:3779`-`3780`. One real rename, not just a line move:
+  `lock_ok` no longer exists in `kmain.mx` at all — it moved to
+  `ui/borehole.mx:1675`-`1682` as `ui_lock_ok()` (same logic: hashes the
+  typed buffer and compares against `acct_find`'s hash for the *current*
+  username) as part of the Borehole rewrite. One real behavioral-comment
+  fix still needed: `docs/accounts.md`'s "Password entry everywhere" note
+  says `kread_line` "polls the keyboard directly" — it actually calls
+  `input_wait()` (PS/2 or COM1), the same fix already made to `kread_line`'s
+  own source comment on 2026-11-14 but never carried into this doc.
+  `kread_line` itself is now `kmain.mx:3565`-`3602` (not `2935`-`2973`).
 - [x] `docs/memory-map.md` is internally inconsistent about whether `exec`
   touches FILEBUF: its address table (line 21) lists `FILEBUF` as used by
   "`cat`/`run`/`exec`", but its own "Why exactly these buffers" section
@@ -2549,3 +2646,25 @@ behavior, add a backlog item describing it and stop.
   every existing citation to both functions across `docs/*.md` and
   `BACKLOG.md` (`kmain.mx:2196`, `kread_line` at `kmain.mx:3565`, etc.) —
   all still point at the right lines.
+
+## Doc quality (found 2026-11-15, not yet done)
+- [ ] `docs/fs-design.md`'s "A third, unrelated unbounded write" paragraph
+  (the `fs_parent_of` 24+-character buffer-overflow writeup) cites
+  `fs_parent_of` at `kmain.mx:1448`-`1490`; the real current location is
+  `kmain.mx:1705`-`1747` (confirmed while fixing this paragraph's link to
+  `docs/shell.md` today — see that backlog item above). The rest of the
+  paragraph's citations are almost certainly stale by the same window and
+  were not checked: the `leaf`/`ppath` buffer-write lines (`kmain.mx:1460`,
+  `1463`-`1469`, `1473`-`1479`), both call sites' `leaf` declarations
+  (`fs_mkdir` `kmain.mx:1599`/`1598`, `write`'s create path
+  `kmain.mx:2308`/`2307` — today's `docs/shell.md` pass found these are now
+  `kmain.mx:1878` and `kmain.mx:3117`), and `fs_create_full`'s name-length
+  check (`kmain.mx:1534`-`1538`, now `kmain.mx:1818`-`1819`). Not fixed
+  today — this pass was already scoped to `docs/shell.md`'s own citations
+  plus the one link this doc's heading rename broke, and widening into a
+  full `fs-design.md` re-audit would have been a second, unrelated item in
+  the same day. The rest of `docs/fs-design.md` (the `path_of`/`g_cwdpath`
+  and `draw_prompt`/`disp` overflow paragraphs just above this one) was not
+  checked either and may have the same drift — worth auditing the whole
+  file with the same read-every-cited-line method used on
+  `docs/architecture.md`/`docs/memory-map.md`/`docs/programs.md`.
