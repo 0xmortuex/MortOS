@@ -259,3 +259,11 @@ Write `mort.iso` byte-for-byte to a USB stick (e.g. Rufus in "DD image" mode) an
 ## Related
 
 - [**Mort**](https://github.com/0xmortuex/Mort) — the language this kernel is written in: lexer, parser, type checker, and C code generator, from scratch in Python with zero libraries.
+
+## Imported repositories
+
+Three small repositories were imported into this one with `git subtree`, history included. Each folder is the repository as it was at import; `build.py` does not read any of them.
+
+- [`mortnet/`](mortnet/) — from [0xmortuex/mortnet](https://github.com/0xmortuex/mortnet): the standalone TCP/IP stack with its host tests and demos. The kernel builds from the vendored copy in [`net/`](net/), not from this folder.
+- [`hardware/`](hardware/) — from [0xmortuex/MortHardware](https://github.com/0xmortuex/MortHardware): bare-metal drivers and documentation extracted from MORT OS.
+- [`mpkg-repo/`](mpkg-repo/) — from [0xmortuex/mort-repo](https://github.com/0xmortuex/mort-repo): the package repository for `mpkg`, the planned package manager.
