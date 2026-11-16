@@ -2487,6 +2487,37 @@ behavior, add a backlog item describing it and stop.
   `input_wait()` (PS/2 or COM1), the same fix already made to `kread_line`'s
   own source comment on 2026-11-14 but never carried into this doc.
   `kread_line` itself is now `kmain.mx:3565`-`3602` (not `2935`-`2973`).
+
+  Partial progress 2026-11-16: re-audited `docs/accounts.md` against current source using
+  yesterday's scouted line numbers as a starting point, then verified every
+  one by direct read rather than trusting the scout (same ~800-line,
+  non-uniform drift window as `docs/shell.md`). Fixed all 72 `file:line`
+  citations in the file. Found two things beyond renumbering: (1) a real
+  rename, not just a moved line — `lock_ok` no longer exists in `kmain.mx`;
+  it moved to `ui/borehole.mx:1675`-`1682` as `ui_lock_ok()` in the Borehole
+  rewrite (confirmed identical logic: hashes the typed buffer, compares
+  against `acct_find`'s hash for the *current* username) — updated both the
+  "Where the current user shows up" table and the lock-screen paragraph to
+  name the real function and file, with a one-line note on the move; (2) the
+  doc's "Password entry everywhere" paragraph still said `kread_line` "polls
+  the keyboard directly" — the same stale claim already corrected in
+  `kread_line`'s own source comment on 2026-11-14, but never carried into
+  this doc — fixed to "reads via `input_wait()` (PS/2 or COM1)". While
+  reading `kmain.mx:3486`-`3492`'s header comment for the accounts subsystem
+  to ground the hash_pw citation, found the identical stale claim a third
+  time, in source this time, not a doc: "Password prompts read the keyboard
+  directly (kread_line)" — fixed that comment too (comment-only, no behavior
+  change), so the 2026-11-14 fix now actually covers every place that made
+  the claim. Also fixed two incidentally-stale `build.py` line numbers in
+  this doc's `ensure_disk()`/`hello.txt` citation (`build.py:341`-`365` ->
+  `387`-`411`) found while re-verifying it; `mkfs.py:122`-`123` was already
+  correct, confirmed by direct read. Verified every citation in the
+  rewritten doc resolves in-range with a script (502 citations across
+  `README.md` + all of `docs/*.md`, 0 out of range) and every markdown link
+  resolves (82 local links, 0 broken). `docs/fs-design.md` and
+  `docs/networking.md` are still untouched by this method — the other two
+  files this item names — and the existing 2026-11-15 `fs-design.md` item
+  below (the `fs_parent_of` citation drift) is the next natural target.
 - [x] `docs/memory-map.md` is internally inconsistent about whether `exec`
   touches FILEBUF: its address table (line 21) lists `FILEBUF` as used by
   "`cat`/`run`/`exec`", but its own "Why exactly these buffers" section

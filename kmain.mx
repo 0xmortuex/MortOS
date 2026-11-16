@@ -3488,8 +3488,8 @@ fn on_exception(vec: u32) {
 // An in-memory account table (root + a normal user) with djb2-hashed passwords
 // — not cryptographically strong, but no worse than a toy /etc/passwd, and it
 // keeps plaintext off the disk. The current user is g_uid/g_username. Password
-// prompts read the keyboard directly (kread_line), the same polling trick the
-// program syscall path uses, so they work from inside a shell command.
+// prompts read via input_wait() (kread_line), PS/2 or COM1, the same polling
+// trick the program syscall path uses, so they work from inside a shell command.
 
 fn hash_pw(s: *u8) -> u32 {
     let h: u32 = 5381;
