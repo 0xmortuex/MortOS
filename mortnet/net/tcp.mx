@@ -1,0 +1,78 @@
+// net/tcp.mx — TCP segments (RFC 793): the wire format and checksum.
+//
+// This file is the format layer — build a segment, read its fields, check its
+// checksum. The connection state machine (handshake, sequence tracking,
+// teardown) lives in the demo, which drives these against a real peer; keeping
+// the format pure makes it host-testable with golden segments.
+//
+// Header (20 bytes, no options): src port (2) | dst port (2) | seq (4) |
+// ack (4) | data-offset+flags (2) | window (2) | checksum (2) | urgent (2).
+// The checksum covers the same pseudo-header as UDP, but with protocol 6.
+//
+// Depends on net/endian.mx, net/ip.mx (ip4_copy), net/checksum.mx.
+
+let IP_PROTO_TCP: u8 = 6;
+
+let TCP_FIN: u8 = 0x01;
+let TCP_SYN: u8 = 0x02;
+let TCP_RST: u8 = 0x04;
+let TCP_PSH: u8 = 0x08;
+let TCP_ACK: u8 = 0x10;
+
+fn tcp_src_port(buf: u64) -> u16 { return be16_load(buf); }
+fn tcp_dst_port(buf: u64) -> u16 { return be16_load(buf + 2); }
+fn tcp_seq(buf: u64) -> u32 { return be32_load(buf + 4); }
+fn tcp_ack(buf: u64) -> u32 { return be32_load(buf + 8); }
+
+// Header length in bytes (data offset field, in 32-bit words, times 4).
+fn tcp_header_len(buf: u64) -> u32 {
+    let b: *u8 = (buf + 12) as *u8;
+    return (((*b >> 4) & 0x0F) as u32) * 4;
+}
+
+fn tcp_flags(buf: u64) -> u8 {
+    let f: *u8 = (buf + 13) as *u8;
+    return *f;
+}
+
+fn tcp_window(buf: u64) -> u16 { return be16_load(buf + 14); }
+fn tcp_payload(buf: u64) -> u64 { return buf + (tcp_header_len(buf) as u64); }
+
+// Checksum over the pseudo-header (src, dst, 0, proto 6, TCP length) + segment.
+fn tcp_checksum(src_ip: u64, dst_ip: u64, tcp: u64, tcp_len: u32) -> u16 {
+    let ph: [u8; 12] = [0; 12];
+    let p: u64 = &ph as u64;
+    ip4_copy(p, src_ip);
+    ip4_copy(p + 4, dst_ip);
+    let z: *u8 = (p + 8) as *u8; *z = 0;
+    let pr: *u8 = (p + 9) as *u8; *pr = IP_PROTO_TCP;
+    be16_store(p + 10, tcp_len as u16);
+    return inet_fold(inet_sum(tcp, tcp_len, inet_sum(p, 12, 0)));
+}
+
+// Build a 20-byte-header segment at buf; payload (if any) already sits at
+// buf+20. Returns the TCP total length (20 + data_len).
+fn tcp_build(buf: u64, src_port: u16, dst_port: u16, seq: u32, ack: u32,
+             flags: u8, window: u16, src_ip: u64, dst_ip: u64,
+             data_len: u32) -> u32 {
+    be16_store(buf, src_port);
+    be16_store(buf + 2, dst_port);
+    be32_store(buf + 4, seq);
+    be32_store(buf + 8, ack);
+    let off: *u8 = (buf + 12) as *u8;
+    *off = 0x50;                            // data offset 5 words (20 bytes)
+    let fl: *u8 = (buf + 13) as *u8;
+    *fl = flags;
+    be16_store(buf + 14, window);
+    be16_store(buf + 16, 0);                // checksum: zero, then fill in
+    be16_store(buf + 18, 0);                // urgent pointer
+    let total: u32 = 20 + data_len;
+    be16_store(buf + 16, tcp_checksum(src_ip, dst_ip, buf, total));
+    return total;
+}
+
+// A received segment is intact iff the checksum over pseudo-header + segment
+// folds to zero.
+fn tcp_verify(src_ip: u64, dst_ip: u64, tcp: u64, tcp_len: u32) -> bool {
+    return tcp_checksum(src_ip, dst_ip, tcp, tcp_len) == 0;
+}

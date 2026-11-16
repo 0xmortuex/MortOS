@@ -1,0 +1,79 @@
+// net/netcfg.mx — our identity on the wire, and the frame dispatcher.
+//
+// net_handle_frame() is the heart of M2: hand it a received frame and it decides
+// whether we owe a reply — an ARP answer or an ICMP echo reply — and if so
+// builds the whole response (Ethernet + ARP, or Ethernet + IPv4 + ICMP) into the
+// tx buffer. It is pure: frame in, frame out, no hardware. That is exactly what
+// makes "MORT OS answers a ping" testable on the host with real captured packets,
+// and it is the same function the kernel's RX loop calls for every frame.
+
+// Our MAC is learned from the card at init (rtl_mac). Our IP is fixed to QEMU's
+// default SLIRP guest address so the demo needs no DHCP (that arrives in M3).
+let g_our_mac: [u8; 6] = [0; 6];
+let g_our_ip: [u8; 4] = [10, 0, 2, 15];
+
+fn net_set_mac(addr: u64) {
+    mac_copy(&g_our_mac as u64, addr);
+}
+
+// Set our IPv4 address — hardcoded at boot, or learned from DHCP in M3.
+fn net_set_ip(addr: u64) {
+    ip4_copy(&g_our_ip as u64, addr);
+}
+
+fn net_our_mac() -> u64 { return &g_our_mac as u64; }
+fn net_our_ip() -> u64 { return &g_our_ip as u64; }
+
+// Given a received frame (rx, rxlen), build any response into tx and return its
+// length. Returns 0 when the frame is not ours to answer.
+fn net_handle_frame(rx: u64, rxlen: u32, tx: u64) -> u32 {
+    if rxlen < 14 {
+        return 0;
+    }
+    let et: u16 = eth_type(rx);
+
+    // --- ARP: answer "who has our IP?" ---
+    if et == ETH_ARP {
+        let a: u64 = eth_payload(rx);
+        if arp_oper(a) != ARP_REQUEST {
+            return 0;
+        }
+        if !ip4_eq(arp_tpa(a), net_our_ip()) {
+            return 0;                       // asking about someone else
+        }
+        eth_build_header(tx, arp_sha(a), net_our_mac(), ETH_ARP);
+        let n: u32 = arp_build_reply(eth_payload(tx), a, net_our_mac(), net_our_ip());
+        return 14 + n;
+    }
+
+    // --- IPv4 / ICMP: answer a ping to our IP ---
+    if et == ETH_IP {
+        let ip: u64 = eth_payload(rx);
+        if ip_proto(ip) != IP_PROTO_ICMP {
+            return 0;
+        }
+        if !ip4_eq(ip_dst(ip), net_our_ip()) {
+            return 0;                       // not addressed to us
+        }
+        let ihl: u32 = ip_ihl_bytes(ip);
+        let icmp: u64 = ip + (ihl as u64);
+        if icmp_type(icmp) != ICMP_ECHO_REQUEST {
+            return 0;                       // some other ICMP we don't handle yet
+        }
+        let icmp_len: u32 = (ip_total_len(ip) as u32) - ihl;
+
+        // Ethernet: back to the sender's MAC, from ours.
+        eth_build_header(tx, eth_src(rx), net_our_mac(), ETH_IP);
+        let tx_ip: u64 = eth_payload(tx);
+        let tx_icmp: u64 = tx_ip + (IP_HDR_LEN as u64);
+
+        // ICMP first (IP's total-length and checksum need the payload size).
+        let n: u32 = icmp_build_echo_reply(tx_icmp, icmp, icmp_len);
+        // IPv4: from us, back to the requester; reuse its IP identification.
+        ip_build_header(tx_ip, net_our_ip(), ip_src(ip), IP_PROTO_ICMP,
+                        be16_load(ip + 4), n as u16);
+        return 14 + IP_HDR_LEN + n;
+    }
+
+    return 0;
+}

@@ -1,0 +1,30 @@
+// test_udp.mx — UDP header build, accessors, and pseudo-header checksum.
+//! expect: 10
+//! expect: 68
+//! expect: 67
+//! expect: 1
+//! expect: 0
+
+fn main() -> int {
+    let src_ip: [u8; 4] = [10, 0, 2, 15];
+    let dst_ip: [u8; 4] = [10, 0, 2, 2];
+
+    // A datagram from :68 to :67 carrying two payload bytes.
+    let seg: [u8; 16] = [0; 16];
+    let udp: u64 = &seg as u64;
+    let pay: *u8 = (udp_payload(udp)) as *u8; *pay = 0x68;
+    let pay1: *u8 = (udp_payload(udp) + 1) as *u8; *pay1 = 0x69;
+    let total: u32 = udp_build(udp, 68, 67, &src_ip as u64, &dst_ip as u64, 2);
+
+    print(total as i64);                    // 10 = 8 + 2
+    print(udp_src_port(udp) as i64);        // 68
+    print(udp_dst_port(udp) as i64);        // 67
+
+    // The checksum we wrote must verify against the pseudo-header.
+    if udp_verify(&src_ip as u64, &dst_ip as u64, udp) { print(1); } else { print(0); }   // 1
+
+    // Corrupt a payload byte: verification must fail.
+    *pay = 0x00;
+    if udp_verify(&src_ip as u64, &dst_ip as u64, udp) { print(1); } else { print(0); }   // 0
+    return 0;
+}

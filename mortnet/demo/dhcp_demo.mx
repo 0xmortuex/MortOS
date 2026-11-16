@@ -1,0 +1,171 @@
+// demo/dhcp_demo.mx — the M3 payoff: MORT OS gets an IP address by itself.
+//
+// Boots with NO configured address (0.0.0.0), then runs the DHCP handshake
+// against QEMU's built-in server: broadcast DISCOVER, receive OFFER, send
+// REQUEST, receive ACK, and adopt the address the server assigned. Reports each
+// step on VGA. The capture shows the full DORA exchange.
+//
+// build_demo.py concatenates net/*.mx + glue/rtl8139.mx ahead of this file.
+
+fn vga_line(row: u32, s: u64, color: u8) {
+    let vga: u32 = 0xB8000 + row * 160;
+    let i: u32 = 0;
+    while true {
+        let ch: u8 = *((s + (i as u64)) as *u8);
+        if ch == 0 { return; }
+        *((vga + i * 2) as *u8) = ch;
+        *((vga + i * 2 + 1) as *u8) = color;
+        i = i + 1;
+    }
+}
+
+// Print a dotted-quad IP at (row, col-ish start) — small, just for the demo.
+fn vga_ip(row: u32, ip: u64) {
+    let vga: u32 = 0xB8000 + row * 160 + 2 * 2;
+    let col: u32 = 0;
+    for octet: u32 in 0..4 {
+        let v: u32 = *((ip + (octet as u64)) as *u8) as u32;
+        // up to 3 digits
+        let hundreds: u32 = v / 100;
+        let tens: u32 = (v / 10) % 10;
+        let ones: u32 = v % 10;
+        if hundreds > 0 {
+            *((vga + col * 2) as *u8) = (48 + hundreds) as u8; *((vga + col * 2 + 1) as *u8) = 0x0A; col = col + 1;
+        }
+        if hundreds > 0 || tens > 0 {
+            *((vga + col * 2) as *u8) = (48 + tens) as u8; *((vga + col * 2 + 1) as *u8) = 0x0A; col = col + 1;
+        }
+        *((vga + col * 2) as *u8) = (48 + ones) as u8; *((vga + col * 2 + 1) as *u8) = 0x0A; col = col + 1;
+        if octet < 3 {
+            *((vga + col * 2) as *u8) = 46; *((vga + col * 2 + 1) as *u8) = 0x0A; col = col + 1;   // '.'
+        }
+    }
+}
+
+fn send_frame(src: u64, len: u32) {
+    let tx: u64 = &g_rtl_txbuf as u64;
+    for i: u32 in 0..len {
+        let s: *u8 = (src + (i as u64)) as *u8;
+        let d: *u8 = (tx + (i as u64)) as *u8;
+        *d = *s;
+    }
+    rtl_transmit(len);
+}
+
+let g_dhcp_tx: [u8; 512] = [0; 512];
+let g_dhcp_rx: [u8; 2048] = [0; 2048];
+let g_offer_ip: [u8; 4] = [0; 4];
+let g_server_ip: [u8; 4] = [0; 4];
+
+// Wrap a DHCP message (already built at dhcp_msg, dhcp_len bytes) in
+// UDP(68->67) + IPv4(0.0.0.0 -> 255.255.255.255) + broadcast Ethernet, all in
+// g_dhcp_tx, and send it. Returns nothing.
+fn dhcp_send(dhcp_len: u32) {
+    let base: u64 = &g_dhcp_tx as u64;
+    let zero_ip: [u8; 4] = [0, 0, 0, 0];
+    let bcast_ip: [u8; 4] = [255, 255, 255, 255];
+    let bcast_mac: [u8; 6] = [0; 6];
+    mac_broadcast(&bcast_mac as u64);
+
+    // Layout: eth(14) | ip(20) | udp(8) | dhcp(dhcp_len). Build the DHCP body
+    // in place first (caller already did), then UDP, IP, Ethernet around it.
+    eth_build_header(base, &bcast_mac as u64, net_our_mac(), ETH_IP);
+    let ip: u64 = eth_payload(base);            // base + 14
+    let udp: u64 = ip + 20;                     // base + 34
+    let udp_total: u32 = udp_build(udp, 68, 67, &zero_ip as u64, &bcast_ip as u64,
+                                   dhcp_len);
+    ip_build_header(ip, &zero_ip as u64, &bcast_ip as u64, IP_PROTO_UDP,
+                    0x0001, udp_total as u16);
+    send_frame(base, 14 + 20 + udp_total);
+}
+
+// Build the DHCP body at the right spot in g_dhcp_tx and return its length.
+fn dhcp_body_addr() -> u64 {
+    return (&g_dhcp_tx as u64) + 14 + 20 + 8;   // eth + ip + udp
+}
+
+fn kmain() {
+    let banner: [u8; 20] = [
+        109, 111, 114, 116, 110, 101, 116, 32, 77, 51, 58, 32,
+        68, 72, 67, 80, 0, 0, 0, 0];                            // "mortnet M3: DHCP"
+    vga_line(0, &banner as u64, 0x0A);
+
+    if !rtl_init() {
+        let miss: [u8; 12] = [78, 79, 32, 82, 84, 76, 56, 49, 51, 57, 0, 0];
+        vga_line(1, &miss as u64, 0x0C);
+        asm("hlt");
+        return;
+    }
+
+    let mymac: [u8; 6] = [0; 6];
+    rtl_mac(&mymac as u64);
+    net_set_mac(&mymac as u64);
+    let noip: [u8; 4] = [0, 0, 0, 0];
+    net_set_ip(&noip as u64);                    // start with no address
+
+    let xid: u32 = 0x6D6F7274;                   // "mort"
+
+    // 1. DISCOVER
+    let dlen: u32 = dhcp_build_discover(dhcp_body_addr(), xid, net_our_mac());
+    dhcp_send(dlen);
+    let s_disc: [u8; 16] = [68, 73, 83, 67, 79, 86, 69, 82, 32, 45, 62, 0, 0, 0, 0, 0];   // "DISCOVER ->"
+    vga_line(1, &s_disc as u64, 0x0E);
+
+    let have_offer: bool = false;
+    let requested: bool = false;
+    let bound: bool = false;
+
+    let spins: u32 = 0;
+    while spins < 20000000 {
+        let rxb: u64 = &g_dhcp_rx as u64;
+        let n: u32 = rtl_poll_rx(rxb);
+        if n >= 42 && eth_type(rxb) == ETH_IP {
+            let ip: u64 = eth_payload(rxb);
+            if ip_proto(ip) == IP_PROTO_UDP {
+                let udp: u64 = ip + (ip_ihl_bytes(ip) as u64);
+                if udp_dst_port(udp) == 68 {                 // a DHCP reply to us
+                    let dhcp: u64 = udp_payload(udp);
+                    let dhcp_len: u32 = (udp_length(udp) as u32) - 8;
+                    let mt: u8 = dhcp_msg_type(dhcp, dhcp_len);
+
+                    if mt == DHCP_OFFER && !have_offer {
+                        ip4_copy(&g_offer_ip as u64, dhcp_yiaddr(dhcp));
+                        let sid: u64 = dhcp_find_option(dhcp, dhcp_len, 54);
+                        if sid != 0 { ip4_copy(&g_server_ip as u64, sid); }
+                        have_offer = true;
+                        let s_off: [u8; 12] = [79, 70, 70, 69, 82, 32, 60, 45, 0, 0, 0, 0];   // "OFFER <-"
+                        vga_line(2, &s_off as u64, 0x0E);
+                    }
+
+                    if mt == DHCP_ACK && requested && !bound {
+                        net_set_ip(dhcp_yiaddr(dhcp));       // adopt the address
+                        bound = true;
+                        let s_ack: [u8; 12] = [65, 67, 75, 32, 60, 45, 0, 0, 0, 0, 0, 0];      // "ACK <-"
+                        vga_line(4, &s_ack as u64, 0x0E);
+                        let s_ok: [u8; 12] = [73, 80, 58, 0, 0, 0, 0, 0, 0, 0, 0, 0];          // "IP:"
+                        vga_line(5, &s_ok as u64, 0x0A);
+                        vga_ip(5, net_our_ip());
+                        asm("hlt");
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 3. Once we have an OFFER, REQUEST it (exactly once).
+        if have_offer && !requested {
+            let rlen: u32 = dhcp_build_request(dhcp_body_addr(), xid, net_our_mac(),
+                                               &g_offer_ip as u64, &g_server_ip as u64);
+            dhcp_send(rlen);
+            requested = true;
+            let s_req: [u8; 12] = [82, 69, 81, 85, 69, 83, 84, 32, 45, 62, 0, 0];   // "REQUEST ->"
+            vga_line(3, &s_req as u64, 0x0E);
+        }
+
+        spins = spins + 1;
+    }
+
+    let s_fail: [u8; 16] = [68, 72, 67, 80, 32, 116, 105, 109, 101, 111, 117, 116, 0, 0, 0, 0];   // "DHCP timeout"
+    vga_line(5, &s_fail as u64, 0x08);
+    asm("hlt");
+}

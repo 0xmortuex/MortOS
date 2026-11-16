@@ -1,0 +1,70 @@
+// net/buf.mx — the packet buffer pool.
+//
+// Design rule #1: no dynamic allocation, anywhere. All packet memory is
+// this one static pool, carved into fixed slots. A driver or protocol
+// borrows a slot with buf_alloc(), fills it, and returns it with
+// buf_free(). A slot is named by its index; buf_addr() turns that into
+// the address of its first byte.
+//
+// 8 slots x 1600 bytes: a full Ethernet frame is at most 1518 bytes, so
+// each slot holds any frame with headroom, and 12.8 KB total is cheap
+// enough to live inside a kernel image.
+
+let BUF_USED: [u8; 8] = [0; 8];
+let BUF_LEN: [u16; 8] = [0; 8];
+let BUF_POOL: [u8; 12800] = [0; 12800];
+
+// Borrow a free slot. Returns the slot index, or -1 if the pool is empty.
+fn buf_alloc() -> i32 {
+    for i: u32 in 0..8 {
+        if BUF_USED[i] == 0 {
+            BUF_USED[i] = 1;
+            BUF_LEN[i] = 0;
+            return i as i32;
+        }
+    }
+    return -1;
+}
+
+// Return a slot to the pool. Freeing an invalid index is a no-op.
+fn buf_free(slot: i32) {
+    if slot >= 0 && slot < 8 {
+        BUF_USED[slot as u32] = 0;
+        BUF_LEN[slot as u32] = 0;
+    }
+}
+
+// Address of the first byte of a slot's storage.
+fn buf_addr(slot: i32) -> u64 {
+    return (&BUF_POOL as u64) + ((slot as u64) * 1600);
+}
+
+// The usable size of every slot, in bytes.
+fn buf_capacity() -> u32 {
+    return 1600;
+}
+
+// Record how many bytes of a slot are actually filled.
+fn buf_set_len(slot: i32, n: u16) {
+    if slot >= 0 && slot < 8 {
+        BUF_LEN[slot as u32] = n;
+    }
+}
+
+fn buf_len(slot: i32) -> u16 {
+    if slot >= 0 && slot < 8 {
+        return BUF_LEN[slot as u32];
+    }
+    return 0;
+}
+
+// How many slots are currently borrowed.
+fn buf_in_use() -> u32 {
+    let n: u32 = 0;
+    for i: u32 in 0..8 {
+        if BUF_USED[i] == 1 {
+            n = n + 1;
+        }
+    }
+    return n;
+}

@@ -1,0 +1,194 @@
+// demo/tcp_demo.mx — the M5 boss fight: a real TCP connection from MORT OS.
+//
+// Active open to 10.0.2.2:8888 (a server on the host, reached through SLIRP,
+// whose TCP stack is our peer): three-way handshake, send a request, receive
+// the reply and ACK it, then a clean four-way close. Tracks sequence and
+// acknowledgement numbers throughout. The capture shows the whole lifecycle;
+// the host server confirms it received our bytes.
+//
+// build_demo.py concatenates net/*.mx + glue/rtl8139.mx ahead of this file.
+
+fn vga_line(row: u32, s: u64, color: u8) {
+    let vga: u32 = 0xB8000 + row * 160;
+    let i: u32 = 0;
+    while true {
+        let ch: u8 = *((s + (i as u64)) as *u8);
+        if ch == 0 { return; }
+        *((vga + i * 2) as *u8) = ch;
+        *((vga + i * 2 + 1) as *u8) = color;
+        i = i + 1;
+    }
+}
+
+fn send_frame(src: u64, len: u32) {
+    let tx: u64 = &g_rtl_txbuf as u64;
+    for i: u32 in 0..len {
+        let s: *u8 = (src + (i as u64)) as *u8;
+        let d: *u8 = (tx + (i as u64)) as *u8;
+        *d = *s;
+    }
+    rtl_transmit(len);
+}
+
+// Connection state.
+let g_tcp_tx: [u8; 256] = [0; 256];
+let g_tcp_rx: [u8; 2048] = [0; 2048];
+let g_resp: [u8; 64] = [0; 64];
+let g_peer_mac: [u8; 6] = [0; 6];
+let g_peer_ip: [u8; 4] = [10, 0, 2, 2];
+let g_our_ip4: [u8; 4] = [10, 0, 2, 15];
+let g_local_port: u16 = 40001;
+let g_remote_port: u16 = 8888;
+let g_snd_nxt: u32 = 0;      // next sequence number we will send
+let g_rcv_nxt: u32 = 0;      // next sequence number we expect (what we ACK)
+let g_ip_id: u16 = 0x0100;
+
+// Build eth + IPv4 + TCP with the current snd/rcv numbers and the given flags
+// and payload, send it, and advance g_snd_nxt (SYN and FIN each consume one
+// sequence number; data consumes its length; a pure ACK consumes none).
+fn tcp_xmit(flags: u8, data: u64, data_len: u32) {
+    let base: u64 = &g_tcp_tx as u64;
+    eth_build_header(base, &g_peer_mac as u64, net_our_mac(), ETH_IP);
+    let ip: u64 = eth_payload(base);
+    let tcp: u64 = ip + 20;
+    for i: u32 in 0..data_len {
+        let s: *u8 = (data + (i as u64)) as *u8;
+        let d: *u8 = (tcp + 20 + (i as u64)) as *u8;
+        *d = *s;
+    }
+    let tcp_total: u32 = tcp_build(tcp, g_local_port, g_remote_port,
+                                   g_snd_nxt, g_rcv_nxt, flags, 64240,
+                                   &g_our_ip4 as u64, &g_peer_ip as u64, data_len);
+    ip_build_header(ip, &g_our_ip4 as u64, &g_peer_ip as u64, IP_PROTO_TCP,
+                    g_ip_id, tcp_total as u16);
+    g_ip_id = g_ip_id + 1;
+    send_frame(base, 14 + 20 + tcp_total);
+
+    let adv: u32 = data_len;
+    if (flags & TCP_SYN) != 0 { adv = adv + 1; }
+    if (flags & TCP_FIN) != 0 { adv = adv + 1; }
+    g_snd_nxt = g_snd_nxt + adv;
+}
+
+fn kmain() {
+    let banner: [u8; 24] = [
+        109, 111, 114, 116, 110, 101, 116, 32, 77, 53, 58, 32, 84, 67, 80, 32,
+        99, 111, 110, 110, 101, 99, 116, 0];               // "mortnet M5: TCP connect"
+    vga_line(0, &banner as u64, 0x0A);
+
+    if !rtl_init() {
+        let miss: [u8; 12] = [78, 79, 32, 82, 84, 76, 56, 49, 51, 57, 0, 0];
+        vga_line(1, &miss as u64, 0x0C);
+        asm("hlt");
+        return;
+    }
+    let mymac: [u8; 6] = [0; 6];
+    rtl_mac(&mymac as u64);
+    net_set_mac(&mymac as u64);
+    net_set_ip(&g_our_ip4 as u64);
+
+    // ARP for the server so we know its MAC.
+    let arpf: u64 = &g_tcp_tx as u64;
+    let bcast: [u8; 6] = [0; 6];
+    mac_broadcast(&bcast as u64);
+    eth_build_header(arpf, &bcast as u64, net_our_mac(), ETH_ARP);
+    let alen: u32 = arp_build_request(eth_payload(arpf), net_our_mac(),
+                                      net_our_ip(), &g_peer_ip as u64);
+    send_frame(arpf, 14 + alen);
+
+    let have_mac: bool = false;
+    let state: u32 = 0;         // 0 closed, 1 syn-sent, 2 established, 3 done
+    let request: [u8; 8] = [109, 111, 114, 116, 110, 101, 116, 10];   // "mortnet\n"
+
+    let spins: u32 = 0;
+    while spins < 60000000 {
+        let rxb: u64 = &g_tcp_rx as u64;
+        let n: u32 = rtl_poll_rx(rxb);
+        if n >= 14 {
+            let et: u16 = eth_type(rxb);
+
+            if et == ETH_ARP {
+                let a: u64 = eth_payload(rxb);
+                if arp_oper(a) == ARP_REPLY && ip4_eq(arp_spa(a), &g_peer_ip as u64) {
+                    mac_copy(&g_peer_mac as u64, arp_sha(a));
+                    have_mac = true;
+                }
+            }
+
+            if et == ETH_IP {
+                let ip: u64 = eth_payload(rxb);
+                if ip_proto(ip) == IP_PROTO_TCP {
+                    let tcp: u64 = ip + (ip_ihl_bytes(ip) as u64);
+                    if tcp_dst_port(tcp) == g_local_port {
+                        let flags: u8 = tcp_flags(tcp);
+                        let their_seq: u32 = tcp_seq(tcp);
+                        let their_ack: u32 = tcp_ack(tcp);
+                        let hdr: u32 = tcp_header_len(tcp);
+                        let seg_len: u32 = (ip_total_len(ip) as u32)
+                                           - ip_ihl_bytes(ip) - hdr;
+
+                        // Handshake: SYN-ACK -> established.
+                        if state == 1 && (flags & TCP_SYN) != 0
+                            && (flags & TCP_ACK) != 0 && their_ack == g_snd_nxt {
+                            g_rcv_nxt = their_seq + 1;      // SYN consumes one
+                            state = 2;
+                            tcp_xmit(TCP_ACK, 0, 0);        // complete the handshake
+                            tcp_xmit(TCP_PSH | TCP_ACK, &request as u64, 8);
+                            let s_c: [u8; 16] = [
+                                67, 79, 78, 78, 69, 67, 84, 69, 68, 0, 0, 0, 0, 0, 0, 0];   // "CONNECTED"
+                            vga_line(1, &s_c as u64, 0x0A);
+                        } else {
+                            if state == 2 {
+                                // In-order data: copy, ACK it, show it.
+                                if seg_len > 0 && their_seq == g_rcv_nxt {
+                                    let pay: u64 = tcp + (hdr as u64);
+                                    let show: u32 = seg_len;
+                                    if show > 63 { show = 63; }
+                                    for i: u32 in 0..show {
+                                        let s: *u8 = (pay + (i as u64)) as *u8;
+                                        let d: *u8 = ((&g_resp as u64) + (i as u64)) as *u8;
+                                        *d = *s;
+                                    }
+                                    let term: *u8 = ((&g_resp as u64) + (show as u64)) as *u8;
+                                    *term = 0;
+                                    g_rcv_nxt = g_rcv_nxt + seg_len;
+                                    tcp_xmit(TCP_ACK, 0, 0);
+                                    let s_r: [u8; 8] = [82, 88, 58, 32, 0, 0, 0, 0];   // "RX: "
+                                    vga_line(2, &s_r as u64, 0x0E);
+                                    vga_line(3, &g_resp as u64, 0x0B);
+                                }
+                                // Peer closing: ACK its FIN, then send ours.
+                                if (flags & TCP_FIN) != 0 {
+                                    g_rcv_nxt = g_rcv_nxt + 1;   // FIN consumes one
+                                    tcp_xmit(TCP_ACK, 0, 0);
+                                    tcp_xmit(TCP_FIN | TCP_ACK, 0, 0);
+                                    state = 3;
+                                    let s_cl: [u8; 12] = [
+                                        67, 76, 79, 83, 69, 68, 32, 79, 75, 0, 0, 0];   // "CLOSED OK"
+                                    vga_line(4, &s_cl as u64, 0x0A);
+                                    asm("hlt");
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Once we know the server's MAC, open the connection (SYN) once.
+        if have_mac && state == 0 {
+            g_snd_nxt = 0x20000000;             // our initial sequence number
+            tcp_xmit(TCP_SYN, 0, 0);
+            state = 1;
+            let s_s: [u8; 12] = [83, 89, 78, 32, 45, 62, 0, 0, 0, 0, 0, 0];   // "SYN ->"
+            vga_line(1, &s_s as u64, 0x0E);
+        }
+
+        spins = spins + 1;
+    }
+
+    let s_to: [u8; 16] = [84, 67, 80, 32, 116, 105, 109, 101, 111, 117, 116, 0, 0, 0, 0, 0];   // "TCP timeout"
+    vga_line(5, &s_to as u64, 0x08);
+    asm("hlt");
+}

@@ -1,0 +1,104 @@
+// net/dhcp.mx — DHCP client (RFC 2131), enough to earn an IP address.
+//
+// DHCP is BOOTP plus options. The exchange is DORA: we broadcast a DISCOVER,
+// the server OFFERs an address, we REQUEST it, the server ACKs. The packet is a
+// 236-byte fixed BOOTP header, a 4-byte magic cookie, then TLV options. The
+// fields we care about: yiaddr (the address being offered), option 53 (message
+// type), option 54 (which server is speaking).
+//
+// Depends on net/endian.mx (be32_store) and net/eth.mx (mac_copy).
+
+let DHCP_DISCOVER: u8 = 1;
+let DHCP_OFFER: u8 = 2;
+let DHCP_REQUEST: u8 = 3;
+let DHCP_ACK: u8 = 5;
+
+// "your" IP address the server assigns (BOOTP offset 16).
+fn dhcp_yiaddr(buf: u64) -> u64 { return buf + 16; }
+
+// Zero n bytes at addr.
+fn dhcp_zero(addr: u64, n: u32) {
+    for i: u32 in 0..n {
+        let p: *u8 = (addr + (i as u64)) as *u8;
+        *p = 0;
+    }
+}
+
+// Write the fixed BOOTP request header (op=1, our MAC in chaddr, broadcast
+// flag, magic cookie) and return the offset where options begin (240).
+fn dhcp_bootp(buf: u64, xid: u32, our_mac: u64) -> u32 {
+    dhcp_zero(buf, 240);
+    let op: *u8 = buf as *u8; *op = 1;              // BOOTREQUEST
+    let ht: *u8 = (buf + 1) as *u8; *ht = 1;        // htype: Ethernet
+    let hl: *u8 = (buf + 2) as *u8; *hl = 6;        // hlen
+    be32_store(buf + 4, xid);                       // transaction id
+    be16_store(buf + 10, 0x8000);                   // flags: broadcast the reply
+    mac_copy(buf + 28, our_mac);                    // chaddr
+    let c0: *u8 = (buf + 236) as *u8; *c0 = 0x63;   // magic cookie 63 82 53 63
+    let c1: *u8 = (buf + 237) as *u8; *c1 = 0x82;
+    let c2: *u8 = (buf + 238) as *u8; *c2 = 0x53;
+    let c3: *u8 = (buf + 239) as *u8; *c3 = 0x63;
+    return 240;
+}
+
+fn dhcp_opt_u8(p: u64, off: u32, v: u8) {
+    let b: *u8 = (p + (off as u64)) as *u8;
+    *b = v;
+}
+
+// Build a DISCOVER at buf. Returns the DHCP message length.
+fn dhcp_build_discover(buf: u64, xid: u32, our_mac: u64) -> u32 {
+    let o: u32 = dhcp_bootp(buf, xid, our_mac);
+    let p: u64 = buf + (o as u64);
+    dhcp_opt_u8(p, 0, 53);  dhcp_opt_u8(p, 1, 1);  dhcp_opt_u8(p, 2, DHCP_DISCOVER);
+    // option 55, parameter request list: subnet(1), router(3), DNS(6)
+    dhcp_opt_u8(p, 3, 55);  dhcp_opt_u8(p, 4, 3);
+    dhcp_opt_u8(p, 5, 1);   dhcp_opt_u8(p, 6, 3);  dhcp_opt_u8(p, 7, 6);
+    dhcp_opt_u8(p, 8, 255);                                 // end
+    return o + 9;
+}
+
+// Build a REQUEST at buf, asking for requested_ip from server_ip. Returns len.
+fn dhcp_build_request(buf: u64, xid: u32, our_mac: u64,
+                      requested_ip: u64, server_ip: u64) -> u32 {
+    let o: u32 = dhcp_bootp(buf, xid, our_mac);
+    let p: u64 = buf + (o as u64);
+    dhcp_opt_u8(p, 0, 53);  dhcp_opt_u8(p, 1, 1);  dhcp_opt_u8(p, 2, DHCP_REQUEST);
+    dhcp_opt_u8(p, 3, 50);  dhcp_opt_u8(p, 4, 4);          // option 50: requested IP
+    ip4_copy(p + 5, requested_ip);
+    dhcp_opt_u8(p, 9, 54);  dhcp_opt_u8(p, 10, 4);         // option 54: server id
+    ip4_copy(p + 11, server_ip);
+    dhcp_opt_u8(p, 15, 255);                                // end
+    return o + 16;
+}
+
+// Find option `code` in the message; return the address of its value, or 0.
+fn dhcp_find_option(buf: u64, dhcp_len: u32, code: u8) -> u64 {
+    let p: u64 = buf + 240;                 // options follow the magic cookie
+    let limit: u64 = buf + (dhcp_len as u64);
+    while p < limit {
+        let c: u8 = *(p as *u8);
+        if c == 255 {
+            return 0;                       // end of options
+        }
+        if c == 0 {
+            p = p + 1;                      // pad byte
+        } else {
+            let l: u8 = *((p + 1) as *u8);
+            if c == code {
+                return p + 2;
+            }
+            p = p + 2 + (l as u64);
+        }
+    }
+    return 0;
+}
+
+// The DHCP message type (option 53), or 0 if absent.
+fn dhcp_msg_type(buf: u64, dhcp_len: u32) -> u8 {
+    let v: u64 = dhcp_find_option(buf, dhcp_len, 53);
+    if v == 0 {
+        return 0;
+    }
+    return *(v as *u8);
+}

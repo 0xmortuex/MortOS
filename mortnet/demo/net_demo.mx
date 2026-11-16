@@ -1,0 +1,53 @@
+// demo/net_demo.mx — the M1 payoff, as a tiny bootable kernel.
+//
+// Boots, finds the RTL8139 on the PCI bus, brings it up, and transmits one
+// broadcast Ethernet frame carrying "MORTNET". Then it writes a one-line
+// verdict to VGA text memory so the result is visible both on screen and to
+// the headless capture harness. Built by demo/build_demo.py; the frame it
+// sends is the M1 demo artifact.
+//
+// build_demo.py concatenates net/endian.mx, net/eth.mx and glue/rtl8139.mx
+// ahead of this file, so rtl_init / rtl_send_hello are in scope.
+
+// Write a NUL-terminated string to VGA row 0 with the given color attribute.
+fn vga_line(row: u32, s: u64, color: u8) {
+    let vga: u32 = 0xB8000 + row * 160;
+    let i: u32 = 0;
+    while true {
+        let ch: u8 = *((s + (i as u64)) as *u8);
+        if ch == 0 {
+            return;
+        }
+        *((vga + i * 2) as *u8) = ch;
+        *((vga + i * 2 + 1) as *u8) = color;
+        i = i + 1;
+    }
+}
+
+fn kmain() {
+    let banner: [u8; 24] = [
+        109, 111, 114, 116, 110, 101, 116, 32, 77, 49, 58, 32,
+        82, 84, 76, 56, 49, 51, 57, 32, 84, 88, 0, 0];    // "mortnet M1: RTL8139 TX"
+    vga_line(0, &banner as u64, 0x0A);
+
+    if !rtl_init() {
+        let miss: [u8; 12] = [78, 79, 32, 82, 84, 76, 56, 49, 51, 57, 0, 0];   // "NO RTL8139"
+        vga_line(1, &miss as u64, 0x0C);
+        asm("hlt");
+        return;
+    }
+
+    let sent: u32 = rtl_send_hello();
+    if sent > 0 {
+        // "TX OK: 21 bytes broadcast" — the count proves a real frame went out.
+        let ok: [u8; 20] = [
+            84, 88, 32, 79, 75, 58, 32, 98, 114, 111, 97, 100,
+            99, 97, 115, 116, 0, 0, 0, 0];                 // "TX OK: broadcast"
+        vga_line(1, &ok as u64, 0x0A);
+    } else {
+        let fail: [u8; 8] = [84, 88, 32, 70, 65, 73, 76, 0];   // "TX FAIL"
+        vga_line(1, &fail as u64, 0x0C);
+    }
+
+    asm("hlt");
+}

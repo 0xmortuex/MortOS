@@ -1,0 +1,56 @@
+// test_dns.mx — build an A query for example.com, parse a golden response.
+//! expect: 4660
+//! expect: 7
+//! expect: 3
+//! expect: 0
+//! expect: 1
+//! expect: 29
+//! expect: 1
+//! expect: 1
+//! expect: 93
+//! expect: 34
+
+fn main() -> int {
+    // "example.com" as a NUL-terminated string.
+    let name: [u8; 12] = [101, 120, 97, 109, 112, 108, 101, 46, 99, 111, 109, 0];
+
+    let q: [u8; 64] = [0; 64];
+    let qb: u64 = &q as u64;
+    let qlen: u32 = dns_build_query(qb, 0x1234, &name as u64);
+
+    print(dns_id(qb) as i64);                       // 4660 = 0x1234
+    // QNAME: 7 "example" 3 "com" 0
+    print(*((qb + 12) as *u8) as i64);              // 7 (len of "example")
+    print(*((qb + 20) as *u8) as i64);              // 3 (len of "com")
+    print(*((qb + 24) as *u8) as i64);              // 0 (root label)
+    print(be16_load(qb + 25) as i64);               // 1 = QTYPE A
+    print(qlen as i64);                             // 29 = 12 + 13 + 4
+
+    // Forge a response: reuse the query's header+question, flip it to a reply
+    // with one answer whose NAME is a compression pointer (0xC00C -> offset 12),
+    // type A, rdata 93.184.216.34.
+    be16_store(qb + 2, 0x8180);                     // response, recursion available
+    be16_store(qb + 6, 1);                          // ANCOUNT = 1
+    let ans: u64 = qb + (qlen as u64);              // answer starts at 29
+    be16_store(ans, 0xC00C);                        // NAME: pointer to offset 12
+    be16_store(ans + 2, 1);                         // TYPE  = A
+    be16_store(ans + 4, 1);                         // CLASS = IN
+    be32_store(ans + 6, 300);                       // TTL
+    be16_store(ans + 10, 4);                        // RDLENGTH = 4
+    let rd: u64 = ans + 12;
+    let a0: *u8 = rd as *u8; *a0 = 93;
+    let a1: *u8 = (rd + 1) as *u8; *a1 = 184;
+    let a2: *u8 = (rd + 2) as *u8; *a2 = 216;
+    let a3: *u8 = (rd + 3) as *u8; *a3 = 34;
+    let rlen: u32 = qlen + 16;
+
+    print(dns_ancount(qb) as i64);                  // 1
+
+    let ip: [u8; 4] = [0; 4];
+    if dns_first_a(qb, rlen, &ip as u64) { print(1); } else { print(0); }   // 1
+    let ip0: *u8 = &ip as *u8;
+    print(*ip0 as i64);                             // 93
+    let ip3: *u8 = ((&ip as u64) + 3) as *u8;
+    print(*ip3 as i64);                             // 34
+    return 0;
+}

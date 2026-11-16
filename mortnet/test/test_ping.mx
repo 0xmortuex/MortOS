@@ -1,0 +1,75 @@
+// test_ping.mx — MORT OS answers a ping. The M2 headline, on the host.
+//
+// Builds a genuine ICMP echo request (valid IP + ICMP checksums) addressed to
+// us, feeds it to net_handle_frame, and checks the echo reply: addresses
+// swapped, both checksums valid, identifier / sequence / data echoed back.
+//! expect: 1
+//! expect: 1
+//! expect: 47
+//! expect: 2048
+//! expect: 1
+//! expect: 1
+//! expect: 15
+//! expect: 2
+//! expect: 0
+//! expect: 1
+//! expect: 4660
+//! expect: 112
+
+fn main() -> int {
+    let our_mac: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    net_set_mac(&our_mac as u64);
+    let sender_mac: [u8; 6] = [0x52, 0x54, 0x00, 0xAA, 0xBB, 0xCC];
+    let sender_ip: [u8; 4] = [10, 0, 2, 2];
+    let our_ip: [u8; 4] = [10, 0, 2, 15];
+
+    // --- forge a valid echo request to us ---
+    let rx: [u8; 64] = [0; 64];
+    let rxb: u64 = &rx as u64;
+    eth_build_header(rxb, &our_mac as u64, &sender_mac as u64, ETH_IP);
+    let ipr: u64 = eth_payload(rxb);        // IP header at rxb + 14
+    let icmpr: u64 = ipr + 20;              // ICMP at rxb + 34
+
+    let ty: *u8 = icmpr as *u8; *ty = 8;    // echo request
+    let co: *u8 = (icmpr + 1) as *u8; *co = 0;
+    be16_store(icmpr + 2, 0);               // checksum: fill in below
+    be16_store(icmpr + 4, 0x1234);          // identifier
+    be16_store(icmpr + 6, 0x0001);          // sequence
+    let data: [u8; 5] = [112, 105, 110, 103, 33];       // "ping!"
+    for i: u32 in 0..5 {
+        let s: *u8 = (&data as u64 + (i as u64)) as *u8;
+        let d: *u8 = (icmpr + 8 + (i as u64)) as *u8;
+        *d = *s;
+    }
+    let clen: u32 = 13;                     // 8-byte ICMP header + 5 data
+    be16_store(icmpr + 2, inet_checksum(icmpr, clen));
+    ip_build_header(ipr, &sender_ip as u64, &our_ip as u64,
+                    IP_PROTO_ICMP, 0x0001, clen as u16);
+
+    // Sanity: the request we built is itself well-formed.
+    if ip_verify(ipr) { print(1); } else { print(0); }         // 1
+    if icmp_verify(icmpr, clen) { print(1); } else { print(0); }   // 1
+
+    // --- answer it ---
+    let tx: [u8; 64] = [0; 64];
+    let txb: u64 = &tx as u64;
+    let n: u32 = net_handle_frame(rxb, 14 + 20 + clen, txb);
+    print(n as i64);                        // 47 = 14 + 20 + 13
+    print(eth_type(txb) as i64);            // 2048 = 0x0800 (IPv4)
+
+    let ipt: u64 = eth_payload(txb);
+    if ip_verify(ipt) { print(1); } else { print(0); }         // 1: reply IP checksum valid
+    print(ip_proto(ipt) as i64);            // 1 (ICMP)
+    let s3: *u8 = (ip_src(ipt) + 3) as *u8;
+    print(*s3 as i64);                      // 15: reply is from us
+    let d3: *u8 = (ip_dst(ipt) + 3) as *u8;
+    print(*d3 as i64);                      // 2: back to the sender
+
+    let icmpt: u64 = ipt + 20;
+    print(icmp_type(icmpt) as i64);         // 0: echo reply
+    if icmp_verify(icmpt, clen) { print(1); } else { print(0); }   // 1: reply ICMP checksum valid
+    print(be16_load(icmpt + 4) as i64);     // 4660 = 0x1234: identifier echoed
+    let p0: *u8 = (icmpt + 8) as *u8;
+    print(*p0 as i64);                      // 112 = 'p': data echoed
+    return 0;
+}
