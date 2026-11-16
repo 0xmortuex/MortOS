@@ -1,0 +1,22 @@
+// Minimal MortHardware boot integration.
+// The host kernel must provide x86 port I/O and DMA-visible memory as described
+// in docs/PORTING.md. Call this after basic CPU/platform setup.
+
+fn mort_hardware_boot() {
+    hw_scan_pci();
+
+    // Each driver fails cleanly when its target controller is absent.
+    rtl_init();
+    ac97_init();
+
+    // The current UHCI implementation owns and resets the controller, performs
+    // polling control transfers, and should run before interrupts are enabled.
+    usb_boot_init();
+}
+
+// Call at a steady cadence (MortOS uses its 100 Hz timer). A non-zero result
+// is an XT set-1 make code. The host should route it to its input dispatcher;
+// g_usb_hid_shift and g_usb_hid_extended carry the associated key flags.
+fn mort_hardware_poll_keyboard() -> u8 {
+    return usb_hid_poll_scancode();
+}

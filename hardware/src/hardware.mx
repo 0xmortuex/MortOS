@@ -1,0 +1,67 @@
+// Generic PCI capability discovery and minimal legacy PC-speaker audio.
+// This is the common foundation for Settings device status and future drivers.
+let g_hw_scanned: bool = false;
+let g_hw_pci_count: u32 = 0;
+let g_hw_ethernet: bool = false;
+let g_hw_wifi: bool = false;
+let g_hw_audio: bool = false;
+let g_hw_usb: bool = false;
+let g_hw_bluetooth: bool = false;       // needs USB HCI enumeration to become true
+let g_speaker_enabled: bool = true;
+
+fn hw_scan_pci() {
+    g_hw_pci_count = 0;
+    g_hw_ethernet = false;
+    g_hw_wifi = false;
+    g_hw_audio = false;
+    g_hw_usb = false;
+    for slot: u32 in 0..32 {
+        for func: u32 in 0..8 {
+            let id: u32 = pci_read32(0, slot as u8, func as u8, 0x00);
+            if id != 0xffffffff {
+                g_hw_pci_count = g_hw_pci_count + 1;
+                let classreg: u32 = pci_read32(0, slot as u8, func as u8, 0x08);
+                let base: u8 = ((classreg >> 24) & 0xff) as u8;
+                let sub: u8 = ((classreg >> 16) & 0xff) as u8;
+                if base == 0x02 && sub == 0x00 { g_hw_ethernet = true; }
+                if base == 0x0d || (base == 0x02 && sub == 0x80) { g_hw_wifi = true; }
+                if base == 0x04 && (sub == 0x01 || sub == 0x03) { g_hw_audio = true; }
+                if base == 0x0c && sub == 0x03 { g_hw_usb = true; }
+            }
+        }
+    }
+    g_hw_scanned = true;
+}
+
+// Program PIT channel 2 and gate it to the legacy PC speaker.
+fn speaker_start(freq: u32) {
+    if !g_speaker_enabled || freq == 0 { return; }
+    let div: u32 = 1193182 / freq;
+    outb(0x43, 0xb6);
+    outb(0x42, (div & 0xff) as u8);
+    outb(0x42, ((div >> 8) & 0xff) as u8);
+    let gate: u8 = inb(0x61);
+    outb(0x61, gate | 3);
+}
+
+fn speaker_stop() {
+    let gate: u8 = inb(0x61);
+    outb(0x61, gate & 0xfc);
+}
+
+fn speaker_test() {
+    if !g_speaker_enabled { return; }
+    speaker_start(880);
+    let spin: u32 = 0;
+    while spin < 3000000 { spin = spin + 1; }
+    speaker_stop();
+}
+
+fn ethernet_disconnect() {
+    g_net_up = false;
+    if g_rtl_ok {
+        outb(g_rtl_io + 0x37, 0x00);       // stop RTL8139 receiver/transmitter
+        g_rtl_ok = false;
+    }
+}
+

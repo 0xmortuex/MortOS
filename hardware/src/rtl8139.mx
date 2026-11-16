@@ -1,0 +1,223 @@
+// glue/rtl8139.mx — a Realtek RTL8139 driver in Mort.
+//
+// This is the one part of mortnet that touches real hardware, so it lives in
+// glue/ rather than net/. It is not host-testable — it runs inside MORT OS and
+// is proven by booting QEMU with `-device rtl8139` and watching the frame it
+// sends land in a packet capture.
+//
+// The RTL8139 is the classic "hello world" NIC: QEMU emulates it, it uses plain
+// port I/O (no memory-mapped registers needed for basic TX), and its transmit
+// path is four descriptors you fill and fire. M1 does transmit only — receive
+// arrives with ARP in M2.
+//
+// Depends on net/endian.mx (byte order) and net/eth.mx (framing). In MORT OS
+// those are all one translation unit, so the functions are called directly.
+
+// PCI identity of the card.
+let RTL_VENDOR: u16 = 0x10EC;
+let RTL_DEVICE: u16 = 0x8139;
+
+// Driver state, discovered at init.
+let g_rtl_ok: bool = false;
+let g_rtl_io: u16 = 0;          // I/O port base (from PCI BAR0)
+let g_rtl_tx: u32 = 0;          // next TX descriptor to use (0..3)
+
+// A 2 KB, 4-byte-aligned transmit buffer. The card DMAs the frame straight out
+// of here, so its physical address must equal its virtual address — true in
+// MORT OS, which runs with paging off (identity-mapped physical memory).
+let g_rtl_txbuf: [u8; 2048] = [0; 2048];
+
+// Receive ring: an 8 KB buffer the card DMAs incoming frames into, plus 16
+// bytes of header slack and ~1500 for a frame that straddles the end (the WRAP
+// bit lets the card run past the 8 KB mark rather than splitting a frame).
+let RTL_RX_SIZE: u32 = 8192;
+let g_rtl_rxbuf: [u8; 9728] = [0; 9728];
+let g_rtl_rx_offset: u32 = 0;   // our read cursor into the ring (0..8192)
+
+// ---- PCI configuration space (mechanism #1: ports 0xCF8 / 0xCFC) ----
+
+fn pci_addr(bus: u8, slot: u8, func: u8, off: u8) -> u32 {
+    return 0x80000000
+        | ((bus as u32) << 16)
+        | ((slot as u32) << 11)
+        | ((func as u32) << 8)
+        | ((off as u32) & 0xFC);
+}
+
+fn pci_read32(bus: u8, slot: u8, func: u8, off: u8) -> u32 {
+    outl(0xCF8, pci_addr(bus, slot, func, off));
+    return inl(0xCFC);
+}
+
+fn pci_write32(bus: u8, slot: u8, func: u8, off: u8, val: u32) {
+    outl(0xCF8, pci_addr(bus, slot, func, off));
+    outl(0xCFC, val);
+}
+
+// ---- RTL8139 registers (offsets from the I/O base) ----
+// 0x00 IDR0..5  MAC address        0x37 CR    command
+// 0x20 TSAD0    TX start address   0x10 TSD0  TX status/command (0x10+4*n)
+// 0x30 TSAD0reg 0x20+4*n           0x52 CONFIG1
+// 0x3E ISR      interrupt status
+
+// Find the card by walking PCI bus 0, and bring it up for transmit.
+fn rtl_init() -> bool {
+    let found: bool = false;
+    let slot: u32 = 0;
+    while slot < 32 {
+        let id: u32 = pci_read32(0, slot as u8, 0, 0x00);
+        let vendor: u16 = (id & 0xFFFF) as u16;
+        let device: u16 = ((id >> 16) & 0xFFFF) as u16;
+        if vendor == RTL_VENDOR && device == RTL_DEVICE {
+            // BAR0 holds the I/O base; bit 0 marks I/O space, so mask it off.
+            let bar0: u32 = pci_read32(0, slot as u8, 0, 0x10);
+            g_rtl_io = (bar0 & 0xFFFC) as u16;
+
+            // Enable bus mastering (bit 2 of the PCI command register at 0x04)
+            // so the card can DMA our frame out of g_rtl_txbuf.
+            let cmd: u32 = pci_read32(0, slot as u8, 0, 0x04);
+            pci_write32(0, slot as u8, 0, 0x04, cmd | 0x4);
+
+            found = true;
+            slot = 32;
+        } else {
+            slot = slot + 1;
+        }
+    }
+    if !found {
+        g_rtl_ok = false;
+        return false;
+    }
+
+    // Power on the card (CONFIG1 = 0x00), then software-reset and wait for the
+    // reset bit (0x10 in CR) to clear.
+    outb(g_rtl_io + 0x52, 0x00);
+    outb(g_rtl_io + 0x37, 0x10);
+    let guard: u32 = 0;
+    while guard < 1000000 {
+        if (inb(g_rtl_io + 0x37) & 0x10) == 0 {
+            guard = 1000000;
+        } else {
+            guard = guard + 1;
+        }
+    }
+
+    // Point the card at our receive ring (RBSTART = physical address).
+    outl(g_rtl_io + 0x30, &g_rtl_rxbuf as u32);
+    g_rtl_rx_offset = 0;
+
+    // Receive Configuration: accept broadcast + multicast + physical-match +
+    // all (promiscuous, simplest for a demo), and set WRAP so a frame near the
+    // end spills into the slack instead of being split. (AAP|AM|AB|APM|WRAP.)
+    outl(g_rtl_io + 0x44, 0x8F);
+
+    // Enable receiver and transmitter together (RE = bit 3, TE = bit 2).
+    outb(g_rtl_io + 0x37, 0x0C);
+
+    g_rtl_tx = 0;
+    g_rtl_ok = true;
+    return true;
+}
+
+// Poll for one received frame. If one is waiting, copy it (minus the 4-byte
+// Ethernet CRC) into `out` and return its length; otherwise return 0.
+//
+// The card prefixes each frame in the ring with a 4-byte header: a receive
+// status word and the length (frame + CRC), both little-endian. After reading,
+// we advance our cursor (4-byte aligned) and hand it back to the card via CAPR,
+// which per the RTL8139's quirk must be set 16 bytes behind the read pointer.
+fn rtl_poll_rx(out: u64) -> u32 {
+    if !g_rtl_ok {
+        return 0;
+    }
+    // CR bit 0 (BUFE) set means the ring is empty.
+    if (inb(g_rtl_io + 0x37) & 0x01) != 0 {
+        return 0;
+    }
+
+    let ring: u64 = &g_rtl_rxbuf as u64;
+    let hdr: u64 = ring + (g_rtl_rx_offset as u64);
+    let status: u16 = le16_load(hdr);
+    let len: u16 = le16_load(hdr + 2);          // frame length including CRC
+
+    let frame_len: u32 = 0;
+    // Bit 0 of status (ROK) set and a sane length means a good frame.
+    if (status & 0x01) != 0 && (len as u32) >= 4 {
+        frame_len = (len as u32) - 4;           // strip the 4-byte CRC
+        for i: u32 in 0..frame_len {
+            let s: *u8 = (hdr + 4 + (i as u64)) as *u8;
+            let d: *u8 = (out + (i as u64)) as *u8;
+            *d = *s;
+        }
+    }
+
+    // Advance past this packet: 4-byte header + payload + CRC, rounded up to a
+    // 4-byte boundary, wrapped within the 8 KB ring.
+    let advance: u32 = ((len as u32) + 4 + 3) & 0xFFFFFFFC;
+    g_rtl_rx_offset = (g_rtl_rx_offset + advance) % RTL_RX_SIZE;
+
+    // Return ownership to the card (CAPR = read pointer - 16).
+    outw(g_rtl_io + 0x38, (g_rtl_rx_offset - 16) as u16);
+    return frame_len;
+}
+
+// Read the card's own MAC (IDR0..5) into a 6-byte region.
+fn rtl_mac(out: u64) {
+    for i: u32 in 0..6 {
+        let p: *u8 = (out + (i as u64)) as *u8;
+        *p = inb(g_rtl_io + (i as u16));
+    }
+}
+
+// Transmit `len` bytes from g_rtl_txbuf using the next TX descriptor.
+// Returns false if the card isn't up. The RTL8139 pads short frames to the
+// 60-byte minimum itself, so callers need not.
+fn rtl_transmit(len: u32) -> bool {
+    if !g_rtl_ok {
+        return false;
+    }
+    let n: u32 = g_rtl_tx;
+
+    // TSAD(n) at 0x20+4n = physical address of the buffer (identity-mapped).
+    let tsad: u16 = (0x20 + n * 4) as u16;
+    outl(g_rtl_io + tsad, &g_rtl_txbuf as u32);
+
+    // TSD(n) at 0x10+4n: writing the length (low 13 bits, OWN/size flags 0)
+    // hands the descriptor to the card and starts the DMA.
+    let tsd: u16 = (0x10 + n * 4) as u16;
+    outl(g_rtl_io + tsd, len & 0x1FFF);
+
+    g_rtl_tx = (n + 1) & 3;
+    return true;
+}
+
+// Build a broadcast test frame in the TX buffer and send it. Payload is the
+// ASCII bytes "MORTNET" — instantly recognisable in a packet capture. Returns
+// the number of bytes handed to the card, or 0 if the card isn't up.
+fn rtl_send_hello() -> u32 {
+    if !g_rtl_ok {
+        return 0;
+    }
+    let base: u64 = &g_rtl_txbuf as u64;
+
+    let src: [u8; 6] = [0; 6];
+    rtl_mac(&src as u64);
+    let dst: [u8; 6] = [0; 6];
+    mac_broadcast(&dst as u64);
+
+    // EtherType 0x88B5 is IEEE-reserved for experimental use — honest labelling
+    // for a hand-rolled test frame rather than pretending to be IP.
+    let hdr: u32 = eth_build_header(base, &dst as u64, &src as u64, 0x88B5);
+
+    let msg: [u8; 7] = [77, 79, 82, 84, 78, 69, 84];    // "MORTNET"
+    for i: u32 in 0..7 {
+        let s: *u8 = (&msg as u64 + (i as u64)) as *u8;
+        let d: *u8 = (base + (hdr as u64) + (i as u64)) as *u8;
+        *d = *s;
+    }
+
+    let total: u32 = hdr + 7;
+    rtl_transmit(total);
+    return total;
+}
+
