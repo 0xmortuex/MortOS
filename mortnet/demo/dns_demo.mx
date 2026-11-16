@@ -1,0 +1,169 @@
+// demo/dns_demo.mx — the M4 payoff: `resolve example.com` from MORT OS.
+//
+// Boots as 10.0.2.15, finds QEMU's DNS server (10.0.2.3) by ARP, sends it a
+// DNS A query for a hostname, parses the answer, and prints the resolved
+// address on VGA. The capture shows the query going out and the answer coming
+// back; the address is whatever real DNS returns (via SLIRP -> the host).
+//
+// build_demo.py concatenates net/*.mx + glue/rtl8139.mx ahead of this file.
+
+fn vga_line(row: u32, s: u64, color: u8) {
+    let vga: u32 = 0xB8000 + row * 160;
+    let i: u32 = 0;
+    while true {
+        let ch: u8 = *((s + (i as u64)) as *u8);
+        if ch == 0 { return; }
+        *((vga + i * 2) as *u8) = ch;
+        *((vga + i * 2 + 1) as *u8) = color;
+        i = i + 1;
+    }
+}
+
+fn vga_ip_at(row: u32, startcol: u32, ip: u64) {
+    let vga: u32 = 0xB8000 + row * 160 + startcol * 2;
+    let col: u32 = 0;
+    for octet: u32 in 0..4 {
+        let v: u32 = *((ip + (octet as u64)) as *u8) as u32;
+        let hundreds: u32 = v / 100;
+        let tens: u32 = (v / 10) % 10;
+        let ones: u32 = v % 10;
+        if hundreds > 0 {
+            *((vga + col * 2) as *u8) = (48 + hundreds) as u8; *((vga + col * 2 + 1) as *u8) = 0x0B; col = col + 1;
+        }
+        if hundreds > 0 || tens > 0 {
+            *((vga + col * 2) as *u8) = (48 + tens) as u8; *((vga + col * 2 + 1) as *u8) = 0x0B; col = col + 1;
+        }
+        *((vga + col * 2) as *u8) = (48 + ones) as u8; *((vga + col * 2 + 1) as *u8) = 0x0B; col = col + 1;
+        if octet < 3 {
+            *((vga + col * 2) as *u8) = 46; *((vga + col * 2 + 1) as *u8) = 0x0B; col = col + 1;
+        }
+    }
+}
+
+fn send_frame(src: u64, len: u32) {
+    let tx: u64 = &g_rtl_txbuf as u64;
+    for i: u32 in 0..len {
+        let s: *u8 = (src + (i as u64)) as *u8;
+        let d: *u8 = (tx + (i as u64)) as *u8;
+        *d = *s;
+    }
+    rtl_transmit(len);
+}
+
+let g_dns_tx: [u8; 512] = [0; 512];
+let g_dns_rx: [u8; 2048] = [0; 2048];
+let g_dns_ip: [u8; 4] = [10, 0, 2, 3];       // QEMU's built-in DNS server
+let g_our_ip4: [u8; 4] = [10, 0, 2, 15];
+let g_hostname: [u8; 12] = [101, 120, 97, 109, 112, 108, 101, 46, 99, 111, 109, 0];   // "example.com"
+let g_query_id: u16 = 0x4d4e;                // "MN"
+
+// Wrap a DNS message (dns_len bytes) built at the payload slot in UDP + IPv4 +
+// Ethernet to dst_mac, and send it.
+fn dns_send(dst_mac: u64, dns_len: u32) {
+    let base: u64 = &g_dns_tx as u64;
+    eth_build_header(base, dst_mac, net_our_mac(), ETH_IP);
+    let ip: u64 = eth_payload(base);
+    let udp: u64 = ip + 20;
+    let udp_total: u32 = udp_build(udp, 49152, 53, &g_our_ip4 as u64,
+                                   &g_dns_ip as u64, dns_len);
+    ip_build_header(ip, &g_our_ip4 as u64, &g_dns_ip as u64, IP_PROTO_UDP,
+                    0x0002, udp_total as u16);
+    send_frame(base, 14 + 20 + udp_total);
+}
+
+fn dns_payload_addr() -> u64 {
+    return (&g_dns_tx as u64) + 14 + 20 + 8;
+}
+
+fn kmain() {
+    let banner: [u8; 24] = [
+        109, 111, 114, 116, 110, 101, 116, 32, 77, 52, 58, 32, 68, 78, 83, 32,
+        114, 101, 115, 111, 108, 118, 101, 0];             // "mortnet M4: DNS resolve"
+    vga_line(0, &banner as u64, 0x0A);
+
+    if !rtl_init() {
+        let miss: [u8; 12] = [78, 79, 32, 82, 84, 76, 56, 49, 51, 57, 0, 0];
+        vga_line(1, &miss as u64, 0x0C);
+        asm("hlt");
+        return;
+    }
+    let mymac: [u8; 6] = [0; 6];
+    rtl_mac(&mymac as u64);
+    net_set_mac(&mymac as u64);
+    net_set_ip(&g_our_ip4 as u64);
+
+    // ARP for the DNS server so we know where to send the query.
+    let req: u64 = &g_dns_tx as u64;
+    let bcast: [u8; 6] = [0; 6];
+    mac_broadcast(&bcast as u64);
+    eth_build_header(req, &bcast as u64, net_our_mac(), ETH_ARP);
+    let alen: u32 = arp_build_request(eth_payload(req), net_our_mac(),
+                                      net_our_ip(), &g_dns_ip as u64);
+    send_frame(req, 14 + alen);
+    let s_q: [u8; 20] = [
+        63, 32, 101, 120, 97, 109, 112, 108, 101, 46, 99, 111, 109, 0, 0, 0, 0, 0, 0, 0];   // "? example.com"
+    vga_line(1, &s_q as u64, 0x0E);
+
+    let dns_mac: [u8; 6] = [0; 6];
+    let have_mac: bool = false;
+    let queried: bool = false;
+
+    let spins: u32 = 0;
+    while spins < 40000000 {
+        let rxb: u64 = &g_dns_rx as u64;
+        let n: u32 = rtl_poll_rx(rxb);
+        if n >= 14 {
+            let et: u16 = eth_type(rxb);
+
+            // ARP reply from the DNS server -> learn its MAC.
+            if et == ETH_ARP {
+                let a: u64 = eth_payload(rxb);
+                if arp_oper(a) == ARP_REPLY && ip4_eq(arp_spa(a), &g_dns_ip as u64) {
+                    mac_copy(&dns_mac as u64, arp_sha(a));
+                    have_mac = true;
+                }
+            }
+
+            // UDP from port 53 -> a DNS answer.
+            if et == ETH_IP {
+                let ip: u64 = eth_payload(rxb);
+                if ip_proto(ip) == IP_PROTO_UDP {
+                    let udp: u64 = ip + (ip_ihl_bytes(ip) as u64);
+                    if udp_src_port(udp) == 53 {
+                        let dns: u64 = udp_payload(udp);
+                        let dns_len: u32 = (udp_length(udp) as u32) - 8;
+                        if dns_id(dns) == g_query_id {
+                            let ans_ip: [u8; 4] = [0; 4];
+                            if dns_first_a(dns, dns_len, &ans_ip as u64) {
+                                let s_ok: [u8; 14] = [
+                                    101, 120, 97, 109, 112, 108, 101, 46, 99, 111, 109, 32, 61, 0];   // "example.com ="
+                                vga_line(3, &s_ok as u64, 0x0A);
+                                vga_ip_at(3, 14, &ans_ip as u64);
+                                asm("hlt");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Send the query once we know the DNS server's MAC.
+        if have_mac && !queried {
+            let qlen: u32 = dns_build_query(dns_payload_addr(), g_query_id,
+                                            &g_hostname as u64);
+            dns_send(&dns_mac as u64, qlen);
+            queried = true;
+            let s_sent: [u8; 16] = [
+                81, 85, 69, 82, 89, 32, 45, 62, 32, 58, 53, 51, 0, 0, 0, 0];   // "QUERY -> :53"
+            vga_line(2, &s_sent as u64, 0x0E);
+        }
+
+        spins = spins + 1;
+    }
+
+    let s_to: [u8; 16] = [
+        68, 78, 83, 32, 116, 105, 109, 101, 111, 117, 116, 0, 0, 0, 0, 0];   // "DNS timeout"
+    vga_line(4, &s_to as u64, 0x08);
+    asm("hlt");
+}

@@ -1,0 +1,48 @@
+// test_buf.mx — the packet buffer pool.
+//! expect: 0
+//! expect: 1
+//! expect: 2
+//! expect: 0
+//! expect: 2
+//! expect: 1600
+//! expect: 171
+//! expect: 5
+//! expect: -1
+//! expect: 0
+
+fn main() -> int {
+    // Slots hand out in order.
+    let a: i32 = buf_alloc();
+    let b: i32 = buf_alloc();
+    print(a as i64);                                 // 0
+    print(b as i64);                                 // 1
+    print(buf_in_use() as i64);                      // 2
+
+    // Freed slots are reused.
+    buf_free(a);
+    let c: i32 = buf_alloc();
+    print(c as i64);                                 // 0 again
+    print(buf_in_use() as i64);                      // still 2
+
+    // Slots are distinct, fixed-size regions.
+    print((buf_addr(b) - buf_addr(c)) as i64);       // 1600
+
+    // Bytes written to a slot read back.
+    let p: *u8 = buf_addr(c) as *u8;
+    *p = 0xAB;
+    print(*p as i64);                                // 171
+    buf_set_len(c, 5);
+    print(buf_len(c) as i64);                        // 5
+
+    // Exhaustion returns -1, and freeing recovers.
+    let last: i32 = 0;
+    while last != -1 {
+        last = buf_alloc();
+    }
+    print(last as i64);                              // -1
+    for i: i32 in 0..8 {
+        buf_free(i);
+    }
+    print(buf_in_use() as i64);                      // 0
+    return 0;
+}

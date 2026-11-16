@@ -1,0 +1,58 @@
+// net/endian.mx — byte order.
+//
+// Network protocols put the most significant byte first (big-endian).
+// Every machine Mort targets today (x86, x86-64) is little-endian, so
+// hton*/ntoh* always swap. If Mort ever grows a big-endian target, this
+// file is the only place that changes.
+//
+// Headers are parsed from raw packet bytes, so the load/store helpers
+// take a u64 address — the kernel idiom for memory access in Mort.
+
+fn swap16(v: u16) -> u16 {
+    return (v << 8) | (v >> 8);
+}
+
+fn swap32(v: u32) -> u32 {
+    return (v << 24) | ((v << 8) & 0x00FF0000) | ((v >> 8) & 0x0000FF00) | (v >> 24);
+}
+
+fn hton16(v: u16) -> u16 { return swap16(v); }
+fn ntoh16(v: u16) -> u16 { return swap16(v); }
+fn hton32(v: u32) -> u32 { return swap32(v); }
+fn ntoh32(v: u32) -> u32 { return swap32(v); }
+
+// Read a big-endian 16-bit value from memory.
+fn be16_load(addr: u64) -> u16 {
+    let hi: *u8 = addr as *u8;
+    let lo: *u8 = (addr + 1) as *u8;
+    return ((*hi as u16) << 8) | (*lo as u16);
+}
+
+// Write a 16-bit value to memory in big-endian order.
+fn be16_store(addr: u64, v: u16) {
+    let hi: *u8 = addr as *u8;
+    let lo: *u8 = (addr + 1) as *u8;
+    *hi = (v >> 8) as u8;
+    *lo = (v & 0xFF) as u8;
+}
+
+// Read a big-endian 32-bit value from memory.
+fn be32_load(addr: u64) -> u32 {
+    return ((be16_load(addr) as u32) << 16) | (be16_load(addr + 2) as u32);
+}
+
+// Read a little-endian 16-bit value from memory. Hardware that DMAs into RAM
+// (like the RTL8139's receive-packet header) writes in the CPU's native order,
+// which on x86 is little-endian — the opposite of on-the-wire byte order.
+fn le16_load(addr: u64) -> u16 {
+    let lo: *u8 = addr as *u8;
+    let hi: *u8 = (addr + 1) as *u8;
+    return (*lo as u16) | ((*hi as u16) << 8);
+}
+
+// Write a 32-bit value to memory in big-endian order.
+fn be32_store(addr: u64, v: u32) {
+    be16_store(addr, (v >> 16) as u16);
+    be16_store(addr + 2, (v & 0xFFFF) as u16);
+}
+

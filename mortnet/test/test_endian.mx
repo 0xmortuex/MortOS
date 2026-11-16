@@ -1,0 +1,34 @@
+// test_endian.mx — byte-order helpers against known values.
+//! expect: 13330
+//! expect: 2018915346
+//! expect: 258
+//! expect: 16909060
+//! expect: 43707
+//! expect: 3735928559
+//! expect: 4660
+
+fn main() -> int {
+    // swap16(0x1234) == 0x3412
+    print(swap16(0x1234) as i64);                    // 13330
+
+    // swap32(0x12345678) == 0x78563412
+    print(swap32(0x12345678) as i64);                // 2018915346
+
+    // big-endian loads read MSB first
+    let bytes: [u8; 4] = [1, 2, 3, 4];
+    let base: u64 = &bytes as u64;
+    print(be16_load(base) as i64);                   // 0x0102 = 258
+    print(be32_load(base) as i64);                   // 0x01020304 = 16909060
+
+    // store then load round-trips
+    let scratch: [u8; 4] = [0; 4];
+    let sbase: u64 = &scratch as u64;
+    be16_store(sbase, 0xAABB);
+    print(be16_load(sbase) as i64);                  // 43707
+    be32_store(sbase, 0xDEADBEEF);
+    print(be32_load(sbase) as i64);                  // 3735928559
+
+    // hton/ntoh are inverses
+    print(ntoh16(hton16(0x1234)) as i64);            // 4660
+    return 0;
+}

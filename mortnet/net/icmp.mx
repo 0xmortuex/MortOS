@@ -1,0 +1,58 @@
+// net/icmp.mx — ICMP echo (RFC 792), the half that answers ping.
+//
+// An echo message is: type (1) | code (1) | checksum (2) | identifier (2) |
+// sequence (2) | data. A reply is the request with type flipped 8 -> 0 and the
+// checksum recomputed; identifier, sequence and data are echoed back unchanged,
+// which is exactly how `ping` matches replies to its requests.
+
+let ICMP_ECHO_REQUEST: u8 = 8;
+let ICMP_ECHO_REPLY: u8 = 0;
+
+fn icmp_type(buf: u64) -> u8 {
+    let t: *u8 = buf as *u8;
+    return *t;
+}
+
+// A received echo message is intact iff its checksum sums to zero.
+fn icmp_verify(buf: u64, len: u32) -> bool {
+    return inet_checksum(buf, len) == 0;
+}
+
+// Build an 8-byte-header echo request at buf with the given identifier and
+// sequence, followed by `data_len` payload bytes copied from data. Fills in a
+// correct checksum. Returns the total ICMP length (8 + data_len).
+fn icmp_build_echo_request(buf: u64, ident: u16, seq: u16,
+                           data: u64, data_len: u32) -> u32 {
+    let ty: *u8 = buf as *u8;
+    *ty = ICMP_ECHO_REQUEST;
+    let co: *u8 = (buf + 1) as *u8;
+    *co = 0;
+    be16_store(buf + 2, 0);                 // checksum: fill in below
+    be16_store(buf + 4, ident);
+    be16_store(buf + 6, seq);
+    for i: u32 in 0..data_len {
+        let s: *u8 = (data + (i as u64)) as *u8;
+        let d: *u8 = (buf + 8 + (i as u64)) as *u8;
+        *d = *s;
+    }
+    let total: u32 = 8 + data_len;
+    be16_store(buf + 2, inet_checksum(buf, total));
+    return total;
+}
+
+// Turn the echo request of `len` bytes at src into an echo reply at dst:
+// copy it verbatim, set type = 0, recompute the checksum over the whole
+// message. Returns len (the reply is the same size as the request).
+fn icmp_build_echo_reply(dst: u64, src: u64, len: u32) -> u32 {
+    for i: u32 in 0..len {
+        let s: *u8 = (src + (i as u64)) as *u8;
+        let d: *u8 = (dst + (i as u64)) as *u8;
+        *d = *s;
+    }
+    let t: *u8 = dst as *u8;
+    *t = ICMP_ECHO_REPLY;
+    be16_store(dst + 2, 0);                 // zero the checksum field first
+    let ck: u16 = inet_checksum(dst, len);
+    be16_store(dst + 2, ck);
+    return len;
+}

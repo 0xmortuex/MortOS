@@ -1,0 +1,48 @@
+// test_tcp.mx — TCP segment build, accessors, and pseudo-header checksum.
+//! expect: 1
+//! expect: 2
+//! expect: 287454020
+//! expect: 20
+//! expect: 40000
+//! expect: 1
+//! expect: 24
+//! expect: 10
+//! expect: 104
+//! expect: 0
+
+fn main() -> int {
+    let src_ip: [u8; 4] = [10, 0, 2, 15];
+    let dst_ip: [u8; 4] = [10, 0, 2, 2];
+
+    // A SYN: seq 0x11223344, no ack, window 64240.
+    let seg: [u8; 64] = [0; 64];
+    let t: u64 = &seg as u64;
+    tcp_build(t, 40000, 80, 0x11223344, 0, TCP_SYN, 64240,
+              &src_ip as u64, &dst_ip as u64, 0);
+
+    if tcp_verify(&src_ip as u64, &dst_ip as u64, t, 20) { print(1); } else { print(0); }   // 1
+    print(tcp_flags(t) as i64);                     // 2 = SYN
+    print(tcp_seq(t) as i64);                       // 287454020 = 0x11223344
+    print(tcp_header_len(t) as i64);                // 20
+    print(tcp_src_port(t) as i64);                  // 40000
+
+    // A data segment: PSH|ACK, ack 10, payload "hi".
+    let seg2: [u8; 64] = [0; 64];
+    let t2: u64 = &seg2 as u64;
+    let h: *u8 = (t2 + 20) as *u8; *h = 104;        // 'h'
+    let i: *u8 = (t2 + 21) as *u8; *i = 105;        // 'i'
+    let total: u32 = tcp_build(t2, 40000, 80, 0x11223345, 10,
+                               TCP_PSH | TCP_ACK, 64240,
+                               &src_ip as u64, &dst_ip as u64, 2);
+
+    if tcp_verify(&src_ip as u64, &dst_ip as u64, t2, total) { print(1); } else { print(0); }   // 1
+    print(tcp_flags(t2) as i64);                    // 24 = 0x18 = PSH|ACK
+    print(tcp_ack(t2) as i64);                      // 10
+    let p: *u8 = tcp_payload(t2) as *u8;
+    print(*p as i64);                               // 104 = 'h'
+
+    // Corrupt the payload: the checksum must fail.
+    *h = 0x00;
+    if tcp_verify(&src_ip as u64, &dst_ip as u64, t2, total) { print(1); } else { print(0); }   // 0
+    return 0;
+}

@@ -1,0 +1,28 @@
+// test_ip.mx — IPv4 header build, accessors, and checksum verification.
+//! expect: 1
+//! expect: 28
+//! expect: 1
+//! expect: 20
+//! expect: 1
+//! expect: 0
+
+fn main() -> int {
+    let src: [u8; 4] = [10, 0, 2, 15];
+    let dst: [u8; 4] = [10, 0, 2, 2];
+    let buf: [u8; 20] = [0; 20];
+    let base: u64 = &buf as u64;
+
+    ip_build_header(base, &src as u64, &dst as u64, IP_PROTO_ICMP, 0x1234, 8);
+
+    if ip_verify(base) { print(1); } else { print(0); }         // 1: checksum valid
+    print(ip_total_len(base) as i64);                           // 28 = 20 + 8
+    print(ip_proto(base) as i64);                               // 1 (ICMP)
+    print(ip_ihl_bytes(base) as i64);                           // 20
+    if ip4_eq(ip_src(base), &src as u64) { print(1); } else { print(0); }   // 1
+
+    // Corrupt the TTL byte: the checksum must no longer verify.
+    let ttl: *u8 = (base + 8) as *u8;
+    *ttl = 99;
+    if ip_verify(base) { print(1); } else { print(0); }         // 0
+    return 0;
+}

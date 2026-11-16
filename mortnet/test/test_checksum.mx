@@ -1,0 +1,36 @@
+// test_checksum.mx — RFC 1071 checksum against golden packets.
+//! expect: 8717
+//! expect: 47201
+//! expect: 0
+//! expect: 64509
+//! expect: 65535
+
+fn main() -> int {
+    // The worked example from RFC 1071 section 3:
+    // bytes 00 01 f2 03 f4 f5 f6 f7 -> checksum 0x220D
+    let rfc: [u8; 8] = [0x00, 0x01, 0xF2, 0x03, 0xF4, 0xF5, 0xF6, 0xF7];
+    print(inet_checksum(&rfc as u64, 8) as i64);         // 0x220D = 8717
+
+    // A real IPv4 header (the classic 192.168.0.1 -> 192.168.0.199 UDP
+    // example): with its checksum field zeroed, the algorithm must
+    // produce exactly the checksum the packet carried: 0xB861.
+    let ip: [u8; 20] = [
+        0x45, 0x00, 0x00, 0x73, 0x00, 0x00, 0x40, 0x00,
+        0x40, 0x11, 0x00, 0x00, 0xC0, 0xA8, 0x00, 0x01,
+        0xC0, 0xA8, 0x00, 0xC7,
+    ];
+    print(inet_checksum(&ip as u64, 20) as i64);         // 0xB861 = 47201
+
+    // Write that checksum into the header; a correct packet verifies to 0.
+    be16_store((&ip as u64) + 10, 0xB861);
+    print(inet_checksum(&ip as u64, 20) as i64);         // 0
+
+    // Odd length: trailing byte is padded with zero on the right.
+    let odd: [u8; 3] = [0x01, 0x02, 0x03];
+    print(inet_checksum(&odd as u64, 3) as i64);         // ~(0x0102+0x0300) = 0xFBFD = 64509
+
+    // All zeros complement to all ones.
+    let zero: [u8; 4] = [0; 4];
+    print(inet_checksum(&zero as u64, 4) as i64);        // 0xFFFF = 65535
+    return 0;
+}

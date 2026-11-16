@@ -1,0 +1,70 @@
+// net/eth.mx — Ethernet II framing (RFC 894).
+//
+// A frame is: dst MAC (6) | src MAC (6) | EtherType (2, big-endian) | payload.
+// That 14-byte header is all layer 2 is; everything above (ARP, IP, ...) rides
+// in the payload. MAC addresses are handled as u64 addresses of 6-byte regions,
+// the same address-based style as the rest of the stack.
+
+// EtherTypes we care about.
+let ETH_ARP: u16 = 0x0806;
+let ETH_IP: u16 = 0x0800;
+let ETH_HDR_LEN: u32 = 14;
+
+// Copy a 6-byte MAC from src to dst.
+fn mac_copy(dst: u64, src: u64) {
+    for i: u32 in 0..6 {
+        let s: *u8 = (src + (i as u64)) as *u8;
+        let d: *u8 = (dst + (i as u64)) as *u8;
+        *d = *s;
+    }
+}
+
+// Are two 6-byte MACs equal?
+fn mac_eq(a: u64, b: u64) -> bool {
+    for i: u32 in 0..6 {
+        let pa: *u8 = (a + (i as u64)) as *u8;
+        let pb: *u8 = (b + (i as u64)) as *u8;
+        if *pa != *pb {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Fill 6 bytes at addr with 0xFF — the broadcast address (ff:ff:ff:ff:ff:ff).
+fn mac_broadcast(addr: u64) {
+    for i: u32 in 0..6 {
+        let p: *u8 = (addr + (i as u64)) as *u8;
+        *p = 0xFF;
+    }
+}
+
+// Write an Ethernet II header at buf. Returns the header length (14), so the
+// caller writes its payload starting at buf + eth_build_header(...).
+fn eth_build_header(buf: u64, dst: u64, src: u64, ethertype: u16) -> u32 {
+    mac_copy(buf, dst);
+    mac_copy(buf + 6, src);
+    be16_store(buf + 12, ethertype);
+    return ETH_HDR_LEN;
+}
+
+// Read the EtherType out of a received frame.
+fn eth_type(buf: u64) -> u16 {
+    return be16_load(buf + 12);
+}
+
+// Address of the destination MAC (offset 0) and source MAC (offset 6) of a
+// received frame — used when building a reply that goes back to the sender.
+fn eth_dst(buf: u64) -> u64 {
+    return buf;
+}
+
+fn eth_src(buf: u64) -> u64 {
+    return buf + 6;
+}
+
+// Address of the payload inside a frame (just past the 14-byte header).
+fn eth_payload(buf: u64) -> u64 {
+    return buf + (ETH_HDR_LEN as u64);
+}
+

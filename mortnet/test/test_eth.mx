@@ -1,0 +1,51 @@
+// test_eth.mx — Ethernet II header construction and accessors.
+//! expect: 14
+//! expect: 255
+//! expect: 84
+//! expect: 8
+//! expect: 0
+//! expect: 2048
+//! expect: 1
+//! expect: 0
+//! expect: 222
+
+fn main() -> int {
+    // A QEMU-style source MAC (52:54:00:12:34:56) and a broadcast destination.
+    let src: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let dst: [u8; 6] = [0; 6];
+    mac_broadcast(&dst as u64);
+
+    let frame: [u8; 64] = [0; 64];
+    let base: u64 = &frame as u64;
+    let n: u32 = eth_build_header(base, &dst as u64, &src as u64, ETH_IP);
+    print(n as i64);                                 // 14
+
+    // dst is broadcast: first header byte is 0xFF.
+    let b0: *u8 = base as *u8;
+    print(*b0 as i64);                               // 255
+
+    // src sits at offset 6: byte 7 is src[1] = 0x54 = 84.
+    let b7: *u8 = (base + 7) as *u8;
+    print(*b7 as i64);                               // 84
+
+    // EtherType at offset 12..13 is 0x0800, big-endian: 0x08 then 0x00.
+    let b12: *u8 = (base + 12) as *u8;
+    let b13: *u8 = (base + 13) as *u8;
+    print(*b12 as i64);                              // 8
+    print(*b13 as i64);                              // 0
+
+    // eth_type reads it back as a u16.
+    print(eth_type(base) as i64);                    // 2048
+
+    // mac_eq: dst is broadcast, src is not.
+    let bcast: [u8; 6] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+    if mac_eq(&dst as u64, &bcast as u64) { print(1); } else { print(0); }   // 1
+    if mac_eq(&src as u64, &bcast as u64) { print(1); } else { print(0); }   // 0
+
+    // Payload lands at base+14: write a byte there and read it via eth_payload.
+    let pay: *u8 = eth_payload(base) as *u8;
+    *pay = 0xDE;
+    let check: *u8 = (base + 14) as *u8;
+    print(*check as i64);                            // 222
+    return 0;
+}

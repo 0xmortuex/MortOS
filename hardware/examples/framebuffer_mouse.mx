@@ -1,0 +1,65 @@
+// Reusable Mort framebuffer adapter for usb_hid_poll_mouse().
+// Host contract: g_gfx, g_fb, g_fb_pitch, g_fb_w, and g_fb_h describe a
+// writable 32-bpp linear framebuffer. Call mort_mouse_tick() periodically.
+
+let mort_mouse_x: u32 = 0;
+let mort_mouse_y: u32 = 0;
+let mort_mouse_buttons: u8 = 0;
+let mort_mouse_present: bool = false;
+let mort_mouse_visible: bool = false;
+let mort_mouse_save: [u32; 216] = [0; 216];
+
+fn mort_mouse_hide() {
+    if !g_gfx || !mort_mouse_visible { return; }
+    for yy: u32 in 0..18 {
+        for xx: u32 in 0..12 {
+            *((g_fb + (mort_mouse_y + yy) * g_fb_pitch + (mort_mouse_x + xx) * 4) as *u32) = mort_mouse_save[yy * 12 + xx];
+        }
+    }
+    mort_mouse_visible = false;
+}
+
+fn mort_mouse_show() {
+    if !g_gfx || !mort_mouse_present || mort_mouse_visible { return; }
+    for yy: u32 in 0..18 {
+        for xx: u32 in 0..12 {
+            let addr: u32 = g_fb + (mort_mouse_y + yy) * g_fb_pitch + (mort_mouse_x + xx) * 4;
+            mort_mouse_save[yy * 12 + xx] = *(addr as *u32);
+            let arrow: bool = false;
+            let edge: bool = false;
+            if yy < 12 && xx <= yy / 2 {
+                arrow = true;
+                edge = xx == 0 || xx == yy / 2 || yy == 11;
+            }
+            if yy >= 9 && yy < 17 && xx >= 3 && xx <= 5 {
+                arrow = true;
+                if xx == 3 || xx == 5 || yy == 16 { edge = true; }
+            }
+            if arrow {
+                *(addr as *u32) = 0xffffff;
+                if edge { *(addr as *u32) = 0x101820; }
+            }
+        }
+    }
+    mort_mouse_visible = true;
+}
+
+fn mort_mouse_apply_report() {
+    if !g_gfx { return; }
+    mort_mouse_hide();
+    mort_mouse_present = true;
+    let nx: i32 = (mort_mouse_x as i32) + g_usb_mouse_dx;
+    let ny: i32 = (mort_mouse_y as i32) + g_usb_mouse_dy;
+    if nx < 0 { mort_mouse_x = 0; }
+    else if nx > (g_fb_w as i32) - 12 { mort_mouse_x = g_fb_w - 12; }
+    else { mort_mouse_x = nx as u32; }
+    if ny < 0 { mort_mouse_y = 0; }
+    else if ny > (g_fb_h as i32) - 18 { mort_mouse_y = g_fb_h - 18; }
+    else { mort_mouse_y = ny as u32; }
+    mort_mouse_buttons = g_usb_mouse_buttons;
+    mort_mouse_show();
+}
+
+fn mort_mouse_tick() {
+    if usb_hid_poll_mouse() { mort_mouse_apply_report(); }
+}

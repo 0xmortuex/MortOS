@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="430" viewBox="0 0 880 430" role="img" aria-label="A captured ping exchange between MORT OS (10.0.2.15) and the QEMU gateway (10.0.2.2): 1) MORT OS broadcasts ARP who-has 10.0.2.2; 2) the gateway replies with its MAC, which MORT OS receives and parses; 3) MORT OS sends an ICMP echo request with payload mortnet!; 4) the gateway sends an ICMP echo reply, which MORT OS receives. All four frames are real, captured from build/capture.pcap.">
+  <rect x="0.5" y="0.5" width="879" height="429" rx="12" fill="#0d1117" stroke="#30363d"/>
+  <circle cx="26" cy="20" r="6" fill="#ff5f57"/>
+  <circle cx="46" cy="20" r="6" fill="#febc2e"/>
+  <circle cx="66" cy="20" r="6" fill="#28c840"/>
+  <text x="440" y="24" text-anchor="middle" font-size="12" fill="#8b949e" font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace">build/capture.pcap — a ping, start to finish</text>
+  <line x1="1" y1="39.5" x2="879" y2="39.5" stroke="#30363d" stroke-opacity="0.6"/>
+
+  <!-- lifeline headers -->
+  <g font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace" text-anchor="middle">
+    <rect x="70" y="58" width="230" height="46" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="185" y="80" font-size="14" font-weight="700" fill="#3fb950">MORT OS</text>
+    <text x="185" y="97" font-size="11" fill="#8b949e">10.0.2.15 · 52:54:00:12:34:56</text>
+
+    <rect x="580" y="58" width="230" height="46" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="695" y="80" font-size="14" font-weight="700" fill="#58a6ff">QEMU gateway</text>
+    <text x="695" y="97" font-size="11" fill="#8b949e">10.0.2.2 · 52:55:0a:00:02:02</text>
+  </g>
+
+  <!-- lifelines -->
+  <line x1="185" y1="104" x2="185" y2="392" stroke="#30363d" stroke-width="1.5"/>
+  <line x1="695" y1="104" x2="695" y2="392" stroke="#30363d" stroke-width="1.5"/>
+
+  <g font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace" font-size="12.5">
+    <!-- 1: ARP request -> -->
+    <text x="190" y="140" fill="#8b949e" font-size="11">1</text>
+    <line x1="185" y1="152" x2="689" y2="152" stroke="#d29922" stroke-width="2"/>
+    <polygon points="689,148 697,152 689,156" fill="#d29922"/>
+    <text x="440" y="145" text-anchor="middle" fill="#d29922" font-weight="700">ARP · who has 10.0.2.2?</text>
+    <text x="440" y="166" text-anchor="middle" fill="#6e7681" font-size="10.5">broadcast ff:ff:ff:ff:ff:ff — 42 bytes</text>
+
+    <!-- 2: ARP reply <- -->
+    <text x="690" y="196" fill="#8b949e" font-size="11" text-anchor="end">2</text>
+    <line x1="695" y1="208" x2="191" y2="208" stroke="#58a6ff" stroke-width="2"/>
+    <polygon points="191,204 183,208 191,212" fill="#58a6ff"/>
+    <text x="440" y="201" text-anchor="middle" fill="#58a6ff" font-weight="700">ARP · 10.0.2.2 is at 52:55:0a:00:02:02</text>
+    <text x="440" y="222" text-anchor="middle" fill="#6e7681" font-size="10.5">received &amp; parsed by the RX ring — MORT OS learns the gateway's MAC</text>
+
+    <!-- 3: ICMP echo request -> -->
+    <text x="190" y="256" fill="#8b949e" font-size="11">3</text>
+    <line x1="185" y1="268" x2="689" y2="268" stroke="#3fb950" stroke-width="2"/>
+    <polygon points="689,264 697,268 689,272" fill="#3fb950"/>
+    <text x="440" y="261" text-anchor="middle" fill="#3fb950" font-weight="700">ICMP echo request · id 0x1234 · "mortnet!"</text>
+    <text x="440" y="282" text-anchor="middle" fill="#6e7681" font-size="10.5">IPv4 10.0.2.15 → 10.0.2.2, header + ICMP checksums computed in Mort</text>
+
+    <!-- 4: ICMP echo reply <- -->
+    <text x="690" y="316" fill="#8b949e" font-size="11" text-anchor="end">4</text>
+    <line x1="695" y1="328" x2="191" y2="328" stroke="#58a6ff" stroke-width="2"/>
+    <polygon points="191,324 183,328 191,332" fill="#58a6ff"/>
+    <text x="440" y="321" text-anchor="middle" fill="#58a6ff" font-weight="700">ICMP echo reply · id 0x1234 · "mortnet!"</text>
+    <text x="440" y="342" text-anchor="middle" fill="#6e7681" font-size="10.5">received — the reply matches; same id, same 8 bytes echoed back</text>
+  </g>
+
+  <line x1="24" y1="364" x2="856" y2="364" stroke="#30363d" stroke-opacity="0.5"/>
+  <text x="24" y="388" font-size="12.5" font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace"><tspan fill="#3fb950" font-weight="700">PASS</tspan><tspan fill="#c9d1d9"> — a full ping round trip, driven by a TCP/IP stack written from scratch in Mort.</tspan></text>
+  <text x="856" y="410" text-anchor="end" font-size="11.5" fill="#8b949e" font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace">M2 complete.</text>
+</svg>

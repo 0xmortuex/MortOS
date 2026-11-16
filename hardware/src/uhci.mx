@@ -1,0 +1,669 @@
+// Boot-time USB 1.1 UHCI host-controller initialization. Hardware ownership
+// happens before interrupts; Settings only reads the resulting state.
+let g_usb_ok: bool = false;
+let g_usb_io: u16 = 0;
+let g_usb_devices: u32 = 0;
+let g_usb_address: u8 = 0;              // address used by the current control transfer
+let g_usb_low_speed: bool = false;
+let g_usb_port_status: u32 = 0;
+let g_usb_descriptor_ok: bool = false;
+let g_usb_addressed: bool = false;
+let g_usb_class: u8 = 0;
+let g_usb_max_packet: u8 = 0;
+let g_usb_vid: u16 = 0;
+let g_usb_pid: u16 = 0;
+let g_usb_interface_class: u8 = 0;
+let g_usb_interface_subclass: u8 = 0;
+let g_usb_interface_protocol: u8 = 0;
+let g_usb_interface_number: u8 = 0;
+let g_usb_configuration_value: u8 = 0;
+let g_usb_configured: bool = false;
+let g_usb_hid_boot_ready: bool = false;
+let g_usb_interrupt_in: u8 = 0;
+let g_usb_interrupt_max_packet: u16 = 0;
+let g_usb_interrupt_interval: u8 = 0;
+let g_usb_bulk_in: u8 = 0;
+let g_usb_bulk_out: u8 = 0;
+let g_usb_bulk_in_max_packet: u16 = 0;
+let g_usb_bulk_out_max_packet: u16 = 0;
+let g_usb_hid_report: [u8; 8] = [0; 8];
+let g_usb_hid_previous: [u8; 8] = [0; 8];
+let g_usb_hid_shift: bool = false;
+let g_usb_hid_extended: bool = false;
+let g_usb_keyboard_ready: bool = false;
+let g_usb_keyboard_address: u8 = 0;
+let g_usb_keyboard_endpoint: u8 = 0;
+let g_usb_keyboard_packet: u16 = 0;
+let g_usb_keyboard_low_speed: bool = false;
+let g_usb_keyboard_toggle: u32 = 0;
+let g_usb_mouse_ready: bool = false;
+let g_usb_mouse_address: u8 = 0;
+let g_usb_mouse_endpoint: u8 = 0;
+let g_usb_mouse_packet: u16 = 0;
+let g_usb_mouse_low_speed: bool = false;
+let g_usb_mouse_toggle: u32 = 0;
+let g_usb_mouse_dx: i32 = 0;
+let g_usb_mouse_dy: i32 = 0;
+let g_usb_mouse_buttons: u8 = 0;
+let g_bt_transport_ready: bool = false;
+let g_bt_reset_sent: bool = false;
+let g_bt_hci_ready: bool = false;
+let g_bt_hci_status: u8 = 0xff;
+let g_bt_event_toggle: u32 = 0;
+let g_bt_address: u8 = 0;
+let g_bt_low_speed: bool = false;
+let g_bt_interrupt_endpoint: u8 = 0;
+let g_bt_interrupt_packet: u16 = 0;
+let g_bt_bulk_in_endpoint: u8 = 0;
+let g_bt_bulk_out_endpoint: u8 = 0;
+let g_bt_hci_command: [u8; 8] = [0; 8];
+let g_bt_hci_event: [u8; 32] = [0; 32];
+let g_usb_device_address: [u8; 8] = [0; 8];
+let g_usb_device_vid: [u16; 8] = [0; 8];
+let g_usb_device_pid: [u16; 8] = [0; 8];
+let g_usb_device_class: [u8; 8] = [0; 8];
+let g_usb_device_protocol: [u8; 8] = [0; 8];
+let g_usb_device_configured: [bool; 8] = [false; 8];
+let g_usb_device_low_speed: [bool; 8] = [false; 8];
+let g_usb_hub_ports: [u8; 8] = [0; 8];
+let g_usb_hub_connection_mask: [u32; 8] = [0; 8];
+let g_usb_root_present: [bool; 2] = [false; 2];
+let g_usb_hotplug_enabled: bool = true;
+let g_usb_hotplug_ticks: u32 = 0;
+let g_usb_hotplug_events: u32 = 0;
+let g_usb_rescan_count: u32 = 0;
+let g_usb_rescanning: bool = false;
+let g_usb_hub_data: [u8; 16] = [0; 16];
+let g_usb_frame_mem: [u32; 2048] = [0; 2048];
+let g_usb_sched_mem: [u32; 96] = [0; 96];
+let g_usb_setup: [u8; 8] = [0; 8];
+let g_usb_desc: [u8; 32] = [0; 32];
+let g_usb_config: [u8; 64] = [0; 64];
+
+fn usb_delay(count: u32) {
+    let n: u32 = 0;
+    while n < count { inb(0x80); n = n + 1; }
+}
+
+fn usb_frame_base() -> u64 { return (((&g_usb_frame_mem as u64) + 4095) / 4096) * 4096; }
+fn usb_qh() -> u64 { return (((&g_usb_sched_mem as u64) + 15) / 16) * 16; }
+fn usb_td(i: u32) -> u64 { return usb_qh() + 16 + ((i * 16) as u64); }
+
+fn usb_boot_descriptor8() -> bool {
+    g_usb_setup[0] = 0x80; g_usb_setup[1] = 6;
+    g_usb_setup[2] = 0; g_usb_setup[3] = 1;
+    g_usb_setup[4] = 0; g_usb_setup[5] = 0;
+    g_usb_setup[6] = 8; g_usb_setup[7] = 0;
+    for z: u32 in 0..8 { g_usb_desc[z] = 0; }
+    let low: u32 = 0;
+    if g_usb_low_speed { low = 0x04000000; }
+    let active: u32 = 0x18800000 | low;
+    let td0: u64 = usb_td(0); let td1: u64 = usb_td(1); let td2: u64 = usb_td(2);
+    *(td0 as *u32) = (td1 as u32) | 4;
+    *((td0 + 4) as *u32) = active;
+    *((td0 + 8) as *u32) = 0x00e0002d; // SETUP, addr 0, DATA0, 8 bytes
+    *((td0 + 12) as *u32) = &g_usb_setup as u32;
+    *(td1 as *u32) = (td2 as u32) | 4;
+    *((td1 + 4) as *u32) = active | 0x20000000;
+    *((td1 + 8) as *u32) = 0x00e80069; // IN, addr 0, DATA1, 8 bytes
+    *((td1 + 12) as *u32) = &g_usb_desc as u32;
+    *(td2 as *u32) = 1;
+    *((td2 + 4) as *u32) = active;
+    *((td2 + 8) as *u32) = 0xffe800e1; // OUT status, DATA1, zero length
+    *((td2 + 12) as *u32) = 0;
+    let qh: u64 = usb_qh(); *(qh as *u32) = 1; *((qh + 4) as *u32) = td0 as u32;
+    let frames: u64 = usb_frame_base();
+    for i: u32 in 0..1024 { *((frames + ((i * 4) as u64)) as *u32) = (qh as u32) | 2; }
+    outl(g_usb_io + 8, frames as u32); outw(g_usb_io + 6, 0); outw(g_usb_io + 2, 0x3f);
+    outw(g_usb_io, 0x0041); usb_delay(100000);
+    *((qh + 4) as *u32) = 1;          // stop revisiting the transfer
+    if (*((td2 + 4) as *u32) & 0x00800000) != 0 { return false; }
+    if (*((td2 + 4) as *u32) & 0x007e0000) != 0 { return false; }
+    g_usb_class = g_usb_desc[4]; g_usb_max_packet = g_usb_desc[7];
+    return g_usb_desc[0] == 18 && g_usb_desc[1] == 1;
+}
+
+fn usb_boot_set_address(address: u8) -> bool {
+    g_usb_setup[0] = 0; g_usb_setup[1] = 5; g_usb_setup[2] = address; g_usb_setup[3] = 0;
+    g_usb_setup[4] = 0; g_usb_setup[5] = 0; g_usb_setup[6] = 0; g_usb_setup[7] = 0;
+    let low: u32 = 0; if g_usb_low_speed { low = 0x04000000; }
+    let active: u32 = 0x18800000 | low;
+    let td0: u64 = usb_td(0); let td1: u64 = usb_td(1);
+    *(td0 as *u32) = (td1 as u32) | 4; *((td0 + 4) as *u32) = active;
+    *((td0 + 8) as *u32) = 0x00e0002d; *((td0 + 12) as *u32) = &g_usb_setup as u32;
+    *(td1 as *u32) = 1; *((td1 + 4) as *u32) = active;
+    *((td1 + 8) as *u32) = 0xffe80069; *((td1 + 12) as *u32) = 0;
+    let qh: u64 = usb_qh(); *((qh + 4) as *u32) = td0 as u32;
+    usb_delay(100000); *((qh + 4) as *u32) = 1;
+    if (*((td1 + 4) as *u32) & 0x00fe0000) != 0 { return false; }
+    usb_delay(50000); g_usb_address = address; return true;
+}
+
+fn usb_boot_descriptor18() -> bool {
+    for z: u32 in 0..32 { g_usb_desc[z] = 0; }
+    g_usb_setup[0] = 0x80; g_usb_setup[1] = 6; g_usb_setup[2] = 0; g_usb_setup[3] = 1;
+    g_usb_setup[4] = 0; g_usb_setup[5] = 0; g_usb_setup[6] = 18; g_usb_setup[7] = 0;
+    let low: u32 = 0; if g_usb_low_speed { low = 0x04000000; }
+    let active: u32 = 0x18800000 | low;
+    let t0: u64 = usb_td(0); let t1: u64 = usb_td(1); let t2: u64 = usb_td(2);
+    let t3: u64 = usb_td(3); let t4: u64 = usb_td(4);
+    *(t0 as *u32) = (t1 as u32) | 4; *((t0 + 4) as *u32) = active;
+    *((t0 + 8) as *u32) = usb_token(0x2d, g_usb_address, 0, 8); *((t0 + 12) as *u32) = &g_usb_setup as u32;
+    *(t1 as *u32) = (t2 as u32) | 4; *((t1 + 4) as *u32) = active | 0x20000000;
+    *((t1 + 8) as *u32) = usb_token(0x69, g_usb_address, 1, 8); *((t1 + 12) as *u32) = &g_usb_desc as u32;
+    *(t2 as *u32) = (t3 as u32) | 4; *((t2 + 4) as *u32) = active | 0x20000000;
+    *((t2 + 8) as *u32) = usb_token(0x69, g_usb_address, 0, 8); *((t2 + 12) as *u32) = (&g_usb_desc as u32) + 8;
+    *(t3 as *u32) = (t4 as u32) | 4; *((t3 + 4) as *u32) = active | 0x20000000;
+    *((t3 + 8) as *u32) = usb_token(0x69, g_usb_address, 1, 2); *((t3 + 12) as *u32) = (&g_usb_desc as u32) + 16;
+    *(t4 as *u32) = 1; *((t4 + 4) as *u32) = active;
+    *((t4 + 8) as *u32) = usb_token(0xe1, g_usb_address, 1, 0); *((t4 + 12) as *u32) = 0;
+    let qh: u64 = usb_qh(); *((qh + 4) as *u32) = t0 as u32;
+    usb_delay(150000); *((qh + 4) as *u32) = 1;
+    if (*((t4 + 4) as *u32) & 0x00fe0000) != 0 { return false; }
+    if g_usb_desc[0] != 18 || g_usb_desc[1] != 1 { return false; }
+    g_usb_class = g_usb_desc[4]; g_usb_max_packet = g_usb_desc[7];
+    g_usb_vid = (g_usb_desc[8] as u16) | ((g_usb_desc[9] as u16) << 8);
+    g_usb_pid = (g_usb_desc[10] as u16) | ((g_usb_desc[11] as u16) << 8);
+    return true;
+}
+
+fn usb_token(pid: u8, addr: u8, toggle: u32, len: u32) -> u32 {
+    let ml: u32 = 0x7ff; if len > 0 { ml = len - 1; }
+    return (pid as u32) | ((addr as u32) << 8) | (toggle << 19) | (ml << 21);
+}
+
+fn usb_endpoint_token(pid: u8, addr: u8, endpoint: u8, toggle: u32, len: u32) -> u32 {
+    return usb_token(pid, addr, toggle, len) | (((endpoint & 15) as u32) << 15);
+}
+
+// Translate one USB HID Keyboard/Keypad usage into an XT set-1 make code,
+// matching MortOS's existing PS/2 keyboard dispatcher.
+fn usb_hid_usage_to_scancode(usage: u8) -> u8 {
+    if usage == 4 { return 30; } if usage == 5 { return 48; }
+    if usage == 6 { return 46; } if usage == 7 { return 32; }
+    if usage == 8 { return 18; } if usage == 9 { return 33; }
+    if usage == 10 { return 34; } if usage == 11 { return 35; }
+    if usage == 12 { return 23; } if usage == 13 { return 36; }
+    if usage == 14 { return 37; } if usage == 15 { return 38; }
+    if usage == 16 { return 50; } if usage == 17 { return 49; }
+    if usage == 18 { return 24; } if usage == 19 { return 25; }
+    if usage == 20 { return 16; } if usage == 21 { return 19; }
+    if usage == 22 { return 31; } if usage == 23 { return 20; }
+    if usage == 24 { return 22; } if usage == 25 { return 47; }
+    if usage == 26 { return 17; } if usage == 27 { return 45; }
+    if usage == 28 { return 21; } if usage == 29 { return 44; }
+    if usage >= 30 && usage <= 38 { return usage - 28; }
+    if usage == 39 { return 11; }
+    if usage == 40 { return 28; } if usage == 41 { return 1; }
+    if usage == 42 { return 14; } if usage == 43 { return 15; }
+    if usage == 44 { return 57; } if usage == 45 { return 12; }
+    if usage == 46 { return 13; } if usage == 47 { return 26; }
+    if usage == 48 { return 27; } if usage == 49 { return 43; }
+    if usage == 51 { return 39; } if usage == 52 { return 40; }
+    if usage == 53 { return 41; } if usage == 54 { return 51; }
+    if usage == 55 { return 52; } if usage == 56 { return 53; }
+    if usage == 57 { return 58; }
+    if usage >= 58 && usage <= 67 { return usage + 1; }
+    if usage == 68 { return 87; } if usage == 69 { return 88; }
+    if usage == 73 { g_usb_hid_extended = true; return 82; }
+    if usage == 74 { g_usb_hid_extended = true; return 71; }
+    if usage == 75 { g_usb_hid_extended = true; return 73; }
+    if usage == 76 { g_usb_hid_extended = true; return 83; }
+    if usage == 77 { g_usb_hid_extended = true; return 79; }
+    if usage == 78 { g_usb_hid_extended = true; return 81; }
+    if usage == 79 { g_usb_hid_extended = true; return 77; }
+    if usage == 80 { g_usb_hid_extended = true; return 75; }
+    if usage == 81 { g_usb_hid_extended = true; return 80; }
+    if usage == 82 { g_usb_hid_extended = true; return 72; }
+    return 0;
+}
+
+// Poll the configured HID boot interface's interrupt-IN endpoint into the
+// shared 8-byte report buffer. Keyboard and mouse decoders consume it below.
+fn usb_hid_poll_report(address: u8, endpoint: u8, max_packet: u16, low_speed: bool, toggle: u32) -> bool {
+    if address == 0 || endpoint == 0 { return false; }
+    for clear: u32 in 0..8 { g_usb_hid_report[clear] = 0; }
+    let packet: u32 = max_packet as u32;
+    if packet == 0 || packet > 8 { return false; }
+    let low: u32 = 0; if low_speed { low = 0x04000000; }
+    let td: u64 = usb_td(0);
+    *(td as *u32) = 1; *((td + 4) as *u32) = 0x18800000 | low;
+    *((td + 8) as *u32) = usb_endpoint_token(0x69, address, endpoint, toggle, packet);
+    *((td + 12) as *u32) = &g_usb_hid_report as u32;
+    let qh: u64 = usb_qh(); *((qh + 4) as *u32) = td as u32;
+    usb_delay(4000); *((qh + 4) as *u32) = 1;
+    let status: u32 = *((td + 4) as *u32);
+    if (status & 0x00800000) != 0 { return false; } // still active means NAK/no report
+    if (status & 0x007e0000) != 0 { return false; }
+    return true;
+}
+
+// Poll one HID boot-keyboard interrupt report. Returns a set-1 make code for
+// the first newly pressed key, or zero when there is no completed/new report.
+fn usb_hid_poll_scancode() -> u8 {
+    usb_hotplug_poll();
+    g_usb_hid_shift = false; g_usb_hid_extended = false;
+    if !g_usb_keyboard_ready || !usb_hid_poll_report(g_usb_keyboard_address, g_usb_keyboard_endpoint, g_usb_keyboard_packet, g_usb_keyboard_low_speed, g_usb_keyboard_toggle) { return 0; }
+    g_usb_keyboard_toggle = g_usb_keyboard_toggle ^ 1;
+    let usage: u8 = 0;
+    let found: bool = false;
+    for i: u32 in 2..8 {
+        let candidate: u8 = g_usb_hid_report[i];
+        if !found && candidate != 0 {
+            let old: bool = false;
+            for j: u32 in 2..8 { if g_usb_hid_previous[j] == candidate { old = true; } }
+            if !old { usage = candidate; found = true; }
+        }
+    }
+    for copy: u32 in 0..8 { g_usb_hid_previous[copy] = g_usb_hid_report[copy]; }
+    if !found { return 0; }
+    g_usb_hid_shift = (g_usb_hid_report[0] & 0x22) != 0;
+    return usb_hid_usage_to_scancode(usage);
+}
+
+// Poll a HID boot-mouse report. The caller consumes signed relative movement
+// and the standard left/right/middle button bits from the exported globals.
+fn usb_hid_poll_mouse() -> bool {
+    g_usb_mouse_dx = 0; g_usb_mouse_dy = 0;
+    if !g_usb_mouse_ready || !usb_hid_poll_report(g_usb_mouse_address, g_usb_mouse_endpoint, g_usb_mouse_packet, g_usb_mouse_low_speed, g_usb_mouse_toggle) { return false; }
+    g_usb_mouse_toggle = g_usb_mouse_toggle ^ 1;
+    g_usb_mouse_buttons = g_usb_hid_report[0];
+    if g_usb_hid_report[1] < 128 { g_usb_mouse_dx = g_usb_hid_report[1] as i32; }
+    else { g_usb_mouse_dx = (g_usb_hid_report[1] as i32) - 256; }
+    if g_usb_hid_report[2] < 128 { g_usb_mouse_dy = g_usb_hid_report[2] as i32; }
+    else { g_usb_mouse_dy = (g_usb_hid_report[2] as i32) - 256; }
+    return true;
+}
+
+// Submit a standard or class-specific control request with no data stage.
+// g_usb_address selects the device assigned by usb_boot_set_address().
+fn usb_boot_control_no_data(request_type: u8, request: u8, value: u16, index: u16) -> bool {
+    g_usb_setup[0] = request_type; g_usb_setup[1] = request;
+    g_usb_setup[2] = (value & 0xff) as u8; g_usb_setup[3] = (value >> 8) as u8;
+    g_usb_setup[4] = (index & 0xff) as u8; g_usb_setup[5] = (index >> 8) as u8;
+    g_usb_setup[6] = 0; g_usb_setup[7] = 0;
+    let low: u32 = 0; if g_usb_low_speed { low = 0x04000000; }
+    let active: u32 = 0x18800000 | low;
+    let setup: u64 = usb_td(0); let status: u64 = usb_td(1);
+    *(setup as *u32) = (status as u32) | 4; *((setup + 4) as *u32) = active;
+    *((setup + 8) as *u32) = usb_token(0x2d, g_usb_address, 0, 8);
+    *((setup + 12) as *u32) = &g_usb_setup as u32;
+    *(status as *u32) = 1; *((status + 4) as *u32) = active;
+    *((status + 8) as *u32) = usb_token(0x69, g_usb_address, 1, 0);
+    *((status + 12) as *u32) = 0;
+    let qh: u64 = usb_qh(); *((qh + 4) as *u32) = setup as u32;
+    usb_delay(150000); *((qh + 4) as *u32) = 1;
+    return (*((status + 4) as *u32) & 0x00fe0000) == 0;
+}
+
+// Host-to-device control transfer with a small data stage. Bluetooth USB HCI
+// commands travel over endpoint 0 as class requests with bmRequestType 0x20.
+fn usb_boot_control_out(request_type: u8, request: u8, value: u16, index: u16, data: u64, length: u32) -> bool {
+    if length == 0 || length > 32 { return false; }
+    g_usb_setup[0] = request_type; g_usb_setup[1] = request;
+    g_usb_setup[2] = (value & 0xff) as u8; g_usb_setup[3] = (value >> 8) as u8;
+    g_usb_setup[4] = (index & 0xff) as u8; g_usb_setup[5] = (index >> 8) as u8;
+    g_usb_setup[6] = (length & 0xff) as u8; g_usb_setup[7] = (length >> 8) as u8;
+    let low: u32 = 0; if g_usb_low_speed { low = 0x04000000; }
+    let active: u32 = 0x18800000 | low;
+    let setup: u64 = usb_td(0);
+    *(setup as *u32) = (usb_td(1) as u32) | 4; *((setup + 4) as *u32) = active;
+    *((setup + 8) as *u32) = usb_token(0x2d, g_usb_address, 0, 8); *((setup + 12) as *u32) = &g_usb_setup as u32;
+    let remain: u32 = length; let offset: u32 = 0; let idx: u32 = 1; let toggle: u32 = 1;
+    let max_packet: u32 = g_usb_max_packet as u32; if max_packet == 0 || max_packet > 8 { max_packet = 8; }
+    while remain > 0 {
+        let packet: u32 = remain; if packet > max_packet { packet = max_packet; }
+        let td: u64 = usb_td(idx);
+        *(td as *u32) = (usb_td(idx + 1) as u32) | 4; *((td + 4) as *u32) = active;
+        *((td + 8) as *u32) = usb_token(0xe1, g_usb_address, toggle, packet); *((td + 12) as *u32) = (data + (offset as u64)) as u32;
+        remain = remain - packet; offset = offset + packet; toggle = toggle ^ 1; idx = idx + 1;
+    }
+    let status: u64 = usb_td(idx); *(status as *u32) = 1; *((status + 4) as *u32) = active;
+    *((status + 8) as *u32) = usb_token(0x69, g_usb_address, 1, 0); *((status + 12) as *u32) = 0;
+    let qh: u64 = usb_qh(); *((qh + 4) as *u32) = setup as u32;
+    usb_delay(150000); *((qh + 4) as *u32) = 1;
+    return (*((status + 4) as *u32) & 0x00fe0000) == 0;
+}
+
+fn usb_boot_control_in(request_type: u8, request: u8, value: u16, index: u16, data: u64, length: u32) -> bool {
+    if length == 0 || length > 32 { return false; }
+    g_usb_setup[0] = request_type; g_usb_setup[1] = request;
+    g_usb_setup[2] = (value & 0xff) as u8; g_usb_setup[3] = (value >> 8) as u8;
+    g_usb_setup[4] = (index & 0xff) as u8; g_usb_setup[5] = (index >> 8) as u8;
+    g_usb_setup[6] = (length & 0xff) as u8; g_usb_setup[7] = (length >> 8) as u8;
+    let low: u32 = 0; if g_usb_low_speed { low = 0x04000000; }
+    let active: u32 = 0x18800000 | low;
+    let setup: u64 = usb_td(0);
+    *(setup as *u32) = (usb_td(1) as u32) | 4; *((setup + 4) as *u32) = active;
+    *((setup + 8) as *u32) = usb_token(0x2d, g_usb_address, 0, 8); *((setup + 12) as *u32) = &g_usb_setup as u32;
+    let remain: u32 = length; let offset: u32 = 0; let idx: u32 = 1; let toggle: u32 = 1;
+    while remain > 0 {
+        let packet: u32 = remain; if packet > 8 { packet = 8; }
+        let td: u64 = usb_td(idx);
+        *(td as *u32) = (usb_td(idx + 1) as u32) | 4; *((td + 4) as *u32) = active | 0x20000000;
+        *((td + 8) as *u32) = usb_token(0x69, g_usb_address, toggle, packet); *((td + 12) as *u32) = (data + (offset as u64)) as u32;
+        remain = remain - packet; offset = offset + packet; toggle = toggle ^ 1; idx = idx + 1;
+    }
+    let status: u64 = usb_td(idx); *(status as *u32) = 1; *((status + 4) as *u32) = active;
+    *((status + 8) as *u32) = usb_token(0xe1, g_usb_address, 1, 0); *((status + 12) as *u32) = 0;
+    let qh: u64 = usb_qh(); *((qh + 4) as *u32) = setup as u32;
+    usb_delay(150000); *((qh + 4) as *u32) = 1;
+    return (*((status + 4) as *u32) & 0x00fe0000) == 0;
+}
+
+fn usb_bluetooth_poll_event() -> bool {
+    if !g_bt_transport_ready || g_bt_interrupt_endpoint == 0 { return false; }
+    for clear: u32 in 0..32 { g_bt_hci_event[clear] = 0; }
+    let packet: u32 = g_bt_interrupt_packet as u32;
+    if packet == 0 || packet > 32 { return false; }
+    let low: u32 = 0; if g_bt_low_speed { low = 0x04000000; }
+    let td: u64 = usb_td(0); *(td as *u32) = 1; *((td + 4) as *u32) = 0x18800000 | low;
+    *((td + 8) as *u32) = usb_endpoint_token(0x69, g_bt_address, g_bt_interrupt_endpoint, g_bt_event_toggle, packet);
+    *((td + 12) as *u32) = &g_bt_hci_event as u32;
+    let qh: u64 = usb_qh(); *((qh + 4) as *u32) = td as u32;
+    usb_delay(4000); *((qh + 4) as *u32) = 1;
+    let status: u32 = *((td + 4) as *u32);
+    if (status & 0x00800000) != 0 || (status & 0x007e0000) != 0 { return false; }
+    g_bt_event_toggle = g_bt_event_toggle ^ 1;
+    // Command Complete: event 0x0e, opcode 0x0c03, status byte zero.
+    if g_bt_hci_event[0] == 0x0e && g_bt_hci_event[1] >= 4 && g_bt_hci_event[3] == 0x03 && g_bt_hci_event[4] == 0x0c {
+        g_bt_hci_status = g_bt_hci_event[5];
+        g_bt_hci_ready = g_bt_hci_status == 0;
+    }
+    return true;
+}
+
+fn usb_bluetooth_init() {
+    g_bt_transport_ready = false; g_bt_reset_sent = false; g_bt_hci_ready = false; g_bt_hci_status = 0xff;
+    if !g_usb_configured || g_usb_interface_class != 0xe0 || g_usb_interface_subclass != 1 || g_usb_interface_protocol != 1 { return; }
+    if g_usb_interrupt_in == 0 || g_usb_bulk_in == 0 || g_usb_bulk_out == 0 { return; }
+    g_bt_transport_ready = true; g_bt_event_toggle = 0;
+    g_bt_address = g_usb_address; g_bt_low_speed = g_usb_low_speed;
+    g_bt_interrupt_endpoint = g_usb_interrupt_in; g_bt_interrupt_packet = g_usb_interrupt_max_packet;
+    g_bt_bulk_in_endpoint = g_usb_bulk_in; g_bt_bulk_out_endpoint = g_usb_bulk_out;
+    g_bt_hci_command[0] = 0x03; g_bt_hci_command[1] = 0x0c; g_bt_hci_command[2] = 0;
+    g_bt_reset_sent = usb_boot_control_out(0x20, 0, 0, 0, &g_bt_hci_command as u64, 3);
+    if !g_bt_reset_sent { return; }
+    for attempt: u32 in 0..50 {
+        if !g_bt_hci_ready { usb_bluetooth_poll_event(); }
+    }
+}
+
+fn usb_boot_config_descriptor(length: u32) -> bool {
+    for z: u32 in 0..64 { g_usb_config[z] = 0; }
+    g_usb_setup[0] = 0x80; g_usb_setup[1] = 6; g_usb_setup[2] = 0; g_usb_setup[3] = 2;
+    g_usb_setup[4] = 0; g_usb_setup[5] = 0; g_usb_setup[6] = (length & 0xff) as u8; g_usb_setup[7] = (length >> 8) as u8;
+    let low: u32 = 0; if g_usb_low_speed { low = 0x04000000; }
+    let active: u32 = 0x18800000 | low;
+    let t0: u64 = usb_td(0);
+    *(t0 as *u32) = (usb_td(1) as u32) | 4; *((t0 + 4) as *u32) = active;
+    *((t0 + 8) as *u32) = usb_token(0x2d, g_usb_address, 0, 8); *((t0 + 12) as *u32) = &g_usb_setup as u32;
+    let remain: u32 = length; let off: u32 = 0; let idx: u32 = 1; let toggle: u32 = 1;
+    while remain > 0 {
+        let packet: u32 = remain; if packet > 8 { packet = 8; }
+        let td: u64 = usb_td(idx);
+        *(td as *u32) = (usb_td(idx + 1) as u32) | 4; *((td + 4) as *u32) = active | 0x20000000;
+        *((td + 8) as *u32) = usb_token(0x69, g_usb_address, toggle, packet);
+        *((td + 12) as *u32) = (&g_usb_config as u32) + off;
+        remain = remain - packet; off = off + packet; toggle = toggle ^ 1; idx = idx + 1;
+    }
+    let status: u64 = usb_td(idx); *(status as *u32) = 1; *((status + 4) as *u32) = active;
+    *((status + 8) as *u32) = usb_token(0xe1, g_usb_address, 1, 0); *((status + 12) as *u32) = 0;
+    let qh: u64 = usb_qh(); *((qh + 4) as *u32) = t0 as u32;
+    usb_delay(150000); *((qh + 4) as *u32) = 1;
+    return (*((status + 4) as *u32) & 0x00fe0000) == 0;
+}
+
+fn usb_boot_parse_configuration() {
+    if !usb_boot_config_descriptor(9) { return; }
+    let total: u32 = (g_usb_config[2] as u32) | ((g_usb_config[3] as u32) << 8);
+    if total < 9 { return; }
+    let wanted: u32 = total; if wanted > 64 { wanted = 64; }
+    if !usb_boot_config_descriptor(wanted) { return; }
+    g_usb_configuration_value = g_usb_config[5];
+    let pos: u32 = 0;
+    let have_interface: bool = false;
+    let active_interface: bool = false;
+    while pos + 2 <= wanted {
+        let size: u32 = g_usb_config[pos] as u32;
+        let typ: u8 = g_usb_config[pos + 1];
+        if size < 2 { return; }
+        if typ == 4 && size >= 9 {
+            active_interface = !have_interface;
+            if active_interface {
+                have_interface = true;
+                g_usb_interface_number = g_usb_config[pos + 2];
+                g_usb_interface_class = g_usb_config[pos + 5];
+                g_usb_interface_subclass = g_usb_config[pos + 6];
+                g_usb_interface_protocol = g_usb_config[pos + 7];
+                if g_usb_interface_class == 0xe0 && g_usb_interface_subclass == 1 && g_usb_interface_protocol == 1 { g_hw_bluetooth = true; }
+            }
+        } else if typ == 5 && size >= 7 && active_interface {
+            let endpoint: u8 = g_usb_config[pos + 2];
+            let transfer_type: u8 = g_usb_config[pos + 3] & 3;
+            let packet: u16 = (g_usb_config[pos + 4] as u16) | ((g_usb_config[pos + 5] as u16) << 8);
+            if transfer_type == 3 && (endpoint & 0x80) != 0 {
+                g_usb_interrupt_in = endpoint;
+                g_usb_interrupt_max_packet = packet;
+                g_usb_interrupt_interval = g_usb_config[pos + 6];
+            }
+            if transfer_type == 2 && (endpoint & 0x80) != 0 { g_usb_bulk_in = endpoint; g_usb_bulk_in_max_packet = packet; }
+            if transfer_type == 2 && (endpoint & 0x80) == 0 { g_usb_bulk_out = endpoint; g_usb_bulk_out_max_packet = packet; }
+        }
+        pos = pos + size;
+    }
+    if g_usb_configuration_value != 0 {
+        g_usb_configured = usb_boot_control_no_data(0, 9, g_usb_configuration_value as u16, 0);
+    }
+    // HID boot interfaces use fixed keyboard/mouse reports and do not require
+    // a report-descriptor parser. SET_PROTOCOL(0) selects that boot protocol.
+    if g_usb_configured && g_usb_interface_class == 3 && g_usb_interface_subclass == 1 {
+        let ready: bool = usb_boot_control_no_data(0x21, 11, 0, g_usb_interface_number as u16);
+        if ready {
+            g_usb_hid_boot_ready = true;
+            if g_usb_interface_protocol == 1 && !g_usb_keyboard_ready {
+                g_usb_keyboard_ready = true; g_usb_keyboard_address = g_usb_address;
+                g_usb_keyboard_endpoint = g_usb_interrupt_in; g_usb_keyboard_packet = g_usb_interrupt_max_packet;
+                g_usb_keyboard_low_speed = g_usb_low_speed; g_usb_keyboard_toggle = 0;
+            }
+            if g_usb_interface_protocol == 2 && !g_usb_mouse_ready {
+                g_usb_mouse_ready = true; g_usb_mouse_address = g_usb_address;
+                g_usb_mouse_endpoint = g_usb_interrupt_in; g_usb_mouse_packet = g_usb_interrupt_max_packet;
+                g_usb_mouse_low_speed = g_usb_low_speed; g_usb_mouse_toggle = 0;
+            }
+        }
+    }
+    if g_usb_configured && g_hw_bluetooth { usb_bluetooth_init(); }
+}
+
+fn usb_find_uhci() -> bool {
+    for slot: u32 in 0..32 {
+        for func: u32 in 0..8 {
+            let id: u32 = pci_read32(0, slot as u8, func as u8, 0);
+            if id != 0xffffffff {
+                let cr: u32 = pci_read32(0, slot as u8, func as u8, 8);
+                if ((cr >> 24) & 0xff) == 0x0c && ((cr >> 16) & 0xff) == 3 && ((cr >> 8) & 0xff) == 0 {
+                    g_usb_io = (pci_read32(0, slot as u8, func as u8, 0x20) & 0xfffc) as u16;
+                    let cmd: u32 = pci_read32(0, slot as u8, func as u8, 4);
+                    pci_write32(0, slot as u8, func as u8, 4, cmd | 5);
+                    return g_usb_io != 0;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn usb_boot_reset_port(off: u16) -> bool {
+    let before: u16 = inw(g_usb_io + off);
+    if (before & 1) == 0 { return false; }
+    outw(g_usb_io + off, before | 0x0200);
+    usb_delay(200000);
+    outw(g_usb_io + off, inw(g_usb_io + off) & 0xfdff);
+    usb_delay(50000);
+    outw(g_usb_io + off, inw(g_usb_io + off) | 0x0004 | 0x000a);
+    usb_delay(50000);
+    let after: u16 = inw(g_usb_io + off);
+    g_usb_port_status = after as u32;
+    g_usb_low_speed = (after & 0x0100) != 0;
+    return (after & 5) == 5;
+}
+
+fn usb_boot_enumerate_default(address: u8, slot: u32) -> bool {
+    if slot >= 8 { return false; }
+    g_usb_address = 0; g_usb_configured = false;
+    g_usb_interface_class = 0; g_usb_interface_subclass = 0; g_usb_interface_protocol = 0;
+    g_usb_interrupt_in = 0; g_usb_bulk_in = 0; g_usb_bulk_out = 0;
+    g_usb_interrupt_max_packet = 0; g_usb_bulk_in_max_packet = 0; g_usb_bulk_out_max_packet = 0;
+    if !usb_boot_descriptor8() { return false; }
+    if !usb_boot_set_address(address) { return false; }
+    if !usb_boot_descriptor18() { return false; }
+    usb_boot_parse_configuration();
+    g_usb_device_address[slot] = address;
+    g_usb_device_vid[slot] = g_usb_vid; g_usb_device_pid[slot] = g_usb_pid;
+    g_usb_device_class[slot] = g_usb_interface_class; g_usb_device_protocol[slot] = g_usb_interface_protocol;
+    g_usb_device_configured[slot] = g_usb_configured;
+    g_usb_device_low_speed[slot] = g_usb_low_speed;
+    g_usb_devices = g_usb_devices + 1;
+    return true;
+}
+
+fn usb_boot_enumerate_port(off: u16, address: u8, slot: u32) -> bool {
+    if !usb_boot_reset_port(off) { return false; }
+    return usb_boot_enumerate_default(address, slot);
+}
+
+fn usb_hub_port_status(hub_address: u8, hub_low_speed: bool, port: u16) -> u32 {
+    g_usb_address = hub_address; g_usb_low_speed = hub_low_speed;
+    for clear: u32 in 0..4 { g_usb_hub_data[clear] = 0; }
+    if !usb_boot_control_in(0xa3, 0, 0, port, &g_usb_hub_data as u64, 4) { return 0; }
+    return (g_usb_hub_data[0] as u32) | ((g_usb_hub_data[1] as u32) << 8)
+        | ((g_usb_hub_data[2] as u32) << 16) | ((g_usb_hub_data[3] as u32) << 24);
+}
+
+fn usb_hub_feature(hub_address: u8, hub_low_speed: bool, port: u16, feature: u16, set: bool) -> bool {
+    g_usb_address = hub_address; g_usb_low_speed = hub_low_speed;
+    let request: u8 = 1; if set { request = 3; }
+    return usb_boot_control_no_data(0x23, request, feature, port);
+}
+
+fn usb_hub_enumerate(slot: u32) {
+    if slot >= g_usb_devices || g_usb_device_class[slot] != 9 { return; }
+    let hub_address: u8 = g_usb_device_address[slot];
+    let hub_low_speed: bool = g_usb_device_low_speed[slot];
+    g_usb_address = hub_address; g_usb_low_speed = hub_low_speed;
+    for clear: u32 in 0..16 { g_usb_hub_data[clear] = 0; }
+    if !usb_boot_control_in(0xa0, 6, 0x2900, 0, &g_usb_hub_data as u64, 9) { return; }
+    let ports: u32 = g_usb_hub_data[2] as u32;
+    g_usb_hub_ports[slot] = ports as u8; if g_usb_hub_ports[slot] > 8 { g_usb_hub_ports[slot] = 8; }
+    let connection_mask: u32 = 0;
+    for p: u32 in 1..9 {
+        if p <= ports { usb_hub_feature(hub_address, hub_low_speed, p as u16, 8, true); }
+    }
+    usb_delay(300000);
+    for p: u32 in 1..9 {
+        if p <= ports && g_usb_devices < 8 {
+            let before: u32 = usb_hub_port_status(hub_address, hub_low_speed, p as u16);
+            if (before & 1) != 0 {
+                connection_mask = connection_mask | ((1 as u32) << (p - 1));
+                usb_hub_feature(hub_address, hub_low_speed, p as u16, 4, true);
+                usb_delay(300000);
+                let after: u32 = usb_hub_port_status(hub_address, hub_low_speed, p as u16);
+                usb_hub_feature(hub_address, hub_low_speed, p as u16, 16, false);
+                usb_hub_feature(hub_address, hub_low_speed, p as u16, 20, false);
+                if (after & 3) == 3 {
+                    g_usb_low_speed = (after & 0x0200) != 0;
+                    let child_slot: u32 = g_usb_devices;
+                    usb_boot_enumerate_default((child_slot + 1) as u8, child_slot);
+                    g_usb_address = hub_address; g_usb_low_speed = hub_low_speed;
+                }
+            }
+        }
+    }
+    g_usb_hub_connection_mask[slot] = connection_mask;
+}
+
+// Rebuild the address table and class bindings after a topology change. The
+// current UHCI implementation is polling-only, so this runs synchronously and
+// cannot race a second transfer submission.
+fn usb_rescan() {
+    if g_usb_rescanning { return; }
+    g_usb_rescanning = true;
+    usb_boot_init();
+    g_usb_rescan_count = g_usb_rescan_count + 1;
+    g_usb_rescanning = false;
+}
+
+// Called from the existing 100 Hz USB keyboard poll. Root-port change bits and
+// hub C_PORT_CONNECTION status are sampled every two seconds, keeping normal
+// HID polling cheap while still providing automatic attach/remove recovery.
+fn usb_hotplug_poll() {
+    if !g_usb_hotplug_enabled || !g_usb_ok || g_usb_rescanning { return; }
+    g_usb_hotplug_ticks = g_usb_hotplug_ticks + 1;
+    if g_usb_hotplug_ticks < 200 { return; }
+    g_usb_hotplug_ticks = 0;
+    let changed: bool = false;
+    let root0: u16 = inw(g_usb_io + 0x10); let root1: u16 = inw(g_usb_io + 0x12);
+    let present0: bool = (root0 & 1) != 0; let present1: bool = (root1 & 1) != 0;
+    if present0 != g_usb_root_present[0] || present1 != g_usb_root_present[1] { changed = true; }
+    if (root0 & 2) != 0 || (root1 & 2) != 0 { changed = true; }
+    if !changed {
+        for slot: u32 in 0..8 {
+            if slot < g_usb_devices && g_usb_device_class[slot] == 9 {
+                let mask: u32 = 0; let ports: u32 = g_usb_hub_ports[slot] as u32;
+                for port: u32 in 1..9 {
+                    if port <= ports {
+                        let status: u32 = usb_hub_port_status(g_usb_device_address[slot], g_usb_device_low_speed[slot], port as u16);
+                        if (status & 1) != 0 { mask = mask | ((1 as u32) << (port - 1)); }
+                        if (status & 0x00010000) != 0 { changed = true; }
+                    }
+                }
+                if mask != g_usb_hub_connection_mask[slot] { changed = true; }
+            }
+        }
+    }
+    if changed { g_usb_hotplug_events = g_usb_hotplug_events + 1; usb_rescan(); }
+}
+
+fn usb_boot_init() {
+    g_usb_ok = false; g_usb_devices = 0; g_usb_descriptor_ok = false; g_usb_addressed = false;
+    g_usb_address = 0; g_usb_configured = false; g_usb_hid_boot_ready = false;
+    g_usb_interface_class = 0; g_usb_interface_subclass = 0; g_usb_interface_protocol = 0;
+    g_usb_interrupt_in = 0; g_usb_bulk_in = 0; g_usb_bulk_out = 0;
+    g_usb_bulk_in_max_packet = 0; g_usb_bulk_out_max_packet = 0;
+    g_usb_keyboard_ready = false; g_usb_keyboard_address = 0; g_usb_keyboard_toggle = 0;
+    g_usb_mouse_ready = false; g_usb_mouse_address = 0; g_usb_mouse_toggle = 0;
+    g_usb_mouse_dx = 0; g_usb_mouse_dy = 0; g_usb_mouse_buttons = 0;
+    g_bt_transport_ready = false; g_bt_reset_sent = false; g_bt_hci_ready = false; g_bt_hci_status = 0xff;
+    for old: u32 in 0..8 { g_usb_hid_previous[old] = 0; }
+    if !usb_find_uhci() { return; }
+    outw(g_usb_io + 0x00, 0x0004);     // global reset
+    usb_delay(200000);
+    outw(g_usb_io + 0x00, 0);
+    usb_delay(20000);
+    outw(g_usb_io + 0x00, 0x0002);     // host-controller reset
+    let guard: u32 = 0;
+    while guard < 1000000 && (inw(g_usb_io + 0x00) & 2) != 0 { guard = guard + 1; }
+    outw(g_usb_io + 0x04, 0);          // polling until IRQ support is added
+    g_usb_ok = true;
+    for clear: u32 in 0..8 {
+        g_usb_device_address[clear] = 0; g_usb_device_vid[clear] = 0; g_usb_device_pid[clear] = 0;
+        g_usb_device_class[clear] = 0; g_usb_device_protocol[clear] = 0; g_usb_device_configured[clear] = false;
+        g_usb_device_low_speed[clear] = false; g_usb_hub_ports[clear] = 0; g_usb_hub_connection_mask[clear] = 0;
+    }
+    usb_boot_enumerate_port(0x10, 1, 0);
+    let next_slot: u32 = g_usb_devices;
+    usb_boot_enumerate_port(0x12, (next_slot + 1) as u8, next_slot);
+    let root_devices: u32 = g_usb_devices;
+    for hub: u32 in 0..root_devices { if g_usb_device_class[hub] == 9 { usb_hub_enumerate(hub); } }
+    g_usb_root_present[0] = (inw(g_usb_io + 0x10) & 1) != 0;
+    g_usb_root_present[1] = (inw(g_usb_io + 0x12) & 1) != 0;
+    g_usb_hotplug_ticks = 0;
+    g_usb_descriptor_ok = g_usb_devices > 0; g_usb_addressed = g_usb_devices > 0;
+    g_usb_configured = false;
+    for configured: u32 in 0..8 { if g_usb_device_configured[configured] { g_usb_configured = true; } }
+    if g_usb_devices > 0 {
+        g_usb_vid = g_usb_device_vid[0]; g_usb_pid = g_usb_device_pid[0];
+        g_usb_interface_class = g_usb_device_class[0]; g_usb_interface_protocol = g_usb_device_protocol[0];
+    }
+}

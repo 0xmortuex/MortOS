@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="440" viewBox="0 0 880 440" role="img" aria-label="A captured DHCP handshake: MORT OS boots with no IP (0.0.0.0), broadcasts a DISCOVER, receives an OFFER of 10.0.2.15 from the server at 10.0.2.2, broadcasts a REQUEST for it, receives an ACK, and adopts the address 10.0.2.15. All four frames are real, captured from build/capture.pcap.">
+  <rect x="0.5" y="0.5" width="879" height="439" rx="12" fill="#0d1117" stroke="#30363d"/>
+  <circle cx="26" cy="20" r="6" fill="#ff5f57"/>
+  <circle cx="46" cy="20" r="6" fill="#febc2e"/>
+  <circle cx="66" cy="20" r="6" fill="#28c840"/>
+  <text x="440" y="24" text-anchor="middle" font-size="12" fill="#8b949e" font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace">build/capture.pcap — MORT OS earns an IP by itself</text>
+  <line x1="1" y1="39.5" x2="879" y2="39.5" stroke="#30363d" stroke-opacity="0.6"/>
+
+  <g font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace" text-anchor="middle">
+    <rect x="70" y="58" width="230" height="46" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="185" y="80" font-size="14" font-weight="700" fill="#3fb950">MORT OS</text>
+    <text x="185" y="97" font-size="11" fill="#8b949e">boots as 0.0.0.0 — no address</text>
+
+    <rect x="580" y="58" width="230" height="46" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="695" y="80" font-size="14" font-weight="700" fill="#58a6ff">DHCP server</text>
+    <text x="695" y="97" font-size="11" fill="#8b949e">10.0.2.2</text>
+  </g>
+
+  <line x1="185" y1="104" x2="185" y2="356" stroke="#30363d" stroke-width="1.5"/>
+  <line x1="695" y1="104" x2="695" y2="356" stroke="#30363d" stroke-width="1.5"/>
+
+  <g font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace" font-size="12.5">
+    <!-- D -->
+    <circle cx="167" cy="140" r="9" fill="#d29922"/><text x="167" y="144" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1117">D</text>
+    <line x1="185" y1="152" x2="689" y2="152" stroke="#d29922" stroke-width="2"/>
+    <polygon points="689,148 697,152 689,156" fill="#d29922"/>
+    <text x="440" y="145" text-anchor="middle" fill="#d29922" font-weight="700">DISCOVER</text>
+    <text x="440" y="167" text-anchor="middle" fill="#6e7681" font-size="10.5">broadcast · UDP 68 → 67 · "anyone out there? I have no IP"</text>
+
+    <!-- O -->
+    <circle cx="713" cy="196" r="9" fill="#58a6ff"/><text x="713" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1117">O</text>
+    <line x1="695" y1="208" x2="191" y2="208" stroke="#58a6ff" stroke-width="2"/>
+    <polygon points="191,204 183,208 191,212" fill="#58a6ff"/>
+    <text x="440" y="201" text-anchor="middle" fill="#58a6ff" font-weight="700">OFFER · yiaddr 10.0.2.15</text>
+    <text x="440" y="223" text-anchor="middle" fill="#6e7681" font-size="10.5">received &amp; parsed — MORT OS reads the offered address out of the reply</text>
+
+    <!-- R -->
+    <circle cx="167" cy="252" r="9" fill="#3fb950"/><text x="167" y="256" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1117">R</text>
+    <line x1="185" y1="264" x2="689" y2="264" stroke="#3fb950" stroke-width="2"/>
+    <polygon points="689,260 697,264 689,268" fill="#3fb950"/>
+    <text x="440" y="257" text-anchor="middle" fill="#3fb950" font-weight="700">REQUEST · 10.0.2.15 (option 50), server 10.0.2.2 (option 54)</text>
+    <text x="440" y="279" text-anchor="middle" fill="#6e7681" font-size="10.5">broadcast · "yes, I'll take that one"</text>
+
+    <!-- A -->
+    <circle cx="713" cy="308" r="9" fill="#58a6ff"/><text x="713" y="312" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1117">A</text>
+    <line x1="695" y1="320" x2="191" y2="320" stroke="#58a6ff" stroke-width="2"/>
+    <polygon points="191,316 183,320 191,324" fill="#58a6ff"/>
+    <text x="440" y="313" text-anchor="middle" fill="#58a6ff" font-weight="700">ACK · it's yours</text>
+    <text x="440" y="335" text-anchor="middle" fill="#6e7681" font-size="10.5">MORT OS adopts the address — no longer 0.0.0.0</text>
+  </g>
+
+  <line x1="24" y1="376" x2="856" y2="376" stroke="#30363d" stroke-opacity="0.5"/>
+  <g font-family="'Cascadia Code','JetBrains Mono',Consolas,monospace">
+    <text x="24" y="400" font-size="12.5"><tspan fill="#3fb950" font-weight="700">PASS</tspan><tspan fill="#c9d1d9"> — MORT OS configured its own network address, the real way. UDP + DHCP written from scratch in Mort.</tspan></text>
+    <text x="24" y="424" font-size="13"><tspan fill="#8b949e">mortnet M3: DHCP</tspan></text>
+    <rect x="150" y="411" width="150" height="20" rx="4" fill="#161b22" stroke="#3fb950"/>
+    <text x="162" y="425" font-size="12.5" font-weight="700" fill="#3fb950">IP: 10.0.2.15</text>
+    <text x="856" y="424" text-anchor="end" font-size="11.5" fill="#8b949e">M3 complete.</text>
+  </g>
+</svg>

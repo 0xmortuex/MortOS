@@ -1,0 +1,57 @@
+// test_dhcp.mx — build DISCOVER/REQUEST, parse an OFFER.
+//! expect: 1
+//! expect: 99
+//! expect: 1
+//! expect: 3
+//! expect: 15
+//! expect: 2
+//! expect: 2
+//! expect: 15
+//! expect: 2
+
+fn main() -> int {
+    let our_mac: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+
+    // --- DISCOVER ---
+    let d: [u8; 300] = [0; 300];
+    let db: u64 = &d as u64;
+    let dlen: u32 = dhcp_build_discover(db, 0x6D6F7274, &our_mac as u64);
+    let op: *u8 = db as *u8;
+    print(*op as i64);                              // 1 = BOOTREQUEST
+    let cookie: *u8 = (db + 236) as *u8;
+    print(*cookie as i64);                          // 99 = 0x63, magic cookie
+    print(dhcp_msg_type(db, dlen) as i64);          // 1 = DISCOVER
+
+    // --- REQUEST for 10.0.2.15 from server 10.0.2.2 ---
+    let want_ip: [u8; 4] = [10, 0, 2, 15];
+    let srv_ip: [u8; 4] = [10, 0, 2, 2];
+    let r: [u8; 300] = [0; 300];
+    let rb: u64 = &r as u64;
+    let rlen: u32 = dhcp_build_request(rb, 0x6D6F7274, &our_mac as u64,
+                                       &want_ip as u64, &srv_ip as u64);
+    print(dhcp_msg_type(rb, rlen) as i64);          // 3 = REQUEST
+    let req50: u64 = dhcp_find_option(rb, rlen, 50);
+    print(*((req50 + 3) as *u8) as i64);            // 15: requested IP's last octet
+    let req54: u64 = dhcp_find_option(rb, rlen, 54);
+    print(*((req54 + 3) as *u8) as i64);            // 2: server id's last octet
+
+    // --- parse a forged OFFER (yiaddr 10.0.2.15, server 10.0.2.2) ---
+    let o: [u8; 300] = [0; 300];
+    let ob: u64 = &o as u64;
+    let off: u32 = dhcp_bootp(ob, 0x6D6F7274, &our_mac as u64);
+    let opb: *u8 = ob as *u8; *opb = 2;             // op = BOOTREPLY
+    let offer_ip: [u8; 4] = [10, 0, 2, 15];
+    ip4_copy(dhcp_yiaddr(ob), &offer_ip as u64);
+    let p: u64 = ob + (off as u64);
+    dhcp_opt_u8(p, 0, 53); dhcp_opt_u8(p, 1, 1); dhcp_opt_u8(p, 2, DHCP_OFFER);
+    dhcp_opt_u8(p, 3, 54); dhcp_opt_u8(p, 4, 4);
+    ip4_copy(p + 5, &srv_ip as u64);
+    dhcp_opt_u8(p, 9, 255);
+    let olen: u32 = off + 10;
+
+    print(dhcp_msg_type(ob, olen) as i64);          // 2 = OFFER
+    print(*((dhcp_yiaddr(ob) + 3) as *u8) as i64);  // 15: offered IP's last octet
+    let srv: u64 = dhcp_find_option(ob, olen, 54);
+    print(*((srv + 3) as *u8) as i64);              // 2: server id's last octet
+    return 0;
+}

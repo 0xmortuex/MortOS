@@ -1,0 +1,38 @@
+// test_http.mx — string helpers and HTTP response building.
+//! expect: 3
+//! expect: 1
+//! expect: 0
+//! expect: 72
+//! expect: 53
+//! expect: 1
+//! expect: 5
+
+fn main() -> int {
+    // http_strlen / u32_to_dec basics.
+    print(http_strlen("abc" as u64) as i64);        // 3
+
+    let numbuf: [u8; 8] = [0; 8];
+    let nb: u64 = &numbuf as u64;
+    print(u32_to_dec(nb, 5) as i64);                // 1 digit
+    print(*(nb as *u8) as i64 - 53);                // '5' is 53 -> prints 0
+
+    // Build a response for a tiny body.
+    let resp: [u8; 256] = [0; 256];
+    let rb: u64 = &resp as u64;
+    let total: u32 = http_build_response(rb, "hello" as u64);
+
+    // Starts with 'H' (72).
+    print(*(rb as *u8) as i64);                     // 72
+
+    // The last 5 bytes are the body "hello"; check the final 'o' (111) and
+    // that http_is_get recognises a GET line.
+    let last: *u8 = (rb + (total as u64) - 1) as *u8;
+    print(*last as i64 - 58);                       // 'o'=111 -> 53
+
+    if http_is_get("GET / HTTP/1.1" as u64) { print(1); } else { print(0); }   // 1
+
+    // The body length is 5, so the response ends with exactly "hello".
+    let body_start: *u8 = (rb + (total as u64) - 5) as *u8;
+    print(*body_start as i64 - 99);                 // 'h'=104 -> 5
+    return 0;
+}

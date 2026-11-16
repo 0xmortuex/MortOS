@@ -1,0 +1,41 @@
+// net/checksum.mx — the Internet checksum (RFC 1071).
+//
+// The one algorithm shared by IPv4, ICMP, UDP and TCP: sum the data as
+// big-endian 16-bit words in one's-complement arithmetic, then complement.
+// An odd trailing byte is padded with a zero on the right.
+//
+// Verification trick used everywhere in mortnet: a packet whose checksum
+// field is already correct sums to 0xFFFF, so inet_checksum() over the
+// whole header returns 0 exactly when the packet is intact.
+
+// Accumulate the 16-bit one's-complement sum of a region onto `acc`, without
+// folding — so several non-contiguous regions can be summed together (UDP and
+// TCP checksum a pseudo-header that is not adjacent to the segment). An odd
+// trailing byte is padded with a zero on the right; only valid for the final
+// region, so pass any odd-length region last.
+fn inet_sum(addr: u64, len: u32, acc: u32) -> u32 {
+    let sum: u32 = acc;
+    let i: u32 = 0;
+    while i + 1 < len {
+        sum = sum + (be16_load(addr + (i as u64)) as u32);
+        i = i + 2;
+    }
+    if i < len {
+        let last: *u8 = (addr + (i as u64)) as *u8;
+        sum = sum + ((*last as u32) << 8);
+    }
+    return sum;
+}
+
+// Fold the carries into 16 bits and complement — the final checksum step.
+fn inet_fold(sum: u32) -> u16 {
+    let s: u32 = sum;
+    while (s >> 16) != 0 {
+        s = (s & 0xFFFF) + (s >> 16);
+    }
+    return (~s) as u16;
+}
+
+fn inet_checksum(addr: u64, len: u32) -> u16 {
+    return inet_fold(inet_sum(addr, len, 0));
+}

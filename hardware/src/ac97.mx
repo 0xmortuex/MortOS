@@ -1,0 +1,70 @@
+// Intel 82801AA AC'97 audio: PCI discovery, mixer volume, and PCM-out DMA.
+let g_ac97_ok: bool = false;
+let g_ac97_nam: u16 = 0;                 // native audio mixer I/O base
+let g_ac97_nabm: u16 = 0;                // native audio bus-master I/O base
+let g_audio_volume: u32 = 70;
+let g_ac97_pcm: [u16; 2048] = [0; 2048]; // 1024 stereo frames at 48 kHz
+let g_ac97_bdl: [u32; 2] = [0; 2];       // one 8-byte buffer descriptor
+
+fn ac97_init() -> bool {
+    let found: bool = false;
+    for slot: u32 in 0..32 {
+        let id: u32 = pci_read32(0, slot as u8, 0, 0x00);
+        if (id & 0xffff) == 0x8086 && ((id >> 16) & 0xffff) == 0x2415 {
+            g_ac97_nam = (pci_read32(0, slot as u8, 0, 0x10) & 0xfffc) as u16;
+            g_ac97_nabm = (pci_read32(0, slot as u8, 0, 0x14) & 0xfffc) as u16;
+            let cmd: u32 = pci_read32(0, slot as u8, 0, 0x04);
+            pci_write32(0, slot as u8, 0, 0x04, cmd | 0x5); // I/O + bus master
+            found = true;
+        }
+    }
+    if !found { g_ac97_ok = false; return false; }
+    outl(g_ac97_nabm + 0x2c, 0x00000002); // cold reset / AC-link on
+    let wait: u32 = 0;
+    while wait < 100000 { wait = wait + 1; }
+    outw(g_ac97_nam + 0x00, 0);            // codec mixer reset
+    outw(g_ac97_nam + 0x2a, 1);            // variable-rate audio enable
+    outw(g_ac97_nam + 0x2c, 48000);        // front DAC sample rate
+    g_ac97_ok = true;
+    ac97_set_volume(g_audio_volume);
+    return true;
+}
+
+fn ac97_set_volume(percent: u32) {
+    if percent > 100 { percent = 100; }
+    g_audio_volume = percent;
+    if !g_ac97_ok { return; }
+    if percent == 0 { outw(g_ac97_nam + 0x02, 0x8000); return; }
+    let attenuation: u16 = (((100 - percent) * 31 / 100) & 31) as u16;
+    outw(g_ac97_nam + 0x02, attenuation | (attenuation << 8));
+    outw(g_ac97_nam + 0x18, 0);             // PCM-out mixer at full scale
+}
+
+fn ac97_fill_tone() {
+    let positive: bool = true;
+    let phase: u32 = 0;
+    for frame: u32 in 0..1024 {
+        let sample: u16 = 0x2800;
+        if !positive { sample = 0xd800; }
+        g_ac97_pcm[frame * 2] = sample;
+        g_ac97_pcm[frame * 2 + 1] = sample;
+        phase = phase + 1;
+        if phase >= 27 { phase = 0; positive = !positive; }
+    }
+}
+
+fn ac97_test_tone() -> bool {
+    if !g_ac97_ok && !ac97_init() { return false; }
+    ac97_fill_tone();
+    g_ac97_bdl[0] = &g_ac97_pcm as u32;
+    g_ac97_bdl[1] = 0x40000000 | 2048;      // last buffer, 2048 samples
+    outb(g_ac97_nabm + 0x1b, 0x02);         // reset PCM-out engine
+    let guard: u32 = 0;
+    while guard < 10000 { guard = guard + 1; }
+    outb(g_ac97_nabm + 0x1b, 0x00);
+    outl(g_ac97_nabm + 0x10, &g_ac97_bdl as u32);
+    outb(g_ac97_nabm + 0x15, 0);            // last valid descriptor index
+    outb(g_ac97_nabm + 0x1b, 0x01);         // run PCM-out DMA
+    return true;
+}
+

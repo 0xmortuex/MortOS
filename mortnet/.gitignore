@@ -1,0 +1,7 @@
+build/
+.mort/
+*.exe
+*.pdb
+*.o
+*.obj
+__pycache__/

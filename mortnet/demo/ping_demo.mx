@@ -1,0 +1,152 @@
+// demo/ping_demo.mx — the M2 payoff: MORT OS speaks ARP, IP and ICMP.
+//
+// Boots, brings up the RTL8139 with receive enabled, learns its own MAC, then:
+//   1. broadcasts an ARP request for the gateway (10.0.2.2),
+//   2. on the ARP reply, learns the gateway's MAC and pings it (ICMP echo),
+//   3. answers any ARP/ICMP addressed to us via net_handle_frame,
+//   4. reports what happened on VGA row by row.
+//
+// Against QEMU's SLIRP gateway this produces a full round trip in the capture:
+// our ARP who-has, the ARP reply, our ICMP echo request, and the echo reply.
+//
+// build_demo.py concatenates net/*.mx + glue/rtl8139.mx ahead of this file.
+
+fn vga_line(row: u32, s: u64, color: u8) {
+    let vga: u32 = 0xB8000 + row * 160;
+    let i: u32 = 0;
+    while true {
+        let ch: u8 = *((s + (i as u64)) as *u8);
+        if ch == 0 { return; }
+        *((vga + i * 2) as *u8) = ch;
+        *((vga + i * 2 + 1) as *u8) = color;
+        i = i + 1;
+    }
+}
+
+// Send whatever net_handle_frame decided to reply with (len bytes already in
+// g_rtl_txbuf is NOT how this works — we build into a scratch frame and copy).
+fn send_frame(src: u64, len: u32) {
+    let tx: u64 = &g_rtl_txbuf as u64;
+    for i: u32 in 0..len {
+        let s: *u8 = (src + (i as u64)) as *u8;
+        let d: *u8 = (tx + (i as u64)) as *u8;
+        *d = *s;
+    }
+    rtl_transmit(len);
+}
+
+let g_scratch_tx: [u8; 128] = [0; 128];
+let g_scratch_rx: [u8; 2048] = [0; 2048];
+let g_gateway_ip: [u8; 4] = [10, 0, 2, 2];
+
+fn kmain() {
+    let banner: [u8; 24] = [
+        109, 111, 114, 116, 110, 101, 116, 32, 77, 50, 58, 32,
+        65, 82, 80, 43, 73, 67, 77, 80, 0, 0, 0, 0];        // "mortnet M2: ARP+ICMP"
+    vga_line(0, &banner as u64, 0x0A);
+
+    if !rtl_init() {
+        let miss: [u8; 12] = [78, 79, 32, 82, 84, 76, 56, 49, 51, 57, 0, 0];   // "NO RTL8139"
+        vga_line(1, &miss as u64, 0x0C);
+        asm("hlt");
+        return;
+    }
+
+    // Learn our MAC from the card and register our identity (IP is 10.0.2.15).
+    let mymac: [u8; 6] = [0; 6];
+    rtl_mac(&mymac as u64);
+    net_set_mac(&mymac as u64);
+
+    // 1. Broadcast "who has 10.0.2.2?"
+    let req: u64 = &g_scratch_tx as u64;
+    let bcast: [u8; 6] = [0; 6];
+    mac_broadcast(&bcast as u64);
+    eth_build_header(req, &bcast as u64, net_our_mac(), ETH_ARP);
+    let alen: u32 = arp_build_request(eth_payload(req), net_our_mac(),
+                                      net_our_ip(), &g_gateway_ip as u64);
+    send_frame(req, 14 + alen);
+    let arp_sent: [u8; 20] = [
+        65, 82, 80, 32, 114, 101, 113, 32, 45, 62, 32, 49,
+        48, 46, 48, 46, 50, 46, 50, 0];                     // "ARP req -> 10.0.2.2"
+    vga_line(1, &arp_sent as u64, 0x0E);
+
+    // 2. + 3. Poll for a while: answer anything for us, learn the gateway MAC
+    // from its ARP reply and ping it, and note the echo reply when it returns.
+    let gw_mac: [u8; 6] = [0; 6];
+    let have_gw: bool = false;
+    let pinged: bool = false;
+    let got_reply: bool = false;
+    let rx_count: u32 = 0;
+
+    let spins: u32 = 0;
+    while spins < 20000000 {
+        let rxb: u64 = &g_scratch_rx as u64;
+        let n: u32 = rtl_poll_rx(rxb);
+        if n >= 14 {
+            rx_count = rx_count + 1;
+            let et: u16 = eth_type(rxb);
+
+            // Answer anything addressed to us (ARP who-has / ping).
+            let reply_len: u32 = net_handle_frame(rxb, n, &g_scratch_tx as u64);
+            if reply_len > 0 {
+                send_frame(&g_scratch_tx as u64, reply_len);
+            }
+
+            // Learn the gateway's MAC from its ARP reply, then ping it.
+            if et == ETH_ARP {
+                let a: u64 = eth_payload(rxb);
+                if arp_oper(a) == ARP_REPLY && ip4_eq(arp_spa(a), &g_gateway_ip as u64) {
+                    mac_copy(&gw_mac as u64, arp_sha(a));
+                    have_gw = true;
+                }
+            }
+
+            // Recognise the gateway's echo reply to our ping.
+            if et == ETH_IP {
+                let ip: u64 = eth_payload(rxb);
+                if ip_proto(ip) == IP_PROTO_ICMP {
+                    let icmp: u64 = ip + (ip_ihl_bytes(ip) as u64);
+                    if icmp_type(icmp) == ICMP_ECHO_REPLY
+                        && ip4_eq(ip_src(ip), &g_gateway_ip as u64) {
+                        got_reply = true;
+                    }
+                }
+            }
+        }
+
+        // Once we know the gateway MAC, send exactly one ping to it.
+        if have_gw && !pinged {
+            let p: u64 = &g_scratch_tx as u64;
+            eth_build_header(p, &gw_mac as u64, net_our_mac(), ETH_IP);
+            let pip: u64 = eth_payload(p);
+            let picmp: u64 = pip + 20;
+            let data: [u8; 8] = [109, 111, 114, 116, 110, 101, 116, 33];   // "mortnet!"
+            let clen: u32 = icmp_build_echo_request(picmp, 0x1234, 0x0001,
+                                                    &data as u64, 8);
+            ip_build_header(pip, net_our_ip(), &g_gateway_ip as u64,
+                            IP_PROTO_ICMP, 0x0001, clen as u16);
+            send_frame(p, 14 + 20 + clen);
+            pinged = true;
+            let ps: [u8; 20] = [
+                80, 73, 78, 71, 32, 45, 62, 32, 49, 48, 46, 48,
+                46, 50, 46, 50, 0, 0, 0, 0];                // "PING -> 10.0.2.2"
+            vga_line(2, &ps as u64, 0x0E);
+        }
+
+        if got_reply {
+            let ok: [u8; 24] = [
+                80, 73, 78, 71, 32, 82, 69, 80, 76, 89, 32, 79,
+                75, 32, 102, 114, 111, 109, 32, 103, 119, 0, 0, 0];   // "PING REPLY OK from gw"
+            vga_line(3, &ok as u64, 0x0A);
+            asm("hlt");
+            return;
+        }
+
+        spins = spins + 1;
+    }
+
+    let done: [u8; 16] = [
+        112, 111, 108, 108, 32, 101, 110, 100, 101, 100, 0, 0, 0, 0, 0, 0];   // "poll ended"
+    vga_line(4, &done as u64, 0x08);
+    asm("hlt");
+}
