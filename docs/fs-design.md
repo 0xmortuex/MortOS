@@ -2,16 +2,16 @@
 
 **Status: implemented.** This was the pre-implementation design document for
 MortFS v1, and everything scoped below has since been built and shipped: the
-ATA PIO driver (`ata_init`/`ata_read`/`ata_write`, `kmain.mx:1175`-`1241`),
-the on-disk format and filesystem core (`fs_init`, `kmain.mx:1296`;
-`fs_read_file`, `kmain.mx:1666`; `fs_create_full`, `kmain.mx:1533`; `fs_remove`,
-`kmain.mx:1736`), the five shell commands (`ls`/`cat`/`write`/`rm`/`run`,
+ATA PIO driver (`ata_init`/`ata_read`/`ata_write`, `kmain.mx:1425`-`1498`),
+the on-disk format and filesystem core (`fs_init`, `kmain.mx:1552`;
+`fs_read_file`, `kmain.mx:1950`; `fs_create_full`, `kmain.mx:1816`; `fs_remove`,
+`kmain.mx:2100`), the five shell commands (`ls`/`cat`/`write`/`rm`/`run`,
 documented with line citations in [`docs/shell.md`](shell.md)), and the
 host-side `mkfs.py` (repo root, not `kernel/mkfs.py` as drafted below) with
 `build.py disk` integration. The `g_run_depth` nested-`run` guard from
-Section 4.5 is real too (`kmain.mx:40`, checked at `kmain.mx:895`).
+Section 4.5 is real too (`kmain.mx:40`, checked at `kmain.mx:1128`).
 
-(`fs_create`, `kmain.mx:1591`, a root-only convenience wrapper this section
+(`fs_create`, `kmain.mx:1870`, a root-only convenience wrapper this section
 originally cited here, is now dead code — every real creation path, including
 `write`'s, calls `fs_create_full` directly; see its own updated comment and
 the "Code follow-ups" backlog item below.)
@@ -67,32 +67,32 @@ exception: those are `kernel/mkfs.py`/`kernel/build.py` invocations a reader
 could actually try to run, so they were updated to the real flat-layout
 paths (`mkfs.py`, `build.py` at repo root) rather than left broken. Note
 that `kmain.mx`'s own `bad filesystem` message still prints the stale
-`kernel/mkfs.py` path (`kmain.mx:1755`) — that's a source bug, not a doc
+`kernel/mkfs.py` path (`kmain.mx:2128`) — that's a source bug, not a doc
 bug, and out of scope for a docs-only pass; see the backlog item.
 
 **MortFS has since grown a v2 format with directories, permissions, and
-ownership — not described anywhere below.** `fs_init` (`kmain.mx:1296`-`1332`)
+ownership — not described anywhere below.** `fs_init` (`kmain.mx:1552`-`1589`)
 reads a `version` field from the superblock; `mkfs.py` (repo root) now
 writes `version = 2` (`VERSION`, `mkfs.py:33`), and a disk built with the v1 tooling
 described in Section 5.1 is auto-upgraded in place on first boot (every
 existing file is reparented to root with mode `0644`, then the on-disk
-version is bumped to 2, `kmain.mx:1311`-`1326`). The extra 12 bytes live in
+version is bumped to 2, `kmain.mx:1568`-`1583`). The extra 12 bytes live in
 what Section 2.3 below calls "reserved" (entry offset 40..51): `type` (u8,
 `0`=file/`1`=directory), `parent` (u8, entry index of the containing
 directory; `255`=root), `uid` (u8, owning user), `mode` (u32, Unix-style
 permission bits), and `mtime` (u32, seconds since midnight, from the CMOS
-RTC) — accessors at `kmain.mx:1269`-`1273`, comment block at
-`kmain.mx:1261`-`1267`.
+RTC) — accessors at `kmain.mx:1525`-`1529`, comment block at
+`kmain.mx:1517`-`1523`.
 
 `mtime` is write-only in practice, despite the "last-modified" name its
-comment gives it. `fs_set_meta` (`kmain.mx:1286`-`1293`) stamps it from
-`fs_now()`'s CMOS-RTC read (`kmain.mx:1276`-`1283`) exactly once, when
-`fs_create_full` creates the entry (the call at `kmain.mx:1578`); appending
-to an *existing* file — `write`'s `i != 64` branch (`kmain.mx:2294`-`2305`)
-falling through to `fs_append_line` (`kmain.mx:2317`) — never calls
+comment gives it. `fs_set_meta` (`kmain.mx:1542`-`1549`) stamps it from
+`fs_now()`'s CMOS-RTC read (`kmain.mx:1532`-`1539`) exactly once, when
+`fs_create_full` creates the entry (the call at `kmain.mx:1854`); appending
+to an *existing* file — `write`'s `i != 64` branch (`kmain.mx:3104`-`3115`)
+falling through to `fs_append_line` (`kmain.mx:3127`) — never calls
 `fs_set_meta` again, so the stamp really records creation time, not the
-last write. And `fs_mtime` itself (`kmain.mx:1273`) has zero callers
-anywhere in the source: `ls` (`kmain.mx:2195`-`2214`) prints the type
+last write. And `fs_mtime` itself (`kmain.mx:1529`) has zero callers
+anywhere in the source: `ls` (`kmain.mx:2998`-`3017`) prints the type
 marker, octal mode bits, name, size, and owning uid, but never the
 timestamp, and no `stat`/`touch`-style command exists either. So the value
 is faithfully written to disk on every create and never read back by
@@ -105,12 +105,12 @@ on-screen clock uses, with the same gap; see
 
 Root is implicit (not a table entry); a path is
 resolved component-by-component, including `.`/`..`, by `fs_resolve`
-(`kmain.mx:1367`). Directories carry no data extent (`start_sector` and
-`capacity_sectors` are both written `0`, `kmain.mx:1562`-`1563`), so unlike
+(`kmain.mx:1624`). Directories carry no data extent (`start_sector` and
+`capacity_sectors` are both written `0`, `kmain.mx:1840`-`1841`), so unlike
 file deletion (Section 2.6), removing a directory leaks no disk space.
-`fs_ensure_layout` (`kmain.mx:1617`-`1625`) creates a standard `/bin /etc
+`fs_ensure_layout` (`kmain.mx:1901`-`1909`) creates a standard `/bin /etc
 /home /var` layout on first boot, and `fs_populate_bin`
-(`kmain.mx:1641`-`1662`) reparents seeded `*.bin` programs into `/bin` with
+(`kmain.mx:1925`-`1946`) reparents seeded `*.bin` programs into `/bin` with
 mode `0755` so they're runnable via `$PATH`. The corresponding shell
 commands (`cd`, `ls`, `mkdir`, `rmdir`, `chmod`, `chown`, plus `pwd`,
 `whoami`, `su`, `sudo`) are documented with line citations in
@@ -121,13 +121,13 @@ not a complete command reference; treat `docs/shell.md` as the current one.
 `fs_resolve` turns a path into an index with no bound on how deep it walks,
 and the function that does the reverse — rendering the current directory
 back into a path string for `pwd`/`$PWD`/the prompt — has no bound either.
-`path_of` (`kmain.mx:1425`-`1443`) recurses up the `parent` chain first, then
+`path_of` (`kmain.mx:1682`-`1701`) recurses up the `parent` chain first, then
 appends the current directory's own name, writing straight into whatever
 buffer it's given with no length check anywhere in the function. Both call
 sites hand it the same fixed 128-byte global, `g_cwdpath` (`kmain.mx:33`):
-`cd`'s dispatch (`kmain.mx:2171`) and `cwd_init()` (`kmain.mx:2916`-`2931`),
+`cd`'s dispatch (`kmain.mx:2973`) and `cwd_init()` (`kmain.mx:3546`-`3561`),
 which seeds it at login. Since `fs_create_full` caps each path component at
-23 characters (`kmain.mx:1535`) but never caps how many directories deep a
+23 characters (`kmain.mx:1818`) but never caps how many directories deep a
 path can go, nesting six directories named with the full 23 characters each
 (`mkdir`+`cd`, six times, e.g. a 23-`a` name at each level — no permission
 beyond write access to your own home directory is needed, and only 6 of the
@@ -138,13 +138,13 @@ layout, not documented here; the point is that `path_of` itself has nothing
 stopping it.
 
 The shell prompt hits a second, shallower version of the same gap through a
-different, smaller buffer. `draw_prompt` (`kmain.mx:709`-`727`) builds the
-displayed path into a local `disp: [u8; 64]` (`kmain.mx:710`): it copies
+different, smaller buffer. `draw_prompt` (`kmain.mx:939`-`957`) builds the
+displayed path into a local `disp: [u8; 64]` (`kmain.mx:940`): it copies
 `g_cwdpath` into `disp` via the same unbounded `str_copy`
-(`kmain.mx:739`-`749`) — substituting a leading `~` for the home prefix when
-the cwd is under `/home/<user>` (`kmain.mx:714`-`720`), but otherwise with no
+(`kmain.mx:969`-`979`) — substituting a leading `~` for the home prefix when
+the cwd is under `/home/<user>` (`kmain.mx:944`-`947`), but otherwise with no
 length check at all — then records the written length in `g_prompt_len`
-(`kmain.mx:726`) so the input line starts right after it. Since each path
+(`kmain.mx:956`) so the input line starts right after it. Since each path
 component is still capped at 23 characters, nesting just **three**
 `mkdir`+`cd` directories deep under home, each named with the full 23
 characters, builds a displayed path (`"~" `+ three `/`+23-char segments) of
@@ -167,20 +167,21 @@ Unlike the two overflows above, this one needs no nesting at all; one
 of it straight into fixed-size stack buffers with no length check anywhere:
 the final component (everything after the last `/`, or the whole argument
 when there is no `/`) goes into `leaf` via an unbounded `str_copy`
-(`kmain.mx:1460` for the no-slash case, the copy loop at `kmain.mx:1463`-
-`1469` otherwise), and everything *before* the last `/` goes into a local
-`ppath: [u8; 64]` (`kmain.mx:1473`-`1479`). Both call sites —
-`fs_mkdir` (`kmain.mx:1599`) and `write`'s create path
-(`kmain.mx:2308`) — pass a 24-byte `leaf` (`kmain.mx:1598`, `kmain.mx:2307`),
+(`kmain.mx:1717` for the no-slash case, the copy loop at `kmain.mx:1720`-
+`1726` otherwise), and everything *before* the last `/` goes into a local
+`ppath: [u8; 64]` (`kmain.mx:1730`-`1736`). Both call sites —
+`fs_mkdir` (`kmain.mx:1879`) and `write`'s create path
+(`kmain.mx:3118`) — pass a 24-byte `leaf` (`kmain.mx:1878`, `kmain.mx:3117`),
 so a bare name of 24 characters or more (no `/` at all, e.g. `mkdir ` plus 24
 `a`s) overflows `leaf` by 1 byte at exactly 24 characters, growing by one
 byte per extra character; a parent-path prefix of 64 characters or more
 before the final `/` (e.g. `mkdir ` plus 64 `a`s, then `/b`) overflows
 `ppath` the same way at exactly 64. Both are typeable on one line: the
 shell's own input cap is 76 characters (`MAXLINE`, `kmain.mx:15`, enforced
-at `kmain.mx:772`-`774` and `kmain.mx:873`), and `mkdir ` followed by 64
+at `kmain.mx:1106`, `run_range_lines`'s script-line guard, and `kmain.mx:3752`,
+`key_event`'s typing guard), and `mkdir ` followed by 64
 `a`s, `/`, and `b` is only 72. `fs_create_full`'s own 23-character name
-check (`kmain.mx:1534`-`1538`) runs on `leaf` *after* `fs_parent_of` has
+check (`kmain.mx:1816`-`1820`) runs on `leaf` *after* `fs_parent_of` has
 already returned, so it catches an over-length name too late to prevent the
 overflow that already happened reading it in. As with `path_of` and
 `draw_prompt`, what actually gets clobbered depends on the compiler's stack
@@ -561,7 +562,7 @@ return the index.
 `fs_init` failure modes: no disk (`g_disk_ok` false) → silent, commands say
 `no disk (boot with -hda disk.img)`; disk present but wrong magic →
 commands say `bad filesystem (host: python kernel/mkfs.py disk.img)`
-(quoted verbatim from `kmain.mx:1755`, stale `kernel/` prefix and all).
+(quoted verbatim from `kmain.mx:2128`, stale `kernel/` prefix and all).
 Distinguish with two flags: `g_disk_ok` (ATA) and `g_fs_ok` (magic).
 
 ---

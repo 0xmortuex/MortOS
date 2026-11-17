@@ -2679,7 +2679,7 @@ behavior, add a backlog item describing it and stop.
   all still point at the right lines.
 
 ## Doc quality (found 2026-11-15, not yet done)
-- [ ] `docs/fs-design.md`'s "A third, unrelated unbounded write" paragraph
+- [x] `docs/fs-design.md`'s "A third, unrelated unbounded write" paragraph
   (the `fs_parent_of` 24+-character buffer-overflow writeup) cites
   `fs_parent_of` at `kmain.mx:1448`-`1490`; the real current location is
   `kmain.mx:1705`-`1747` (confirmed while fixing this paragraph's link to
@@ -2699,3 +2699,69 @@ behavior, add a backlog item describing it and stop.
   checked either and may have the same drift — worth auditing the whole
   file with the same read-every-cited-line method used on
   `docs/architecture.md`/`docs/memory-map.md`/`docs/programs.md`.
+
+  Done 2026-11-17: widened this into the full-file re-audit the note above
+  asked for, since the drift turned out to run through the whole "live"
+  prose section (everything above Section 0, which is explicitly historical
+  design text and out of scope) — not just the one flagged paragraph.
+  Read every function and call site cited with a `kmain.mx:` line number
+  directly against current source (46 citations total) and fixed every one
+  that had drifted; none of `mkfs.py`'s citations had drifted (`_parse_add`
+  `mkfs.py:43`-`56`, name checks `83`-`86`/`87`-`89`, `_self_check` call
+  `mkfs.py:132`, its definition `140`-`167`, `VERSION` `mkfs.py:33` — all
+  still exact). Confirmed fixes include: the opening status paragraph's
+  `ata_init`/`ata_read`/`ata_write` (now `kmain.mx:1425`-`1498`), `fs_init`
+  (`kmain.mx:1552`-`1589`), `fs_read_file` (`kmain.mx:1950`), `fs_create_full`
+  (`kmain.mx:1816`), `fs_remove` (`kmain.mx:2100`), the `g_run_depth` check
+  site (`kmain.mx:1128`, not `895`), and dead-code `fs_create`
+  (`kmain.mx:1870`); the v2-metadata paragraph's accessors
+  (`kmain.mx:1525`-`1529`), comment block (`kmain.mx:1517`-`1523`),
+  `fs_set_meta` (`kmain.mx:1542`-`1549`), `fs_now` (`kmain.mx:1532`-`1539`),
+  the `fs_create_full` call site (`kmain.mx:1854`), `write`'s `i != 64`
+  branch (`kmain.mx:3104`-`3115`), the `fs_append_line` call
+  (`kmain.mx:3127`), and `ls`'s printing loop (`kmain.mx:2998`-`3017`); the
+  two stale `bad filesystem` message citations (both now `kmain.mx:2128`,
+  not `1755` — the message itself is still the stale-`kernel/`-path source
+  bug this doc already flags as out of scope); `fs_resolve`
+  (`kmain.mx:1624`), the directory-has-no-extent write
+  (`kmain.mx:1840`-`1841`), `fs_ensure_layout` (`kmain.mx:1901`-`1909`), and
+  `fs_populate_bin` (`kmain.mx:1925`-`1946`); the `path_of`/`g_cwdpath`
+  paragraph's `path_of` (`kmain.mx:1682`-`1701`), `cd`'s dispatch call
+  (`kmain.mx:2973`), `cwd_init()` (`kmain.mx:3546`-`3561`), and the
+  23-character cap check (`kmain.mx:1818`); the `draw_prompt`/`disp`
+  paragraph's `draw_prompt` (`kmain.mx:939`-`957`, moved here from the old
+  `709`-`727` by the Borehole rewrite), its `disp` declaration
+  (`kmain.mx:940`), the `str_copy` call (`kmain.mx:969`-`979`), the `~`
+  substitution (`kmain.mx:944`-`947`), and `g_prompt_len`'s write
+  (`kmain.mx:956`); and, in the flagged paragraph itself, the no-slash
+  `str_copy` (`kmain.mx:1717`), the slash-case copy loop
+  (`kmain.mx:1720`-`1726`), the `ppath` write (`kmain.mx:1730`-`1736`), both
+  `leaf` declarations/call sites (`fs_mkdir` `kmain.mx:1878`/`1879`,
+  `write`'s create path `kmain.mx:3117`/`3118`), the two `MAXLINE`
+  enforcement sites (now `run_range_lines` at `kmain.mx:1106` and
+  `key_event` at `kmain.mx:3752`, replacing the old `772`-`774`/`873` —
+  named the functions since the Borehole rewrite split/renamed the old
+  single-function input path), and the name-length check
+  (`kmain.mx:1816`-`1820`). Verified every one of the 46 `kmain.mx:`
+  citations in the file resolves in-range with a script, and every
+  markdown link in `README.md` + `docs/*.md` still resolves. Left two
+  things for later rather than widen further: (1) `fs_create`'s own source
+  comment (`kmain.mx:1866`-`1869`) still cites `write`'s creation path at
+  the pre-rewrite `kmain.mx:2306`-`2316` — a stale *source* comment, not a
+  doc, added as its own backlog item below; (2) Section 0 onward (the
+  historical pre-implementation design, explicitly marked as a record of
+  what was originally drafted) was deliberately left untouched, same as
+  every prior pass on this file.
+
+## Code follow-ups (found 2026-11-17, needs a local QEMU boot test)
+- [ ] `fs_create`'s own comment (`kmain.mx:1866`-`1869`) cites `write`'s
+  creation path at `kmain.mx:2306`-`2316` — stale by the same Borehole-era
+  drift as the `docs/fs-design.md` citations fixed above; the real location
+  is `write`'s `i == 64` create branch, now `kmain.mx:3116`-`3126`. Pure
+  comment-text drift (the comment's claim — that `fs_create` has no call
+  sites because `write` always resolves its target directory via
+  `fs_parent_of` and calls `fs_create_full` directly — is still accurate,
+  confirmed by grep: only the line numbers it cites moved). Safe for a
+  human to fix with a one-line edit; left for a boot-tested pass rather
+  than touched here to keep today's `docs/fs-design.md` change a pure docs
+  diff. Found 2026-11-17 while re-auditing `docs/fs-design.md`'s citations.
