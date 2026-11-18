@@ -2754,7 +2754,7 @@ behavior, add a backlog item describing it and stop.
   every prior pass on this file.
 
 ## Code follow-ups (found 2026-11-17, needs a local QEMU boot test)
-- [ ] `fs_create`'s own comment (`kmain.mx:1866`-`1869`) cites `write`'s
+- [x] `fs_create`'s own comment (`kmain.mx:1866`-`1869`) cites `write`'s
   creation path at `kmain.mx:2306`-`2316` — stale by the same Borehole-era
   drift as the `docs/fs-design.md` citations fixed above; the real location
   is `write`'s `i == 64` create branch, now `kmain.mx:3116`-`3126`. Pure
@@ -2765,3 +2765,15 @@ behavior, add a backlog item describing it and stop.
   human to fix with a one-line edit; left for a boot-tested pass rather
   than touched here to keep today's `docs/fs-design.md` change a pure docs
   diff. Found 2026-11-17 while re-auditing `docs/fs-design.md`'s citations.
+
+  Done 2026-11-18: this was mislabeled "needs a local QEMU boot test" — it's
+  a one-line citation fix inside a comment, with zero behavior change
+  (confirmed `fs_create` still has no call sites anywhere in the repo via
+  `grep -n "fs_create("`, and `write`'s create branch is exactly
+  `kmain.mx:3116`-`3126`, re-verified against current source). Source
+  comments are explicitly in scope for the docs-only agent per this file's
+  own Safety note, so fixed directly: changed `2306-2316` to `3116-3126` in
+  the comment above `fs_create` (`kmain.mx:1866`). No other file cites that
+  stale range as current (two mentions of `2306`-`2316` elsewhere in this
+  file are historical log entries about past fixes, not live docs, and were
+  left untouched).
