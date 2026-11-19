@@ -35,7 +35,7 @@ for the PCI/USB/audio side.
 ## What `net` and `httpd` actually do
 
 Both are shell commands dispatched in `run_command_impl`
-(`kmain.mx:2135`-`2142`), which call straight into `net/netapp.mx`:
+(`kmain.mx:2937`-`2944`), which call straight into `net/netapp.mx`:
 
 - **`net`** runs `net_dhcp` (`net/netapp.mx:46`). It calls `rtl_init` to bring
   up the NIC, reads the card's burned-in MAC via `rtl_mac`, then builds and
@@ -221,8 +221,16 @@ in memory — there is no check anywhere in the chain that would catch it.
 ## Not covered by automated tests
 
 None of the repo's test scripts (`test.py`, `test_fs.py`, `test_exec.py`,
-`test_gfx.py`) exercise `net` or `httpd` — a grep for `net`, `httpd`, `rtl`,
-and `dhcp` across them turns up nothing. `net/rtl8139.mx`'s own header
-comment says as much: it is "proven by booting QEMU with `-device rtl8139`
-and watching the frame it sends land in a packet capture," i.e. verified
-manually, not by CI.
+`test_gfx.py`, `test_boot.py`, `test_serial.py`) actually exercise the
+protocol stack, the NIC driver, or the `net`/`httpd` shell commands — a grep
+for `net`, `httpd`, `rtl`, and `dhcp` across `test.py`/`test_fs.py`/
+`test_exec.py`/`test_boot.py`/`test_serial.py` turns up nothing. The one
+near-exception is `test_gfx.py`'s `phase_machine` (`test_gfx.py:455`-`456`),
+which checks that the Machine stratum's menu displays the literal text
+"Connect with DHCP" (`ui_machine_label`, `ui/borehole.mx:1407`) — a
+screen-text assertion that the row exists, never pressing Enter on it, so no
+DHCP packet is ever sent and `net_dhcp()` itself still runs with zero test
+coverage. `net/rtl8139.mx`'s own header comment says as much about the
+driver: it is "proven by booting QEMU with `-device rtl8139` and watching
+the frame it sends land in a packet capture," i.e. verified manually, not by
+CI.

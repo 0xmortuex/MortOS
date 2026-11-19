@@ -2396,7 +2396,7 @@ behavior, add a backlog item describing it and stop.
   in-range with a script; verified every markdown link still resolves.
 
 ## Doc quality (found 2026-11-11, not yet done)
-- [ ] `docs/shell.md` and `docs/accounts.md` still cite pre-`feat/boot-tests-ci`/
+- [x] `docs/shell.md` and `docs/accounts.md` still cite pre-`feat/boot-tests-ci`/
   pre-Borehole `kmain.mx` line numbers for shell-command and account
   functions — the same re-audit just done for `docs/architecture.md` above
   (read every cited line directly against current source; the drift is
@@ -2518,6 +2518,45 @@ behavior, add a backlog item describing it and stop.
   `docs/networking.md` are still untouched by this method — the other two
   files this item names — and the existing 2026-11-15 `fs-design.md` item
   below (the `fs_parent_of` citation drift) is the next natural target.
+
+  Done 2026-11-19: `docs/fs-design.md` was finished by the 2026-11-17 entry
+  below (full-file re-audit), leaving `docs/networking.md` as the only file
+  this item named still untouched — did that one today, closing out the
+  item. Read every `net/*.mx` citation in the doc directly against current
+  source first (`net/endian.mx`, `net/checksum.mx`, `net/rtl8139.mx`,
+  `net/eth.mx`, `net/arp.mx`, `net/ip.mx`, `net/icmp.mx`, `net/udp.mx`,
+  `net/dhcp.mx`, `net/dns.mx`, `net/tcp.mx`, `net/http.mx`, `net/netcfg.mx`,
+  `net/netapp.mx` — every function/line cited) and found all of them still
+  exact: unlike `kmain.mx`, none of `net/*.mx` has changed since this doc was
+  last written (confirmed via `git log -- net/`, whose only post-dating
+  commit, `95770a7`, deleted the unrelated `net/settings.mx` — already
+  handled by an earlier pass). The doc's one and only `kmain.mx:` citation
+  had drifted, same `feat/boot-tests-ci`/Borehole window as every other doc:
+  `run_command_impl`'s `net`/`httpd` dispatch, cited at `kmain.mx:2135`-
+  `2142`, is now at `kmain.mx:2937`-`2944` (confirmed by reading
+  `run_command_impl`, `kmain.mx:2901`, directly) — fixed. Beyond
+  renumbering, re-checked every grep-backed behavioral claim in the doc
+  against current source (dead-code lists, the DHCP-options-discarded
+  claim, the `TCP_RST`-never-sent claim, the unverified-receive-path claim)
+  and found one real drift, not in `net/`: the "Not covered by automated
+  tests" section's "`test.py`, `test_fs.py`, `test_exec.py`, `test_gfx.py`"
+  list predates two test scripts the `feat/boot-tests-ci` merge added,
+  `test_boot.py` and `test_serial.py` (both already documented in
+  `docs/testing.md`), and its claim that a grep for `net`/`httpd`/`rtl`/
+  `dhcp` across the test scripts "turns up nothing" is now false:
+  `test_gfx.py`'s `phase_machine` (`test_gfx.py:455`-`456`) checks that the
+  Machine stratum's menu displays the literal text "Connect with DHCP"
+  (`ui_machine_label`, `ui/borehole.mx:1407`) — but only as a screen-text
+  assertion that the row exists, never pressing Enter on it, so `net_dhcp()`
+  itself is still never called by any test. Rewrote the section to name all
+  six current test scripts and this one exception precisely, instead of
+  silently going stale again next time a test file gets added. (The "Machine
+  stratum calls `net_dhcp()`" cross-reference this doc already made, fixed
+  by the 2026-11-08 Borehole-docs pass, needed no change — verified against
+  `ui/borehole.mx:1521` directly, still accurate.) Verified every citation in
+  the file resolves in-range with a script (504 citations across `README.md`
+  + all of `docs/*.md`, 0 out of range) and every markdown link resolves (82
+  local links, 0 broken) — repo-wide, not just this file.
 - [x] `docs/memory-map.md` is internally inconsistent about whether `exec`
   touches FILEBUF: its address table (line 21) lists `FILEBUF` as used by
   "`cat`/`run`/`exec`", but its own "Why exactly these buffers" section
