@@ -2816,3 +2816,49 @@ behavior, add a backlog item describing it and stop.
   stale range as current (two mentions of `2306`-`2316` elsewhere in this
   file are historical log entries about past fixes, not live docs, and were
   left untouched).
+
+## Doc quality (found 2026-11-20, done same day)
+- [x] The 2026-11-11 through 2026-11-19 citation-drift sweep re-audited every
+  `docs/*.md` file's `kmain.mx:` citations against the post-Borehole-rewrite
+  source line-by-line (`docs/architecture.md`, `docs/shell.md`,
+  `docs/accounts.md`, `docs/fs-design.md`, `docs/networking.md` — see those
+  entries above), but never checked **README.md's own** `kmain.mx:`
+  citations, which predate the same rewrite and use the same functions the
+  `docs/accounts.md` pass already re-grounded. Found 2026-11-20: every
+  other unchecked backlog item was still an explicitly out-of-scope
+  code/build.py/QEMU-test/repo-structure change or a human-decision item
+  (confirmed by re-reading `BACKLOG.md` in full), so this pass grepped
+  README.md for its own `kmain.mx:` citations (6 of them, across 2
+  paragraphs) and read each cited line directly against current source.
+  All 6 were stale by the same non-uniform Borehole-rewrite drift already
+  found elsewhere: `acct_init` (`kmain.mx:2904` -> `3534`), `login_default`
+  (`kmain.mx:2910` -> `3540`), `cwd_init` (`kmain.mx:2916` -> `3546`),
+  `can_write` (`kmain.mx:2978` -> `3607`) — all four confirmed against
+  `docs/accounts.md`'s already-corrected citations for the same four
+  functions (2026-11-16 pass) and independently by reading each `fn` line
+  in `kmain.mx`; the boot banner's `print_string` call
+  (`kmain.mx:3603` -> `3774`); `run_script(1)`'s call site in `kmain()`
+  (`kmain.mx:884` -> `3787` — the old citation didn't even point at
+  `run_script`'s own body, which is and remains `kmain.mx:1117`, confirming
+  this was always a call-site citation, not a function-definition one); and
+  `draw_prompt` (`kmain.mx:709`-`727` -> `939`-`957`, the same move already
+  documented in the `docs/fs-design.md` 2026-11-15/17 entries above, just
+  never carried into README). The other `kmain.mx:` citation on the USB line
+  (`usb_boot_init` called from `kmain()`) was also stale: `kmain.mx:3620` ->
+  `3795` (confirmed by reading `net/hci_usb.mx:195`'s `usb_boot_init` call
+  site in `kmain.mx` directly; its own definition, `net/hci_usb.mx:195`,
+  was already correct and untouched). Every `net/hardware.mx`/
+  `net/hci_usb.mx`/`net/audio.mx` citation on that same README line
+  (`hw_scan_pci` `net/hardware.mx:12`, the Bluetooth-class check
+  `net/hci_usb.mx:155`, `ac97_init` `net/audio.mx:9`,
+  `speaker_start`/`speaker_stop` `net/hardware.mx:37`/`47`) was verified by
+  direct read and found already exact — `net/*.mx` hasn't changed since
+  these were last checked, consistent with yesterday's `docs/networking.md`
+  pass finding the same. Done 2026-11-20: fixed all 6 stale `kmain.mx:`
+  citations in `README.md` (lines 65, 74, 105, 107, 116). Doc-only change,
+  no kernel logic touched. Re-ran the citation-range check across
+  `README.md` + all of `docs/*.md`: 573 citations, 0 out of range. Re-ran
+  the link-resolution check: 80 local links, 0 broken. This closes out the
+  citation-drift sweep's one remaining gap: every doc in the repo that
+  cites `kmain.mx`, README included, has now been read line-by-line
+  against current post-Borehole-rewrite source at least once.

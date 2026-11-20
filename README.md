@@ -62,7 +62,7 @@ The bottom stratum, **T**, holds **Lock**, **Sleep**, **Restart** and **Shut dow
 ![A core sample: a file's real contents on a pale slab of rock](docs/borehole-core.png)
 - **A real filesystem (MortFS)** — an ATA PIO disk driver and an on-disk format, both written in Mort. `ls`, `cat <file>`, `write <file> <text>`, `rm <file>`, and `run <file>` (execute a file of shell commands). Files **persist across reboots** — write a note, reboot QEMU, `cat` it back.
 - **Runs real, interactive compiled programs** — `exec <file>` loads a Mort program (compiled to a flat binary) off the disk to `0x00A00000` and runs it. Programs share no symbols with the kernel; they call it through **`int 0x80` syscalls** (args passed via a fixed mailbox, since Mort's `asm()` takes no operands). A read-line syscall polls the keyboard directly, so programs can take input too — `exec /bin/ask.bin` asks your name and greets you. Sample programs are in [`programs/`](programs/). See [`docs/memory-map.md`](docs/memory-map.md) for every fixed physical address the kernel uses.
-- **Users, login, and file permissions** — two built-in accounts, `root` and `mortuex`, with djb2-hashed passwords (`acct_init`, `kmain.mx:2904`); the shell auto-logs-in as the normal user and starts in `/home/mortuex` (`login_default`/`cwd_init`, `kmain.mx:2910`/`2916`), with `whoami`, `su`, `sudo`, and `passwd` on top. Every MortFS entry carries an owner uid and Unix-style mode bits, enforced on entry creation, `write`, and `rm` by `can_write` (`kmain.mx:2978`). See [`docs/accounts.md`](docs/accounts.md) for the model, and for which bits are enforced versus only displayed.
+- **Users, login, and file permissions** — two built-in accounts, `root` and `mortuex`, with djb2-hashed passwords (`acct_init`, `kmain.mx:3534`); the shell auto-logs-in as the normal user and starts in `/home/mortuex` (`login_default`/`cwd_init`, `kmain.mx:3540`/`3546`), with `whoami`, `su`, `sudo`, and `passwd` on top. Every MortFS entry carries an owner uid and Unix-style mode bits, enforced on entry creation, `write`, and `rm` by `can_write` (`kmain.mx:3607`). See [`docs/accounts.md`](docs/accounts.md) for the model, and for which bits are enforced versus only displayed.
 - **A real bootable ISO** — a BIOS+UEFI hybrid ISO (Limine bootloader) built to be written to a USB stick, not just QEMU's `-kernel` shortcut (tested in QEMU only; not yet verified on physical hardware)
 - **Interrupt-driven keyboard** — a flat GDT, an IDT, remapped PICs; IRQ1 fires into a Mort handler (no polling)
 - **A shell** — command parsing, Backspace line editing, Shift-aware scancode→ASCII, and **command history** (Up/Down arrows, decoded from 0xE0 extended scancodes). See [`docs/shell.md`](docs/shell.md) for the full command reference.
@@ -71,7 +71,7 @@ The bottom stratum, **T**, holds **Lock**, **Sleep**, **Restart** and **Shut dow
 - **Terminal scrolling** and a cursor that tracks input (a drawn underline in graphics, the hardware cursor in text mode)
 - **Multiboot modules** — the bootloader passes ISO files as modules; `readme` prints one, and a second acts as a boot script the kernel runs at startup like an `/etc/rc`
 - **Tested in CI-style headless runs** — `test.py` and `test_fs.py` boot the real kernel in QEMU, inject keystrokes through the monitor, and assert on VGA memory (including the write→reboot→cat persistence path)
-- **PCI hardware detection, USB, and audio** — `hw_scan_pci` (`net/hardware.mx:12`) walks the PCI bus for Ethernet/Wi-Fi/audio/USB controllers; a UHCI USB 1.1 host-controller driver resets the controller and enumerates one root-port device at boot (`usb_boot_init`, `net/hci_usb.mx:195`, called from `kmain()` at `kmain.mx:3620`), setting a Bluetooth-HCI flag if the enumerated device's class matches (`net/hci_usb.mx:155`); an Intel AC'97 driver does PCI discovery, mixer volume, and PCM-out DMA (`ac97_init`, `net/audio.mx:9`), alongside a PIT-driven legacy PC-speaker beeper (`speaker_start`/`speaker_stop`, `net/hardware.mx:37`/`47`). All of it is surfaced live in the Machine stratum ([`docs/settings.md`](docs/settings.md)). See [`docs/hardware.md`](docs/hardware.md) for how the PCI scan, USB enumeration, and AC'97 init actually work.
+- **PCI hardware detection, USB, and audio** — `hw_scan_pci` (`net/hardware.mx:12`) walks the PCI bus for Ethernet/Wi-Fi/audio/USB controllers; a UHCI USB 1.1 host-controller driver resets the controller and enumerates one root-port device at boot (`usb_boot_init`, `net/hci_usb.mx:195`, called from `kmain()` at `kmain.mx:3795`), setting a Bluetooth-HCI flag if the enumerated device's class matches (`net/hci_usb.mx:155`); an Intel AC'97 driver does PCI discovery, mixer volume, and PCM-out DMA (`ac97_init`, `net/audio.mx:9`), alongside a PIT-driven legacy PC-speaker beeper (`speaker_start`/`speaker_stop`, `net/hardware.mx:37`/`47`). All of it is surfaced live in the Machine stratum ([`docs/settings.md`](docs/settings.md)). See [`docs/hardware.md`](docs/hardware.md) for how the PCI scan, USB enumeration, and AC'97 init actually work.
 
 ## How it fits together
 
@@ -102,9 +102,9 @@ python build.py run       # build, then boot it fullscreen in QEMU (with the dis
 python build.py window    # same as run, but in a resizable window instead of fullscreen
 ```
 
-The first thing on screen is the boot banner, printed at `kmain.mx:3603`, then
+The first thing on screen is the boot banner, printed at `kmain.mx:3774`, then
 the shell prompt — nothing else runs automatically on this bare `-kernel`
-path, since `run_script(1)` (`kmain.mx:884`) finds no multiboot module without
+path, since `run_script(1)` (`kmain.mx:3787`) finds no multiboot module without
 an ISO and returns immediately:
 
 ```
@@ -113,7 +113,7 @@ MORT OS -- interrupt-driven. type 'help', Enter
 ```
 
 (`~ $` is the auto-logged-in user's home-directory prompt, drawn by
-`draw_prompt`, `kmain.mx:709`-`727`.)
+`draw_prompt`, `kmain.mx:939`-`957`.)
 
 That banner and prompt are what you're reading in the QEMU display window
 itself. All console output goes through either VGA text memory (`put_index`)
