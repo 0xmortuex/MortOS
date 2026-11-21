@@ -1,6 +1,8 @@
 # MORT OS architecture
 
-This is an audited overview, measured on 2026-11-08 at commit `83ae7eb`. It covers the whole
+This is an audited overview, measured on 2026-11-08 at commit `83ae7eb` and re-audited on
+2026-11-21 at commit `578cce1` against the source added since (the COM1 serial console, the
+`argv`/file/process syscalls and `ui/*.mx` joining the build). It covers the whole
 system in one place. For deep detail it links to the existing references in
 [`docs/`](docs/) (`docs/architecture.md`, `docs/memory-map.md`, `docs/programs.md`,
 `docs/shell.md`, `docs/networking.md`, `docs/fs-design.md`, `docs/hardware.md`,
@@ -15,7 +17,7 @@ system in one place. For deep detail it links to the existing references in
 | Language | Mort, transpiled to freestanding C, compiled by `zig cc` (`-target x86-freestanding-none`) |
 | Boot protocol | Multiboot 1 (`boot.s`) |
 | Execution model | No scheduler. After `sti` the kernel idles in `hlt`; IRQ handlers do all the work |
-| Mort source in the kernel image | 5,977 lines (`kmain.mx` 3,629, `net/*.mx` 2,348) |
+| Mort source in the kernel image | 7,487 lines (`kmain.mx` 3,809, `net/*.mx` 1,725, `ui/borehole.mx` 1,953) |
 | Non-Mort source in the kernel image | 312 lines (table below) |
 
 ### Non-Mort source files
@@ -26,7 +28,7 @@ system in one place. For deep detail it links to the existing references in
 | `boot.s` | 51 | `kernel.elf` | Multiboot header, 16 KiB stack, `_start` |
 | `runtime.c` | 35 | `kernel.elf` and every program | `memset`, `memcpy`, `memmove` |
 | **Total in the kernel image** | **312** | | |
-| `linker.ld` / `programs/prog.ld` | 19 / 13 | layout scripts, contribute no code | Load addresses and section order |
+| `linker.ld` / `programs/prog.ld` | 19 / 17 | layout scripts, contribute no code | Load addresses and section order |
 
 `font_data.mxinc` (264 lines) is Mort-syntax data that nothing includes, so it is not in the
 image. The generated `build/kmain.c` is compiler output, not source. Limine ships on the ISO as
@@ -38,13 +40,16 @@ a third-party bootloader and is not part of the kernel image.
 BIOS/UEFI -> Limine (ISO path) or QEMU -kernel (Multiboot loader)
           -> _start (boot.s:42)            16 KiB stack, then:
              kernel_setup (idt.s:50)       load_gdt, remap_pic, load_idt
-             mort_kmain(mbinfo)            kmain.mx:3593
+             mort_kmain(mbinfo)            kmain.mx:3763
 ```
 
-`kmain` runs these in order: `heap_init`, `fb_init`, `ui_init` (if graphics), banner,
-`fs_init`, `fs_ensure_layout`, `fs_populate_bin`, `acct_init`, `ensure_home`, `login_default`,
-`cwd_init`, `run_script(1)`, prompt, `usb_boot_init`, `init_pit`, `ui_start` (if graphics),
-`sti`, then `while true { asm("hlt"); }`.
+`kmain` runs these in order: `heap_init`, `fb_init`, `ui_init` (if graphics), `serial_init`,
+banner, `fs_init`, `fs_ensure_layout`, `fs_populate_bin`, `acct_init`, `ensure_home`,
+`login_default`, `cwd_init`, `proc_init`, `run_script(1)`, prompt, `usb_boot_init`, `init_pit`,
+`ui_start` (if graphics), then loops forever (`kmain.mx:3800-3808`): `sti; hlt` to sleep for the
+next IRQ, or — when `serial_pending()` already has a byte waiting — `sti; nop; cli` to take one
+pending interrupt without sleeping, then `serial_service()` either way so a COM1 wake is drained
+promptly.
 
 | Path | Command | Display | First screen |
 |---|---|---|---|
@@ -58,13 +63,14 @@ interrupt gate, `idt.s:73`), so interrupts stay off for the whole handler.
 
 | Source | Stub | Handler |
 |---|---|---|
-| IRQ1 keyboard | `keyboard_isr` `idt.s:139` | `on_key` `kmain.mx:3495` |
-| IRQ0 timer, ~100 Hz | `timer_isr` `idt.s:149` | `on_tick` `kmain.mx:2617` |
-| `int 0x80` | `syscall_isr` `idt.s:170` | `on_syscall` `kmain.mx:1864` |
-| CPU exceptions 0-31 | `ISR_STUB` `idt.s:180` | `on_exception` `kmain.mx:2629`, then halt forever |
+| IRQ1 keyboard | `keyboard_isr` `idt.s:139` | `on_key` `kmain.mx:3688` |
+| IRQ0 timer, ~100 Hz | `timer_isr` `idt.s:149` | `on_tick` `kmain.mx:3458` |
+| `int 0x80` | `syscall_isr` `idt.s:170` | `on_syscall` `kmain.mx:2574` |
+| CPU exceptions 0-31 | `ISR_STUB` `idt.s:180` | `on_exception` `kmain.mx:3468`, then halt forever |
 
-Shell commands run inside the keyboard ISR: `on_key` calls `run_command` (`kmain.mx:3557`) with
-interrupts off. Programs, syscalls and network loops therefore run with interrupts off too.
+Shell commands run inside the keyboard ISR: `on_key` (`kmain.mx:3688`) calls `key_event`
+(`kmain.mx:3692`), which calls `run_command` on Enter (`kmain.mx:3730`), all with interrupts
+off. Programs, syscalls and network loops therefore run with interrupts off too.
 Measured consequence: across a program blocked for 12 s host time in syscall 4, `uptime` went
 from 5 s to 8 s, so timer ticks are lost while any command runs.
 
@@ -80,8 +86,9 @@ All addresses are physical. Source: `docs/memory-map.md`, confirmed against `kma
 | `0x00800000` | 512 B | `SECBUF` sector scratch |
 | `0x00801000` | 4,608 B | `TABCACHE`: superblock and file table |
 | `0x00810000` | 64 KiB | `FILEBUF`: whole-file reads |
-| `0x009F0000` | 0x180 B | Syscall mailbox and line buffer |
+| `0x009F0000` | 0x800 B | Syscall mailbox, line buffer and argv (range checked by `user_ro_ok`, `kmain.mx:2383-2391`) |
 | `0x00A00000` | 64 KiB | Program load area, one program at a time |
+| `0x00A10000` | 64 KiB | Program's own stack, grows down from `0x00A20000` (`exec_enter`, `kmain.mx:2640-2641`) |
 | `0x01000000` to top of RAM | dynamic | `kmalloc` heap (239 MB under `-m 256`) |
 | from multiboot info | width x height x 4 | Framebuffer (`g_fb`) |
 
@@ -93,14 +100,15 @@ address space and one stack.
 | Area | Location | Notes |
 |---|---|---|
 | GDT, IDT, PIC, stubs | `idt.s` | 3 descriptors, ring 0 only, no TSS |
-| Console | `kmain.mx:333-602` | `put_cell_at` `:505` is the one write path for VGA and framebuffer |
-| Keyboard | `kmain.mx:606`, `on_key:3495` | PS/2, US QWERTY, Shift only |
-| Shell | `kmain.mx:2099-2606` | 38 builtins in an `if streq` chain, `$VAR`, history, `$PATH` lookup |
-| Heap | `kmain.mx:1041-1131` | First fit with forward coalescing; only `memtest` calls it |
-| ATA PIO | `kmain.mx:1142-1242` | Primary master, polled, LBA28, one sector per command |
-| MortFS v2 | `kmain.mx:1244-1760`, host `mkfs.py` | 64 entries, 64 KiB extents, directories, modes, no reclaim |
-| Accounts | `kmain.mx:2852-3009` | Two in-memory accounts; see `docs/accounts.md` |
-| Programs | `exec_file` `kmain.mx:1896`, `programs/` | Flat binaries; see `docs/programs.md` |
+| Console | `kmain.mx:340-836` | `put_cell_at` `:752` is the one write path for VGA, framebuffer and COM1 |
+| Keyboard | `kmain.mx:839`, `on_key:3688` -> `key_event:3692` | PS/2, US QWERTY, Shift only |
+| Shell | `kmain.mx:2834-3444` | 38 builtins in an `if streq` chain, `$VAR`, history, `$PATH` lookup; see `docs/shell.md` |
+| Heap | `kmain.mx:1268-1368` | First fit with forward coalescing; only `memtest` calls it |
+| ATA PIO | `kmain.mx:1371-1499` | Primary master, polled, LBA28, one sector per command |
+| MortFS v2 | `kmain.mx:1500-2150`, host `mkfs.py` | 64 entries, 64 KiB extents, directories, modes, no reclaim |
+| Processes | `kmain.mx:2245-2370` | No scheduler; a fixed record table (`g_proc`) of the kernel plus the one program that can run at a time, backing `getpid`/process-list/`kill`; see `docs/programs.md` |
+| Accounts | `kmain.mx:3486-3686` | Two in-memory accounts; see `docs/accounts.md` |
+| Programs | `exec_file` `kmain.mx:2647`, `programs/` | Flat binaries; see `docs/programs.md` |
 | Interface | `ui/borehole.mx`, `docs/borehole-concept.md` | Borehole: surface, shell gallery, Objects, core sample, Machine, Terminate, lock, sleep |
 | Networking | `net/*.mx`, bridge in `net/netapp.mx` | RTL8139, ARP reply, IPv4, ICMP echo, UDP, DHCP, TCP server, HTTP |
 | PCI, USB, audio | `net/hardware.mx`, `net/hci_usb.mx`, `net/audio.mx` | `docs/hardware.md` |
@@ -124,15 +132,16 @@ file for the process model, and `BLOCKERS.md` for what it lacks.
 1. The Mort compiler comes from `$MORT_HOME`, else `../Mort`, else a fetch of exactly the commit
    pinned by `MORT_COMMIT` into `.mort/` (`_find_mort` in `build.py`). A developer's own checkout
    may differ from the pin, and the build prints a note when it does.
-2. `net/*.mx` (sorted) plus `kmain.mx` are concatenated into one translation unit and passed to
-   `mortc.compile_to_c(..., freestanding=True)`, giving `build/kmain.c` (`build.py:109-122`).
+2. `net/*.mx` and `ui/*.mx` (each directory's files sorted) plus `kmain.mx` are concatenated
+   into one translation unit and passed to `mortc.compile_to_c(..., freestanding=True)`, giving
+   `build/kmain.c` (`build.py:143-157`).
 3. `zig cc` compiles C with `-mno-sse -mno-sse2 -mno-mmx -O2` and assembles `boot.s` and `idt.s`.
 4. Link with `linker.ld` into `build/kernel.elf`.
 5. The ISO path (`iso` in `build.py`) downloads Limine at a pinned commit into `tools/`. On Windows
    it also downloads a pinned `xorriso.exe`. On Linux it uses the system `xorriso` and builds
    Limine's host tool with Zig. CI builds and boots the ISO on both.
 6. `programs/*.mx` are built the same way, linked at `0x00A00000` and `objcopy`'d to `.bin`
-   (`build_program`, `build.py:274`), then seeded once into `build/disk.img` by `ensure_disk`.
+   (`build_program`, `build.py:319`), then seeded once into `build/disk.img` by `ensure_disk`.
 
 ## How to build, boot and test
 

@@ -2862,3 +2862,79 @@ behavior, add a backlog item describing it and stop.
   citation-drift sweep's one remaining gap: every doc in the repo that
   cites `kmain.mx`, README included, has now been read line-by-line
   against current post-Borehole-rewrite source at least once.
+
+## Doc quality (found 2026-11-21, done same day)
+- [x] Root `ARCHITECTURE.md` — the one-page system overview linked from
+  README's own architecture pointer, from `CONTRIBUTING.md`, and cited
+  throughout `DECISIONS.md` — had never been covered by any citation-drift
+  sweep: it lives outside `docs/`, so it wasn't matched by this backlog's
+  own "docs/*.md" grep pattern, and no entry anywhere in this file
+  mentions it, `CHANGELOG.md`, `ROADMAP.md`, `CONTRIBUTING.md`,
+  `DECISIONS.md` or `BLOCKERS.md` by name (checked by grepping this whole
+  file for each). Found 2026-11-21: every other unchecked backlog item was
+  still an explicitly out-of-scope code/build.py/QEMU-test/repo-structure
+  change or a human-decision item (re-read `BACKLOG.md` in full to
+  confirm), so this pass looked for a doc surface no prior sweep had
+  touched and found this one. `ARCHITECTURE.md` states its own measurement
+  point ("measured on 2026-11-08 at commit `83ae7eb`") and three real
+  commits have touched `kmain.mx`/`build.py` since: the COM1 serial console
+  (`b91ff0b`/`7e09d35`/`b3c3c4e`), the `argv`/file/process syscalls
+  (`ffaca90`), and `build.py`'s glue step growing to also pull in `ui/*.mx`
+  (confirmed by reading `build()` directly, `build.py:139-157` — the
+  Borehole interface, `ui/borehole.mx`, 1,953 lines, was not counted as
+  kernel-image source anywhere in this file, even though it already lists
+  `ui/borehole.mx` by name in the Modules table). Read every function this
+  file cites directly against current source (not just a range check) and
+  found every single `kmain.mx:` line citation stale by a different, non-
+  uniform amount — same drift pattern this backlog's earlier
+  `docs/shell.md`/`docs/architecture.md`/`docs/accounts.md` passes already
+  found and fixed, just never applied here: `mort_kmain` (`:3593` -> real
+  `fn kmain` at `:3763`), `on_key` (`:3495` -> `:3688`), `on_tick`
+  (`:2617` -> `:3458`), `on_syscall` (`:1864` -> `:2574`), `on_exception`
+  (`:2629` -> `:3468`), `run_command`'s call site (`:3557` -> the real path
+  is `on_key` -> `key_event` (`:3692`) -> `run_command(g_buf)` at `:3730`,
+  so added the missing intermediate hop rather than just moving the
+  number), `put_cell_at` (`:505` -> `:752`), the Keyboard/Shell/Heap/ATA/
+  MortFS/Accounts/Programs Modules-table ranges (each individually re-
+  bounded against the file's own `// ----- section -----` banner comments
+  and `fn` lines, since the old ranges no longer line up with any one
+  subsystem after the intervening growth), and `build_program`
+  (`build.py:274` -> `:319`). Also found two things this file never
+  mentioned at all: `proc_init()` (`kmain.mx:2245-2370`, a fixed process-
+  record table backing the new `getpid`/process-list/`kill` syscalls) is
+  called from `kmain()` but wasn't in the Boot-flow init list or the
+  Modules table — added both; and the syscall mailbox actually spans
+  `0x009F0000`-`0x009F0800` (2,048 B, bounds-checked by `user_ro_ok`,
+  `kmain.mx:2383-2391`) to hold `argv`, not the old `0x180` B line-buffer-
+  only figure — and the program's own 64 KiB stack at `0x00A10000`-
+  `0x00A20000` (`exec_enter`, `kmain.mx:2640-2641`) has its own Memory-map
+  row now, matching what `docs/memory-map.md`/`docs/programs.md` already
+  documented for it. Also corrected the main-loop description in Boot
+  flow, which still said the plain pre-serial-console `sti` then
+  `while true { hlt }` — the real loop (`kmain.mx:3800-3808`) checks
+  `serial_pending()` first and takes one interrupt without sleeping when a
+  COM1 byte is already waiting, matching what `docs/architecture.md`
+  already documents for the same loop. Left the line-count claim in
+  `DECISIONS.md` row 16 (`kmain.mx` "3,629 lines... when measured") alone
+  — it's an append-only decision ledger quoting a past measurement, the
+  same historical-record convention this file's own 2026-08-02/06-08-25
+  entries already established, not a live claim to keep in sync. Verified
+  every new/changed citation by reading the exact cited line against
+  current source (script-checked line-by-line, not range-only) and re-ran
+  both repo-wide checks: 599 `file:line` citations across `README.md` +
+  `ARCHITECTURE.md` + all of `docs/*.md`, 0 out of range; 89 local links
+  across those files plus `CONTRIBUTING.md`, 0 broken. Doc-only change, no
+  kernel/build.py logic touched.
+
+### Follow-ups found but not actioned (new, for a future pass)
+- [ ] `CHANGELOG.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `DECISIONS.md` and
+  `BLOCKERS.md` are the other root-level docs no citation-drift sweep has
+  ever named in this backlog (confirmed by grepping this whole file for
+  each name before today's `ARCHITECTURE.md` pass). `ROADMAP.md` in
+  particular is long (281 lines) and cross-references `ARCHITECTURE.md`
+  and source directly, so it's the most likely to have its own stale
+  citations after the same intervening commits found today — worth the
+  same read-every-cited-line treatment next. `DECISIONS.md` and
+  `BLOCKERS.md` are shorter and mostly reason/pointer prose rather than
+  `file:line` citations, so lower priority. Found 2026-11-21 while scoping
+  today's `ARCHITECTURE.md` pass.
