@@ -9,6 +9,46 @@ The repo's scripts ran unmodified. An out-of-tree wrapper added `-m 256 -accel t
 to the QEMU they spawn. The `run-iso` command ran through a PATH shim that forced `-display none`
 and a time limit, so its normal GUI window was not exercised.
 
+## What's changed since this audit (added 2026-11-22)
+
+This page has not been re-walked since 2026-11-08 at commit `83ae7eb`, and several things it
+calls "Missing" or "Fail" below no longer are. None of what follows re-runs the audit — it has
+no new QEMU boot behind it, just source and the repository's own CI history — so every table,
+count and `file:line` citation below this note is untouched and should be read as the
+2026-11-08 snapshot it was recorded as, not current fact.
+
+- **Serial console** (criterion d; feature row "Serial"): a polled COM1 driver now exists
+  (`serial_init`, `kmain.mx:478`-`501`; ring-buffered input, `kmain.mx:458`-`474`), and a
+  `test_serial.py` suite boots the kernel and scripts the shell entirely over the wire. The
+  "no UART code in `boot.s`, `idt.s`, `kmain.mx` or `net/*.mx`" finding is no longer true.
+- **Syscalls** (criterion c; feature row "Syscall interface"): `on_syscall` (`kmain.mx:2574`-
+  `2629`) now dispatches 15 numbers, not 4 — file I/O (`sys_stat`/`sys_readdir`/`sys_fread`/
+  `sys_fwrite`, nums 9-12), `exit` (6), `argc`/`argv` (7-8), a process list and `kill` (13-15),
+  on top of the original print/uptime/read-line/write. "No file I/O, exit, or spawn" is now
+  true only of spawn.
+- **Programs** (criterion c, recorded as "Fail: 3 of 5"): `programs/` holds nine —
+  `ask`, `cat`, `count`, `echo`, `ed`, `hello`, `kill`, `ls`, `ps` — plus a shared
+  `programs/lib/ulib.mx` syscall library, resolving ranked gaps 4 and 5 below. `ed` is a real
+  line editor with permission checks (seen in a CI transcript: `ed /denied.txt` →
+  `permission denied: /denied.txt`), which also bears on the feature matrix's "Editor: Missing"
+  row, and `ps`/`kill` now exist as real `/bin` programs rather than being unimplemented.
+- **Docs** (criterion f, recorded as "1 of 3"): `CONTRIBUTING.md` and `CHANGELOG.md` both now
+  exist at the repo root, resolving ranked gap 6.
+- **CI** (criterion e, recorded as "the repo has no `.github/`"): `.github/workflows/ci.yml`
+  now exists and runs the full boot-test suite on push/PR/dispatch on `ubuntu-latest` and
+  `windows-latest`, resolving ranked gap 3 — but it is not yet green on every target: the
+  latest run on `main` (run #31, commit `9128143`) passed every step on `ubuntu-latest` and
+  failed at "Filesystem test (`test_fs.py`)" on `windows-latest`
+  (https://github.com/0xmortuex/MortOS/actions/runs/44917058359).
+- **The GUI this audit measured is gone**: `draw_tab` and `launcher_on_key`, which the "Test
+  harness results" section below blames for `test_gfx.py`'s four failures, no longer exist
+  anywhere in source (grepped, zero hits) — the Borehole interface (`ui/borehole.mx`) replaced
+  that launcher. The CI run cited above shows the current `test_gfx.py` passing in full
+  (79 passed, 0 failed, on both platforms).
+
+See `BACKLOG.md` for the follow-up: a full re-walk of this document needs a real QEMU boot to
+re-measure the "Measured" rows honestly, which a docs-only pass can't do.
+
 ## Exit criteria status
 
 | | Criterion | Status | Measured evidence |

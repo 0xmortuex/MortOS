@@ -2938,3 +2938,40 @@ behavior, add a backlog item describing it and stop.
   `BLOCKERS.md` are shorter and mostly reason/pointer prose rather than
   `file:line` citations, so lower priority. Found 2026-11-21 while scoping
   today's `ARCHITECTURE.md` pass.
+
+  Partial progress 2026-11-22: `ROADMAP.md` turned out not to be a
+  citation-drift case like the others — every row below its header is
+  tied to a real QEMU boot it ran on 2026-11-08 ("Measured" evidence, not
+  just "Read"), which this docs-only, no-QEMU pass cannot honestly
+  reproduce. Rewriting its tables' Pass/Fail/Works/Partial/Missing
+  judgments without a boot would be exactly the kind of invented,
+  unverifiable claim this backlog's rules forbid. Added a dated
+  "What's changed since this audit" section instead (grounded only in
+  source reads and the repo's own GitHub Actions history, no boot
+  needed): confirmed the COM1 serial console, the 15-syscall interface
+  (file I/O, exit, argv, process list, kill), nine real `programs/*.mx`
+  binaries plus a shared `programs/lib/ulib.mx`, `CONTRIBUTING.md`/
+  `CHANGELOG.md`, and a working `.github/workflows/ci.yml` all now exist,
+  each contradicting a specific "Missing"/"Fail" line below. Left every
+  table, count and `file:line` citation below that note completely
+  untouched rather than half-fixing them. Still open: a full re-walk,
+  which now needs someone with QEMU to re-run the exit-criteria and
+  feature-matrix measurements fresh (same scope as this item, just
+  bigger than a doc-only pass can close), plus the `parser.py:449-455`
+  citation into the separate `Mort` repo, which this pass didn't check.
+
+- [ ] CI on `main` is currently red on Windows: the latest run (run #31,
+  commit `9128143`, https://github.com/0xmortuex/MortOS/actions/runs/44917058359)
+  passed every step on `ubuntu-latest` but failed at "Filesystem test
+  (`test_fs.py`)" on `windows-latest`, while every other step on that same
+  run (build, smoke, exec, serial, gfx) passed. `test_fs.py` itself wasn't
+  touched by the commit that triggered the run (a `docs/architecture.md`-
+  only change), so this looks like a pre-existing Windows-specific
+  flake or timing issue in the filesystem/ATA path rather than a
+  regression from that commit — the same general category as the slow-
+  disk-write fix in `9a1e249`, but not necessarily the same bug. A human
+  with a Windows QEMU setup needs to open the run's uploaded
+  `transcripts-windows-latest` artifact (or re-run it) to see which
+  specific `test_fs.py` assertion failed before deciding on a fix. Found
+  2026-11-22 while gathering current CI status for the `ROADMAP.md` note
+  above.
