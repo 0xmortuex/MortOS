@@ -2960,6 +2960,62 @@ behavior, add a backlog item describing it and stop.
   bigger than a doc-only pass can close), plus the `parser.py:449-455`
   citation into the separate `Mort` repo, which this pass didn't check.
 
+  Partial progress 2026-11-23: checked the four remaining files —
+  `CHANGELOG.md`, `CONTRIBUTING.md`, `DECISIONS.md`, `BLOCKERS.md` — for
+  `file:line` citations directly
+  (`grep -noE '[A-Za-z0-9_./-]+\.(mx|py|s):[0-9]+(-[0-9]+)?' <file>`
+  against each). All four have zero: none of them cite a source line
+  anywhere, so the "citation drift" framing this item opened with
+  doesn't apply to them — there's nothing to re-walk. This closes out
+  the item as originally scoped (every root doc has now been checked for
+  `file:line` drift at least once).
+
+  Along the way, found a different, real gap: `CONTRIBUTING.md`'s own
+  rule says "Add user-visible changes to `CHANGELOG.md` under
+  `Unreleased`," but `CHANGELOG.md`'s Unreleased/Added section never
+  mentioned the 10 new syscalls (argv, exit, file stat/readdir/read/
+  write, process list, kill — `on_syscall`, `kmain.mx:2574`, confirmed by
+  reading every `if num ==` branch in it) or the new userland programs
+  (`ls`, `cat`, `echo`, `ps`, `kill`, `ed`, and the shared
+  `programs/lib/ulib.mx`), even though `docs/programs.md` and the
+  recovered `ARCHITECTURE.md`/`ROADMAP.md` audits already document all
+  of it as real and in `main`. Fixed: added both bullets to
+  `CHANGELOG.md`'s Unreleased/Added section, grounded in
+  `kmain.mx:2574`'s syscall dispatch and the `programs/` directory
+  listing. Doc-only change.
+
+  Also found, but **not** fixed today (keeping this change one-purpose):
+  `git ls-remote --tags origin` shows three real tags — `v1.0.0`
+  (2026-11-07), `borehole-gui` (2026-11-08), and `boot-tests-ci`
+  (2026-11-09) — but a fresh clone of this repo doesn't fetch tags by
+  default, so plain `git tag` looked empty before
+  `git fetch 'refs/tags/*:refs/tags/*'`. Every change `CHANGELOG.md`
+  lists under Unreleased turns out to already be reachable from the
+  `boot-tests-ci` tag (confirmed by walking
+  `git log --oneline borehole-gui..boot-tests-ci` and matching each
+  commit to a bullet), so "Unreleased" is arguably mislabeled: it
+  describes an already-tagged release and could get its own
+  `` ## `boot-tests-ci` (2026-11-09) `` header, the same convention as
+  `v1.0.0` and `borehole-gui` above it, with a fresh empty `Unreleased`
+  on top. Left alone today since relabeling the whole file is a
+  structural call, not a single grounded fix, and it needs a human's
+  sign-off on whether anything merged after `boot-tests-ci` (the
+  `mortnet/`/`hardware/`/`mpkg-repo/` subtree adds) should get its own
+  entry first.
+
+  Also found: two of `DECISIONS.md`'s commit-hash citations don't
+  resolve in this repo at all — `ae13232` (decision #5, "Syscalls use
+  `int 0x80`...") and `6f57f8c` (decision #11, "The only NIC driver is
+  RTL8139..."). Checked with `git cat-file -e <hash>` against the full
+  history (not a shallow clone — `git rev-list --all | wc -l` = 163) —
+  both come back missing, while the other six hashes in the same table
+  (`b91ff0b`, `74258f5`, `ffaca90`, `95770a7`, `5c51c57`, `cb18db2`) all
+  resolve fine. Not fixed today — this file's citation style (commit
+  hashes, not `file:line`) was out of scope for this pass, and guessing
+  the intended commit without evidence would be exactly the kind of
+  invented claim this backlog forbids. Worth a look by whoever wrote
+  those two rows, or a fresh pass that finds the actual commits.
+
 - [ ] CI on `main` is currently red on Windows: the latest run (run #31,
   commit `9128143`, https://github.com/0xmortuex/MortOS/actions/runs/44917058359)
   passed every step on `ubuntu-latest` but failed at "Filesystem test

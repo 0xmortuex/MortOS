@@ -7,6 +7,12 @@ had no releases, so it is listed by date.
 
 ### Added
 
+- 10 new syscalls, for 15 total: argv (`sys_argc`/`sys_argv`), exit status, file `stat`/`readdir`/
+  read/write, and a process list and `kill` alongside the pid each program runs as
+  (`on_syscall`, `kmain.mx:2574`). See [`docs/programs.md`](docs/programs.md) for the ABI.
+- New userland programs: `ls`, `cat`, `echo`, `ps` and `kill` as separate executables, and `ed`, a
+  small line editor with permission checks. A shared `programs/lib/ulib.mx` syscall library backs
+  all of them.
 - COM1 serial console: a 16550 UART driver at 115200 8N1 that mirrors console output and accepts
   shell input, a `serial` command reporting lost-byte counters, and `test_serial.py`.
 - `build.py boot` boots headless with the shell on your terminal, on Linux and Windows.
