@@ -5,6 +5,8 @@ had no releases, so it is listed by date.
 
 ## Unreleased
 
+## `boot-tests-ci` (2026-11-09)
+
 ### Added
 
 - COM1 serial console: a 16550 UART driver at 115200 8N1 that mirrors console output and accepts

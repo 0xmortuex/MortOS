@@ -2960,6 +2960,44 @@ behavior, add a backlog item describing it and stop.
   bigger than a doc-only pass can close), plus the `parser.py:449-455`
   citation into the separate `Mort` repo, which this pass didn't check.
 
+  Partial progress 2026-11-24: checked the remaining three
+  (`CHANGELOG.md`, `CONTRIBUTING.md`, `DECISIONS.md`, `BLOCKERS.md` —
+  four files, not three; grepped all of them for a `file:line`-shaped
+  citation first and found none, confirming the 2026-11-21 note that
+  these are prose/pointer docs rather than citation-drift candidates).
+  `CONTRIBUTING.md`'s factual claims (not citations, but checkable
+  against source) all still hold: `MORT_COMMIT`/`MORT_HOME`/`.mort`
+  fallback logic (`build.py:19-21,36,62-70`), the six test commands and
+  their flags, `QEMU_LIMITS`/`QEMU_BASE` both still `-m 256 -accel
+  tcg,tb-size=32` (`test.py:42`, `test_serial.py:50`, matching
+  `build.py:470`), `test_boot.py`'s `--no-build` flag (`test_boot.py:812`),
+  `.github/workflows/ci.yml` existing, and `boot.s`/`idt.s`/`runtime.c`
+  still the only non-Mort files in the image — left untouched.
+  `CHANGELOG.md` did have a real staleness bug, not citation-shaped:
+  its `## Unreleased` section (COM1 serial console, `build.py boot`,
+  `test_boot.py`, CI, `build.py iso`/`run-iso` on Linux, `CONTRIBUTING.md`)
+  was still unreleased despite a `boot-tests-ci` git tag
+  (`git for-each-ref`: 2026-11-09 13:40:44 +0300, an ancestor of `main`
+  per `git merge-base --is-ancestor`) covering exactly that content — the
+  tag's own merge commit (`7159acd`, "Merge feat/boot-tests-ci: one-command
+  boot, serial boot tests and CI on Linux and Windows") matches it word
+  for word. Confirmed nothing has shipped on top of that tag beyond this
+  same daily routine's doc/comment-only commits (`git diff --stat
+  7159acd..main` touches only `*.md`, `BACKLOG.md`, comment lines in
+  `kmain.mx`, and the already-documented `mortnet`/`mpkg-repo` merge —
+  zero kernel-logic or `build.py` diff). Done 2026-11-24: added a new
+  `## \`boot-tests-ci\` (2026-11-09)` heading in `CHANGELOG.md` right
+  below (now-empty) `## Unreleased`, and moved the misfiled content under
+  it — matching the existing `` `borehole-gui` (2026-11-08) `` / `` `v1.0.0`
+  (2026-11-07) `` heading convention already in the file. Left
+  `CONTRIBUTING.md`'s own `Unreleased` pointer (`CONTRIBUTING.md:66`)
+  untouched since it's still correct — new changes still land there until
+  the next tag. Doc-only change, no kernel/build.py logic touched. Did
+  not re-run the citation/link checker scripts since this file has no
+  `file:line` citations or links to check. `DECISIONS.md` and
+  `BLOCKERS.md` not yet read line-by-line against source this pass —
+  still open for a future day.
+
 - [ ] CI on `main` is currently red on Windows: the latest run (run #31,
   commit `9128143`, https://github.com/0xmortuex/MortOS/actions/runs/44917058359)
   passed every step on `ubuntu-latest` but failed at "Filesystem test
