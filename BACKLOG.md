@@ -2927,7 +2927,7 @@ behavior, add a backlog item describing it and stop.
   kernel/build.py logic touched.
 
 ### Follow-ups found but not actioned (new, for a future pass)
-- [ ] `CHANGELOG.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `DECISIONS.md` and
+- [x] `CHANGELOG.md`, `ROADMAP.md`, `CONTRIBUTING.md`, `DECISIONS.md` and
   `BLOCKERS.md` are the other root-level docs no citation-drift sweep has
   ever named in this backlog (confirmed by grepping this whole file for
   each name before today's `ARCHITECTURE.md` pass). `ROADMAP.md` in
@@ -2997,6 +2997,44 @@ behavior, add a backlog item describing it and stop.
   `file:line` citations or links to check. `DECISIONS.md` and
   `BLOCKERS.md` not yet read line-by-line against source this pass —
   still open for a future day.
+
+  Done 2026-11-25: read `DECISIONS.md` (60 lines, 16 decisions) and
+  `BLOCKERS.md` (49 lines) in full and checked every checkable factual
+  claim in both against current source — neither has `file:line`
+  citations (confirmed again), but both make specific, checkable claims
+  about source behavior and structure. Verified: the process table is
+  `g_proc: [u8; 320]` (`kmain.mx:46`), 8 records of 40 bytes, matching
+  decision 8's "64 x 64 B fills exactly 8 sectors" sibling claim for
+  MortFS's own 64-byte entries (`fs_entry_addr`'s stride, `kmain.mx:1514`);
+  `ps`/`kill` (`programs/ps.mx`, `programs/kill.mx`) go through
+  `proc_next`/`kill` library calls that resolve to syscalls 14/15
+  (`on_syscall`'s dispatch, `kmain.mx:2631`-`2632`), matching BLOCKERS.md's
+  table exactly; its "`stat`, `readdir` and read-file ignore the mode
+  bits ... writes do check them" line holds — `sys_stat`/`sys_readdir`/
+  `sys_fread` (`kmain.mx:2467`-`2506`) have no `can_write`/`can_read` call
+  anywhere, while `sys_fwrite` (`kmain.mx:2508`) calls `can_write` on an
+  existing file; its filesystem-limits section's "200 lines of 120
+  characters" and extent-reuse-on-replace claims match `programs/ed.mx`'s
+  `MAX_LINES`/`LINE_MAX` constants and `sys_fwrite`'s flag-1 branch
+  (`kmain.mx:2526`-`2531`, which resets `keep` and checks length against
+  the existing extent rather than allocating a new one) exactly. Also
+  confirmed DECISIONS.md's program load address/size (`0x00A00000`,
+  64 KiB, `kmain.mx:2153`,`2670`, `programs/prog.ld:5`), its ATA/IRQ14
+  and RTL8139 claims, and that 6 of
+  its 8 cited commit hashes resolve in this checkout
+  (`b91ff0b`,`74258f5`,`95770a7`,`5c51c57`,`cb18db2`,`ffaca90`); the
+  other two (`ae13232` for the syscall-mailbox decision, `6f57f8c` for
+  the RTL8139 decision) don't resolve in this specific checkout, but this
+  repo is a shallow clone (`git rev-parse --is-shallow-repository`) with
+  only 162 commits reachable, so that's inconclusive rather than a
+  confirmed bad hash — left as a note for a pass with full history to
+  double-check, not a claimed error. Also checked every `ARCHITECTURE.md`/
+  `ROADMAP.md`/`README.md` section name DECISIONS.md points at (e.g.
+  "Boot flow", "Syscall ABI", "Two kernel copies", `ROADMAP.md` gaps
+  1/3/7/9-12/17) and confirmed each heading/gap exists and matches the
+  decision it's cited for. No errors found in either file; no content
+  change needed. Doc/backlog-only change, no kernel/build.py logic
+  touched.
 
 - [ ] CI on `main` is currently red on Windows: the latest run (run #31,
   commit `9128143`, https://github.com/0xmortuex/MortOS/actions/runs/44917058359)
