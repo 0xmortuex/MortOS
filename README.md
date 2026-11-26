@@ -191,9 +191,11 @@ Automated tests (all drive the real kernel headless in QEMU):
 
 ```bash
 python test.py smoke      # boot + shell basics (text-mode -kernel path)
+python test_boot.py       # exact COM1 assertions: boot, shell commands, persistence, exec, faults, a flaky disk
 python test_fs.py         # the disk stack, incl. write-reboot-cat persistence
 python test_exec.py       # build programs, seed, boot, exec, check syscall output
 python test_gfx.py        # boot the ISO, drive the Borehole interface, assert on screendumps and guest memory
+python test_serial.py     # the COM1 console itself: text/ISO shells, overruns, floods, PS/2 alongside serial
 ```
 
 See [`docs/testing.md`](docs/testing.md) for what each script actually

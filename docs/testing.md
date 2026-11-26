@@ -2,25 +2,31 @@
 
 MORT OS has no unit tests in the usual sense — nothing here can run outside a
 booted kernel, since a from-scratch OS has no host runtime to link against.
-All four test scripts instead boot the *real* kernel headless in QEMU and
-drive it like a person would: typing on the emulated PS/2 keyboard through
-QEMU's human monitor, then reading assertions back out of guest video memory.
-`test.py` is the shared harness the other three import; it has no tests of
+All five test scripts instead boot the *real* kernel headless in QEMU and
+drive it like a person would — typing on the emulated PS/2 keyboard through
+QEMU's human monitor (`test_fs.py`, `test_exec.py`, the keyboard half of
+`test_gfx.py`) or over a serial line (`test_boot.py`, `test_serial.py`) —
+then reading assertions back out of guest video memory or the COM1 stream.
+`test.py` is the shared harness the other five import; it has no tests of
 its own beyond the `smoke` subcommand.
 
 ```bash
 python test.py smoke      # boot + shell basics (text-mode -kernel path)
+python test_boot.py       # exact COM1 assertions: boot, shell commands, persistence, exec, faults, a flaky disk
 python test_fs.py         # the disk stack, incl. write-reboot-cat persistence
 python test_exec.py       # build programs, seed, boot, exec, check syscall output
 python test_gfx.py        # boot the ISO, drive the Borehole interface, assert on screendumps and guest memory
+python test_serial.py     # the COM1 console itself: text/ISO shells, overruns, floods, PS/2 alongside serial
 ```
 
-All four need `qemu-system-i386` on `PATH` (found via `build._find_qemu()`,
-`build.py`); `test_exec.py` also needs `pip install ziglang` since it
-compiles the sample programs first. `test_gfx.py` boots via `build.iso()`,
-which runs on Windows and Linux. Linux needs `xorriso` installed; see the ISO
-note in [`README.md`](../README.md#a-real-bootable-iso). CI runs every script
-on `windows-latest` and `ubuntu-latest` from a clean checkout. None of the four
+All six need `qemu-system-i386` on `PATH` (found via `build._find_qemu()`,
+`build.py`); `test_boot.py`, `test_exec.py`, and `test_serial.py` also need
+`pip install ziglang`, since each compiles the sample programs first
+(`build._program_sources()`/`build.build_program()`). `test_gfx.py` and
+`test_serial.py` also boot via `build.iso()`, which runs on Windows and
+Linux. Linux needs `xorriso` installed; see the ISO note in
+[`README.md`](../README.md#a-real-bootable-iso). CI runs every script on
+`windows-latest` and `ubuntu-latest` from a clean checkout. None of the six
 scripts touch files in the repo — scratch disk images and screendumps go to
 the system temp dir (`tempfile.mkdtemp`).
 
@@ -52,6 +58,93 @@ Each session writes its transcript to `build/test-logs/boot/<session>.log`: ever
 command sent, the raw COM1 text, each check, and QEMU's stderr. A session that
 hangs or faults also records the VGA screen and `info registers`. A failing
 session prints its transcript as well.
+
+## `test_serial.py`: the serial console acceptance suite
+
+Where `test_boot.py` drives the shell over COM1 to check shell *behavior*,
+`test_serial.py` (943 lines) is about the COM1 console itself — the 16550
+UART driver, its interaction with the framebuffer console and PS/2, and its
+behavior under load. It runs 19 independent sessions
+(`SESSIONS`, `test_serial.py:902`-`907`), each its own fresh QEMU boot:
+
+- **`text`** (`test_serial.py:147`-`175`) — the baseline: boots the bare
+  `-kernel` path with COM1 on QEMU's stdio pipe and drives `echo` (and
+  `$USER` expansion), `uptime`, `help`, an unknown command, a shifted
+  character (`echo Up_Case:?`), and line editing with DEL and Backspace —
+  all typed and read back over serial alone, no VGA involved.
+- **`line_endings`** (`:276`-`296`) — a bare CR and a CRLF pair sent over a
+  TCP-backed COM1 each end exactly one line (CRLF must not produce two
+  prompts), and the same output lands on the VGA console too.
+- **`escape`** (`:299`-`309`) — CSI and SS3 escape sequences (arrow/function
+  keys, as a terminal emulator would send them) are swallowed outright
+  rather than echoed or run as command text.
+- **`burst`** (`:312`-`324`) and **`cat_burst`** (`:327`-`355`) — an unpaced
+  write of several lines, comfortably under the 512-byte receive ring, must
+  all run; and 56 bytes typed while `cat` is mid-transmit (interrupts off,
+  so only the ring — not the 16-byte hardware FIFO — can hold them) must
+  still arrive in full.
+- **`exec_paced`** (`:593`-`605`) — 37 bytes typed immediately after `exec`,
+  before the loaded program has had a chance to print its own prompt, must
+  not be dropped.
+- **`polled_input`** (`:178`-`204`) — the two places a *command* polls
+  hardware for more input mid-execution, both driven from serial: `sudo`'s
+  password prompt (masked echo, accepted password) and `/bin/ask.bin`'s
+  read-line syscall.
+- **`ps2_alongside`** (`:677`-`699`) — one boot with both inputs live (PS/2
+  over the QEMU monitor, COM1 on stdio): a keyboard command's output is
+  mirrored to serial, and each input still works after the other has been
+  used.
+- **`overflow`** (`:619`-`636`) and **`stall`** (`:648`-`674`) — more input
+  than the ring holds (counted as `ring-lost`), and output that backs up
+  because nothing is reading the far end of a TCP-backed COM1 (counted as
+  `tx-dropped`) — both must leave the shell answering afterward, with the
+  loss reflected in the `serial` command's own counters.
+- **`lsr_overrun`** (`:547`-`590`) — forces real UART overrun bits via
+  loopback mode and the QEMU monitor's `o /b` port-write command, then
+  checks the `overrun` counter catches every one. Before booting anything,
+  it also greps `kmain.mx` itself for every function reading port `0x3FD`
+  (the Line Status Register) and asserts the set is exactly
+  `{serial_init, serial_lsr}` (`:559`-`564`) — a source-level guard that a
+  future change can't add a second, uncounted LSR read without failing this
+  test.
+- **`flood`** (`:539`-`540`) and **`iso_flood`** (`:543`-`544`) — a
+  sustained flood of input (bare CRs, then repeated `uptime`s) on the
+  `-kernel` and ISO paths respectively must not starve the PIT (`g_ticks`
+  keeps advancing) or stall a PS/2 key queued mid-flood, and the shell must
+  still answer `uptime`/`echo` correctly once it ends.
+- **`no_uart`** (`:885`-`899`) — with `-serial none`, the VGA console must
+  report `serial: COM1 unavailable` (the same text `serial_status`,
+  `kmain.mx:554`-`574`, prints) and the shell must still work from PS/2.
+- **`iso`** (`:759`-`784`) — on the Borehole/ISO path, a command run from
+  serial also draws on the framebuffer console (checked with a screendump
+  diff), not just VGA text.
+- **`iso_no_uart`** (`:787`-`803`) — the Surface screen's own on-screen UART
+  report must differ between `-serial none` and a UART present — not only a
+  fact visible in a log a player would never see.
+- **`iso_junk`** (`:806`-`833`) — NUL and `0xFF` bytes sent over serial at
+  the Surface screen must change nothing on screen and echo nothing, while
+  real input typed right after still reaches the shell.
+- **`iso_lock`** (`:836`-`860`) — bytes typed over serial while the lock
+  screen is up are discarded outright (never echoed, never run once
+  unlocked), even though the real unlock happens over the keyboard in the
+  same session.
+- **`iso_fault`** (`:863`-`882`) — the CPU-exception report and the
+  `shutdown` notice both bypass the normal `put_cell_at` console path, so
+  this session confirms both still reach serial.
+
+```bash
+python test_serial.py                  # build, then every session
+python test_serial.py --no-build text  # reuse the build, chosen sessions
+```
+
+Pass session names to run only those (`list(SESSIONS)` for the full set,
+`test_serial.py:929`). Timing assumptions are called out in the module
+docstring (`test_serial.py:2`-`20`): stdio input is paced one byte per
+kernel tick because QEMU's Windows stdio backend drops a byte rather than
+wait when its FIFO trigger level is reached, and stdio strips CR — so
+CR-vs-CRLF line-ending behavior (`line_endings`) and any burst over the
+512-byte ring (`burst`, `session_overflow`) are driven over a TCP-backed
+COM1 (`TcpSerial`, `:222`-`273`) instead.
 
 ## What the keyboard-driven scripts really prove
 
@@ -190,7 +283,7 @@ the primary path it `raise`s rather than returning `None` if it parses
 fewer than 4000 bytes — a parse failure here fails the test outright
 instead of falling back further.
 
-## Not covered by any of the four scripts
+## Not covered by any script
 
 Networking (`net`, `httpd`, and everything under `net/` except
 `net/hardware.mx`/`net/audio.mx`/`net/hci_usb.mx`) has no automated coverage

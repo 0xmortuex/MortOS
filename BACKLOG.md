@@ -3051,3 +3051,49 @@ behavior, add a backlog item describing it and stop.
   specific `test_fs.py` assertion failed before deciding on a fix. Found
   2026-11-22 while gathering current CI status for the `ROADMAP.md` note
   above.
+
+## Doc quality (found 2026-11-26, not yet done)
+- [x] `docs/testing.md` documented `test.py`/`test_fs.py`/`test_exec.py`/
+  `test_gfx.py` in detail and `test_boot.py` in its own section, but never
+  mentioned `test_serial.py` (943 lines, added in the same `boot-tests-ci`
+  merge as `test_boot.py` per `CHANGELOG.md`) anywhere — and the doc's own
+  intro (`All four test scripts...`) and quickstart `bash` block in both
+  `docs/testing.md` and `README.md` still listed only four commands
+  (`test.py smoke`/`test_fs.py`/`test_exec.py`/`test_gfx.py`), omitting both
+  `test_boot.py` and `test_serial.py`. Found 2026-11-26: every unchecked
+  item in this backlog is an explicitly out-of-scope code/CI change (the
+  `help`/`mods`, `read_line`/`sudo`-prompt/`path_of`/`fs_parent_of`
+  overflow, and Windows-CI items above), so this pass looked for source
+  that outgrew its own docs and found `test_serial.py` had none at all —
+  confirmed by grepping every `docs/*.md` + `README.md` for the name
+  (one passing mention, `README.md:214`, name-dropped but never explained).
+  Done 2026-11-26: read `test_serial.py` in full and added a
+  `` `test_serial.py`: the serial console acceptance suite `` section to
+  `docs/testing.md` right after the existing `test_boot.py` section,
+  covering all 19 sessions in `SESSIONS` (`test_serial.py:902`-`907`) —
+  the baseline shell-over-serial checks, line-ending/escape-sequence
+  handling, burst/flood/overrun/stall robustness (including a source-level
+  grep inside the test itself asserting only `serial_init`/`serial_lsr`
+  ever read the LSR port, `test_serial.py:559`-`564`), the two polled-input
+  paths (`sudo`'s password prompt, a program's read-line syscall), PS/2
+  used alongside serial, and the ISO/Borehole-specific sessions (the
+  Surface screen's on-screen UART report, junk bytes, the lock screen
+  discarding serial input, and CPU-fault/`shutdown` screens reaching
+  serial). Cited every session's `def`-to-next-`def` line range by reading
+  it directly in `test_serial.py` (verified each boundary, not guessed),
+  plus one kernel-side citation (`serial_status`, `kmain.mx:554`-`574`,
+  matching the existing citation already in `docs/shell.md`). Also fixed
+  the now-six-scripts undercount: `docs/testing.md`'s intro paragraph and
+  "needs `qemu-system-i386`"/ziglang/`build.iso()` paragraph (added that
+  `test_boot.py` and `test_serial.py` also compile programs via
+  `build._program_sources()`/`build.build_program()`, so also need
+  `pip install ziglang` — previously credited to `test_exec.py` alone —
+  and that `test_serial.py` also boots via `build.iso()` like
+  `test_gfx.py`), the `` ## Not covered by any of the four scripts ``
+  heading, and both quickstart `bash` blocks (`docs/testing.md` and
+  `README.md`) to list all six invocations. Doc-only change, no
+  kernel/build.py/test script logic touched. Verified every new
+  `file:line` citation by reading the exact cited line(s) against current
+  source (wrote and ran a throwaway citation-range script: 578 citations
+  across `README.md`+`docs/*.md`, 0 out of range) and a link-resolution
+  script (80 relative links, 0 missing).
