@@ -3097,3 +3097,60 @@ behavior, add a backlog item describing it and stop.
   source (wrote and ran a throwaway citation-range script: 578 citations
   across `README.md`+`docs/*.md`, 0 out of range) and a link-resolution
   script (80 relative links, 0 missing).
+
+## Doc quality (found 2026-11-27, done same day)
+- [x] `docs/borehole-concept.md` had never once appeared in this backlog
+  (confirmed by grepping this whole file for `borehole-concept.md` before
+  today's pass: zero hits, versus 19-70 hits each for every other doc under
+  `docs/`), despite being linked from `README.md` (twice), `docs/architecture.md`,
+  `docs/settings.md` and `ARCHITECTURE.md` — it was the one doc file that had
+  never gotten a dedicated audit pass. Found 2026-11-27: every unchecked
+  backlog item was still an explicitly out-of-scope code/build.py/QEMU-test
+  change (`help`/`mods`, the `read_line`/`path_of`/`draw_prompt`/
+  `fs_parent_of`/`sudo`-prompt overflow chain, the dead `restore_desktop()`
+  and Windows CI items — re-read the whole file to confirm), so this pass
+  read `docs/borehole-concept.md` in full (107 lines, written as a pre-code
+  design spec) and checked every specific, checkable claim in it against
+  `ui/borehole.mx` directly: the four strata's letters/rock/order
+  (`g_kind[0..3] = 0,1,2,3` at both `:680` and `:761`, matching M=sandstone/
+  O=limestone/R=shale/T=granite); the base rock colours in `ui_rock()`
+  (`:280`-`:307`, exact hex match to the Palette table); the core palette
+  constants (`BONE`/`BRIGHT`/`VERM`/`SHAFT`/`GALLERY`/`INK`, `:19`-`:28`,
+  exact hex match); the surface's default selection (`g_surf_sel: u32 = 2`,
+  `:43`, i.e. R, so Enter gives a shell immediately); the `M`/`O`/`R`/`T`
+  direct-select scancodes in `ui_surface_key` (`:743`-`:746`); the carved
+  (x8) vs. stencil (x4) letter scales (`ui_big_glyph`/`ui_big_text` call
+  sites at `:692`-`:693` and `:695`/`:712`/`:1580`); the console/core
+  10x20 px field-notes grid (`CON_CW`/`CON_CH` `:35`-`:36`, and
+  `ui_core_text`'s `col * 10`/`row * 20` at `:1275`, both matching the
+  claimed 80x10=800, 25x20=500 math); the 100 Hz PIT (`kmain.mx:3449`)
+  driving `ui_tick()`'s once-a-second clock redraw and bit-travel/spark
+  logic (`ui/borehole.mx:1881`-`1904`); the row-by-row, direction-aware
+  reveal (`ui_reveal`/`ui_reveal_step`, `:507`-`:532`) and its keypress-
+  cancels-it behaviour (`ui_reveal_done()`, called unconditionally at the
+  top of `ui_on_key`, `:1910`); and the eight Machine actions (DHCP,
+  disconnect, PCI rescan, speaker toggle/test, AC97 init, volume, test
+  tone — `ui_machine_label`, `:1406`-`1415`). All of it matched the doc
+  exactly — no drift found anywhere in this pass. Did find one real,
+  previously-undocumented gap while tracing every `sc == 1` (Esc) call
+  site for the Navigation table's "climb back up one level" row: four of
+  them (`ui_objects_key:1195`, `ui_core_key:1342`, `ui_machine_key:1548`,
+  `ui_terminate_key:1619`) actually match `sc == 1 || sc == 14`, i.e.
+  Backspace works too — an intentional, consistently-applied second key
+  the doc never mentioned. Confirmed it is deliberately scoped to those
+  four non-text-entry scenes only: the shell's own climb-out
+  (`ui_on_key`'s `SC_SHELL` branch, `:1914`) checks only `sc == 1`, since
+  Backspace there is a real line-edit key (consistent with "every
+  printable key goes to the shell"), and the lock screen's own
+  `sc == 14` (`ui_lock_key:1696`-`1702`) deletes the last password
+  character rather than climbing out (and has no `sc == 1` handling of
+  any kind, i.e. Esc does nothing there, matching "sealed"). Done
+  2026-11-27: added a note after the Navigation table in
+  `docs/borehole-concept.md` stating Backspace climbs back exactly like
+  Esc in Objects, a core sample, the Machine and Terminate, citing all
+  four sites, and that it is deliberately not a second way out of the
+  shell or the lock screen for the reasons above. Doc-only change, no
+  kernel/build.py logic touched. Verified the four new citations against
+  current source and re-ran the citation-range check (580 citations
+  across `README.md` + all of `docs/*.md`, 0 out of range) and the
+  link-resolution check (87 relative links, 0 broken).

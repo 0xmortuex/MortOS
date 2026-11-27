@@ -53,6 +53,11 @@ Vertical only. There is no app switcher, because there is nothing to switch betw
 
 In a file: Up/Down scroll a line, PgUp/PgDn or Space scroll a screen.
 
+In Objects, a core sample, the Machine or Terminate, Backspace climbs back up exactly like Esc
+(`ui_objects_key`, `ui_core_key`, `ui_machine_key` and `ui_terminate_key`, `ui/borehole.mx:1195`,
+`:1342`, `:1548` and `:1619`). It is not a second way out of the shell, where Backspace is a real
+edit key instead, or of the lock screen, where it deletes the last character typed.
+
 ## Reaching each capability
 
 - **Shell**: `R`, or Enter at boot. Esc climbs out, and the shell keeps its text while you are
